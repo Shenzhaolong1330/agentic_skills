@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Environments and secrets
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+
+# Experiment outputs
+runs/
+*.bag
+*.npy
+*.npz
+*.pcd
+*.ply
+*.mp4
+*.avi
+
+# Model and dataset caches
+models/
+checkpoints/
+weights/
+datasets/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+
