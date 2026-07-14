@@ -31,6 +31,16 @@ DEFAULT_HOLE_CONFIG = {
     "left": ANY_POSE_DIR / "config_rack_empty_hole_left_wrist_vlm.yaml",
     "right": ANY_POSE_DIR / "config_rack_empty_hole_right_wrist_vlm.yaml",
 }
+sys.path.insert(0, str(ANY_POSE_DIR / "src"))
+from object_locator.config import load_config  # noqa: E402
+from object_locator.grounded_sam_detector import GroundedSamConfig  # noqa: E402
+from sam_cache_service import CachedSamRefiner  # noqa: E402
+from wrist_cached_perception import (  # noqa: E402
+    CachedPerceptionError,
+    locate_hole_with_vlm_sam_frame,
+    resolve_cached_slot_from_frame,
+)
+from wrist_camera_service import WristCameraClient  # noqa: E402
 
 
 def _load_skill_module():
@@ -74,6 +84,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="object-locator config for the wrist camera. Defaults to the matching left/right unoccupied-hole config.",
     )
+    parser.add_argument(
+        "--wrist-perception-mode",
+        choices=("cached-grid", "legacy-vlm"),
+        default="legacy-vlm",
+        help="Use a reserved rack-grid slot with the persistent wrist camera, or the legacy camera-opening locator.",
+    )
+    parser.add_argument("--rack-grid-json", type=Path, default=None)
+    parser.add_argument("--target-slot-id", default=None)
+    parser.add_argument("--wrist-camera-socket", type=Path, default=None)
+    parser.add_argument("--wrist-frame-max-age-ms", type=float, default=500.0)
+    parser.add_argument("--max-cached-slot-correction-m", type=float, default=0.015)
+    parser.add_argument("--wrist-perception-report", type=Path, default=None)
     parser.add_argument(
         "--standoff-m",
         type=float,
@@ -158,7 +180,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-posture-correction-iters",
         type=int,
-        default=2,
+        default=4,
         help="Maximum in-place vertical TCP posture corrections before stopping.",
     )
     parser.add_argument(
@@ -214,7 +236,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-rotation-step", type=float, default=0.006)
     parser.add_argument("--settle-time-sec", type=float, default=0.8)
     parser.add_argument("--position-tolerance-m", type=float, default=0.006)
-    parser.add_argument("--rotation-tolerance-rad", type=float, default=0.08)
+    parser.add_argument("--rotation-tolerance-rad", type=float, default=0.035)
     parser.add_argument("--max-correction-iters", type=int, default=2)
     parser.add_argument("--max-steps", type=int, default=6000)
     parser.add_argument("--compact", action="store_true")
@@ -739,6 +761,7 @@ def run_vertical_posture_correction(
     stage_prefix: str,
 ) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
     corrections: list[dict[str, Any]] = []
+    motion_ok = True
     _observation, poses = skill.read_ee_poses(client)
     posture_check = check_vertical_roll_pitch(
         poses[side],
@@ -762,6 +785,7 @@ def run_vertical_posture_correction(
             current_pose=poses[side],
             vertical_rotvec=vertical_rotvec,
         )
+        correction_started = time.monotonic()
         correction_stage = skill.move_dual_absolute(
             client=client,
             side=side,
@@ -772,6 +796,12 @@ def run_vertical_posture_correction(
             execute=True,
         )
         _observation, poses = skill.read_ee_poses(client)
+        translation_check = p2p_stage_arrival_check(
+            correction_stage,
+            side,
+            ignore_z=False,
+            require_rotation=False,
+        )
         posture_check = check_vertical_roll_pitch(
             poses[side],
             roll_target_rad=args.roll_target_rad,
@@ -784,12 +814,21 @@ def run_vertical_posture_correction(
                 "correction_index": correction_index + 1,
                 "target_pose": correction_target.tolist(),
                 "stage": correction_stage,
+                "translation_check": translation_check,
                 "posture_check": posture_check,
+                "elapsed_sec": time.monotonic() - correction_started,
             }
         )
-        if not skill.p2p_stage_succeeded(correction_stage):
+        # The low-level P2P result uses a full rotation-vector tolerance.  A
+        # correction may therefore report ok=false even though its translation
+        # is safe and the measured roll/pitch has improved.  Let the dedicated
+        # vertical posture gate decide whether another correction is needed.
+        # Only a missing/invalid result or excessive translation aborts early.
+        if not translation_check["ok"]:
+            motion_ok = False
             break
     return {
+        "motion_ok": motion_ok,
         "initial_check": initial_check,
         "corrections": corrections,
         "final_check": posture_check,
@@ -861,6 +900,7 @@ def run_segmented_vertical_descent(
             f"segmented descent {index}/{len(waypoints)} "
             f"target_z={waypoint[2]:.4f}m"
         )
+        segment_started = time.monotonic()
         stage = skill.move_dual_absolute(
             client=client,
             side=side,
@@ -870,12 +910,18 @@ def run_segmented_vertical_descent(
             stage_name=f"move_{side}_segmented_descent_{index}",
             execute=True,
         )
-        arrival_check = p2p_stage_succeeded_ignoring_z(stage, side)
+        arrival_check = p2p_stage_arrival_check(
+            stage,
+            side,
+            ignore_z=True,
+            require_rotation=False,
+        )
         segment_report: dict[str, Any] = {
             "index": index,
             "target_pose": waypoint.tolist(),
             "stage": stage,
             "arrival_check": arrival_check,
+            "move_elapsed_sec": time.monotonic() - segment_started,
         }
         segment_observation, poses = skill.read_ee_poses(client)
         force_summary = _force_summary(segment_observation, side)
@@ -918,7 +964,7 @@ def run_segmented_vertical_descent(
         )
         segment_report["posture"] = posture_report
         report["stages"].append(segment_report)
-        if not posture_report["final_check"]["ok"]:
+        if not posture_report["motion_ok"] or not posture_report["final_check"]["ok"]:
             report.update({"ok": False, "stopped_reason": "segmented_descent_posture_failed"})
             _log("segmented descent posture correction failed; stopping")
             return report, poses
@@ -926,29 +972,40 @@ def run_segmented_vertical_descent(
     return report, poses
 
 
-def p2p_stage_succeeded_ignoring_z(stage: Mapping[str, Any], side: str) -> dict[str, Any]:
-    """Return arrival status using XY translation and rotation only.
+def p2p_stage_arrival_check(
+    stage: Mapping[str, Any],
+    side: str,
+    *,
+    ignore_z: bool,
+    require_rotation: bool,
+) -> dict[str, Any]:
+    """Validate usable P2P feedback with independently selectable gates.
 
-    The low-level P2P result still reports full xyz tracking. This helper is
-    only used for the wrist-hole standoff gate, where z error is logged but
-    should not block release/continuation.
+    The insertion flow has a dedicated measured roll/pitch posture gate.  Its
+    approach and descent moves therefore check translation here, then defer
+    posture acceptance to ``run_vertical_posture_correction``.
     """
+    mode = "xy" if ignore_z else "xyz"
+    if require_rotation:
+        mode += "_translation_rotation"
+    else:
+        mode += "_translation_posture_deferred"
     if not bool(stage.get("execute")):
-        return {"ok": True, "mode": "xy_translation_rotation", "reason": "not_executed"}
+        return {"ok": True, "mode": mode, "reason": "not_executed"}
 
     result = _mapping(stage.get("result"))
     if bool(result.get("ok")):
-        return {"ok": True, "mode": "xy_translation_rotation", "reason": "p2p_full_xyz_ok"}
+        return {"ok": True, "mode": mode, "reason": "p2p_full_xyz_ok"}
 
     final_error = _mapping(result.get("final_error"))
     tolerances = _mapping(result.get("tolerances"))
     error_delta_raw = final_error.get(f"{side}_error_delta")
     if not isinstance(error_delta_raw, list | tuple) or len(error_delta_raw) < 6:
-        return {"ok": False, "mode": "xy_translation_rotation", "reason": "missing_final_error_delta"}
+        return {"ok": False, "mode": mode, "reason": "missing_final_error_delta"}
 
     error_delta = np.asarray(error_delta_raw, dtype=float).reshape(-1)
     if error_delta.size < 6 or not np.all(np.isfinite(error_delta[:6])):
-        return {"ok": False, "mode": "xy_translation_rotation", "reason": "invalid_final_error_delta"}
+        return {"ok": False, "mode": mode, "reason": "invalid_final_error_delta"}
 
     position_tolerance = _finite_float(tolerances.get("position_tolerance_m"))
     rotation_tolerance = _finite_float(tolerances.get("rotation_tolerance_rad"))
@@ -965,21 +1022,39 @@ def p2p_stage_succeeded_ignoring_z(stage: Mapping[str, Any], side: str) -> dict[
 
     xy_error = float(np.linalg.norm(error_delta[:2]))
     z_error = float(abs(error_delta[2]))
-    ok = xy_error <= float(position_tolerance) and float(rotation_error) <= float(rotation_tolerance)
+    translation_error = xy_error if ignore_z else float(np.linalg.norm(error_delta[:3]))
+    translation_ok = translation_error <= float(position_tolerance)
+    rotation_ok = float(rotation_error) <= float(rotation_tolerance)
+    ok = translation_ok and (rotation_ok or not require_rotation)
     return {
         "ok": bool(ok),
-        "mode": "xy_translation_rotation",
+        "mode": mode,
+        "translation_error_m": translation_error,
         "xy_error_m": xy_error,
         "z_error_m": z_error,
         "rotation_error_rad": float(rotation_error),
+        "translation_ok": bool(translation_ok),
+        "rotation_ok": bool(rotation_ok),
+        "rotation_gate_deferred": not require_rotation,
         "position_tolerance_m": float(position_tolerance),
         "rotation_tolerance_rad": float(rotation_tolerance),
-        "ignored_axes": ["z"],
+        "ignored_axes": ["z"] if ignore_z else [],
     }
+
+
+def p2p_stage_succeeded_ignoring_z(stage: Mapping[str, Any], side: str) -> dict[str, Any]:
+    """Compatibility wrapper for the original XY-plus-rotation arrival gate."""
+    return p2p_stage_arrival_check(
+        stage,
+        side,
+        ignore_z=True,
+        require_rotation=True,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    flow_started = time.monotonic()
     if (args.release_after_arrival or args.retract_after_release_m > 0.0) and not args.execute:
         raise ValueError("--release-after-arrival/--retract-after-release-m require --execute")
     rack_plane_z_base_m = resolve_rack_plane_z_base_m(args)
@@ -1041,6 +1116,7 @@ def main(argv: list[str] | None = None) -> int:
             "descent_segment_m": float(args.descent_segment_m),
             "server": f"{args.server_host}:{args.server_port}",
             "hole_config": str(hole_config),
+            "timings_sec": {},
         }
         report["ping"] = client.ping()
         _log(f"connected to {report['server']}")
@@ -1056,35 +1132,157 @@ def main(argv: list[str] | None = None) -> int:
             f"force_norm={report['initial_force']['force_norm']:.3f}N"
         )
 
-        _log(f"running wrist hole detection with {hole_config}")
-        hole_result = skill.run_object_locator(args.any_pose_dir, hole_config)
         base_T_camera = skill.pose6_to_matrix(poses[args.side]) @ skill.load_flange_T_camera(args.any_pose_dir, args.side)
+        _log(f"running wrist hole detection mode={args.wrist_perception_mode} config={hole_config}")
+        perception_started = time.monotonic()
+        hole_result: dict[str, Any]
+        cached_perception_report: dict[str, Any] | None = None
         try:
-            hole_base, hole_plane_report = resolve_hole_base_for_target(
-                hole_result,
-                current_pose=poses[args.side],
-                base_T_camera=base_T_camera,
-                hole_plane_z_source=args.hole_plane_z_source,
-                current_standoff_m=args.current_standoff_m,
-                rack_plane_z_base_m=rack_plane_z_base_m,
-                min_depth_valid_fraction=args.min_depth_valid_fraction,
-                allow_fallback_depth=args.allow_fallback_depth,
-                require_reliable_depth=args.require_reliable_depth,
-            )
-        except ValueError as exc:
+            if args.wrist_perception_mode == "cached-grid":
+                if args.rack_grid_json is None or args.target_slot_id is None:
+                    raise ValueError("cached-grid requires --rack-grid-json and --target-slot-id")
+                if rack_plane_z_base_m is None:
+                    raise ValueError("cached-grid requires --rack-plane-z-base-m")
+                grid = json.loads(args.rack_grid_json.read_text(encoding="utf-8"))
+                slot = next((item for item in grid.get("slots", []) if item.get("id") == args.target_slot_id), None)
+                if slot is None:
+                    raise ValueError(f"target slot not found: {args.target_slot_id}")
+                if slot.get("state") != "reserved":
+                    raise ValueError(f"target slot {args.target_slot_id} is not reserved: {slot.get('state')}")
+                frame_started = time.monotonic()
+                frame = WristCameraClient(args.wrist_camera_socket).frame(
+                    args.side,
+                    max_age_ms=args.wrist_frame_max_age_ms,
+                )
+                report["timings_sec"]["camera_capture"] = time.monotonic() - frame_started
+                report["wrist_camera_frame"] = {
+                    "generation": frame.get("generation"),
+                    "age_ms": frame.get("age_ms"),
+                    "reset_count": frame.get("reset_count"),
+                    "camera_timestamp_ms": frame.get("camera_timestamp_ms"),
+                }
+                config = load_config(hole_config)
+                source = config.grounded_sam
+                sam_detector = CachedSamRefiner(GroundedSamConfig(
+                    grounding_model=source.grounding_model,
+                    sam_model=source.sam_model,
+                    text_prompt=source.text_prompt,
+                    selection="score",
+                    box_threshold=source.box_threshold,
+                    text_threshold=source.text_threshold,
+                    device=source.device,
+                    use_sam=source.use_sam,
+                    refine_bbox_with_mask=source.refine_bbox_with_mask,
+                    min_box_area_px=source.min_box_area_px,
+                    max_box_area_ratio=source.max_box_area_ratio,
+                    min_mask_area_px=source.min_mask_area_px,
+                    cap_endpoint_rule=source.cap_endpoint_rule,
+                    cap_dark_threshold=source.cap_dark_threshold,
+                    cap_min_area_px=source.cap_min_area_px,
+                ))
+                hole_base, cached_perception_report = resolve_cached_slot_from_frame(
+                    image_bgr=frame["color_bgr"],
+                    depth_m=frame["depth_m"],
+                    intrinsics=frame["intrinsics"],
+                    base_T_camera=base_T_camera,
+                    cached_position_base_m=np.asarray(slot["position_base_m"], dtype=float),
+                    rack_plane_z_base_m=rack_plane_z_base_m,
+                    hole_config=config,
+                    sam_detector=sam_detector,
+                    max_correction_m=args.max_cached_slot_correction_m,
+                )
+                hole_plane_report = {
+                    "source": "cached-grid-wrist-local-correction",
+                    "plane_z_base_m": rack_plane_z_base_m,
+                    "depth_quality": {"ok": True, "source": "local-gate"},
+                    "fallback_used": bool(cached_perception_report.get("fallback_used")),
+                }
+                hole_result = {
+                    "run_id": f"cached-{args.target_slot_id}-{time.time_ns()}",
+                    "position_anchor": "cached_slot_local_correction",
+                    "detection": cached_perception_report,
+                    "position": {"source": cached_perception_report.get("source")},
+                }
+                report["cached_slot_id"] = args.target_slot_id
+                report["wrist_perception"] = cached_perception_report
+                if args.wrist_perception_report is not None:
+                    args.wrist_perception_report.parent.mkdir(parents=True, exist_ok=True)
+                    args.wrist_perception_report.write_text(json.dumps(cached_perception_report, ensure_ascii=False, indent=2), encoding="utf-8")
+            else:
+                if args.wrist_camera_socket is not None:
+                    frame_started = time.monotonic()
+                    frame = WristCameraClient(args.wrist_camera_socket, timeout_sec=10.0).frame(
+                        args.side,
+                        max_age_ms=args.wrist_frame_max_age_ms,
+                    )
+                    report["timings_sec"]["camera_frame_request"] = time.monotonic() - frame_started
+                    config = load_config(hole_config)
+                    source = config.grounded_sam
+                    sam_detector = CachedSamRefiner(GroundedSamConfig(
+                        grounding_model=source.grounding_model,
+                        sam_model=source.sam_model,
+                        text_prompt=source.text_prompt,
+                        selection="score",
+                        box_threshold=source.box_threshold,
+                        text_threshold=source.text_threshold,
+                        device=source.device,
+                        use_sam=source.use_sam,
+                        refine_bbox_with_mask=source.refine_bbox_with_mask,
+                        min_box_area_px=source.min_box_area_px,
+                        max_box_area_ratio=source.max_box_area_ratio,
+                        min_mask_area_px=source.min_mask_area_px,
+                        cap_endpoint_rule=source.cap_endpoint_rule,
+                        cap_dark_threshold=source.cap_dark_threshold,
+                        cap_min_area_px=source.cap_min_area_px,
+                    ))
+                    hole_result, supplied_frame_timings = locate_hole_with_vlm_sam_frame(
+                        image_bgr=frame["color_bgr"],
+                        depth_m=frame["depth_m"],
+                        intrinsics=frame["intrinsics"],
+                        config=config,
+                        sam_detector=sam_detector,
+                        camera_timestamp_ms=frame["camera_timestamp_ms"],
+                    )
+                    report["timings_sec"]["legacy_supplied_frame"] = supplied_frame_timings
+                    report["wrist_camera_frame"] = {
+                        "generation": frame.get("generation"),
+                        "age_ms": frame.get("age_ms"),
+                        "reset_count": frame.get("reset_count"),
+                    }
+                else:
+                    hole_result = skill.run_object_locator(args.any_pose_dir, hole_config)
+                    report["timings_sec"]["legacy_object_locator"] = hole_result.get("task_timings_sec", {})
+                hole_base, hole_plane_report = resolve_hole_base_for_target(
+                    hole_result,
+                    current_pose=poses[args.side],
+                    base_T_camera=base_T_camera,
+                    hole_plane_z_source=args.hole_plane_z_source,
+                    current_standoff_m=args.current_standoff_m,
+                    rack_plane_z_base_m=rack_plane_z_base_m,
+                    min_depth_valid_fraction=args.min_depth_valid_fraction,
+                    allow_fallback_depth=args.allow_fallback_depth,
+                    require_reliable_depth=args.require_reliable_depth,
+                )
+        except (ValueError, RuntimeError) as exc:
+            if isinstance(exc, CachedPerceptionError):
+                cached_perception_report = exc.report
+                report["wrist_perception"] = cached_perception_report
+                if args.wrist_perception_report is not None:
+                    args.wrist_perception_report.parent.mkdir(parents=True, exist_ok=True)
+                    args.wrist_perception_report.write_text(json.dumps(cached_perception_report, ensure_ascii=False, indent=2), encoding="utf-8")
             report["hole"] = {
-                "run_id": hole_result.get("run_id"),
-                "position_anchor": hole_result.get("position_anchor"),
+                "run_id": locals().get("hole_result", {}).get("run_id"),
+                "position_anchor": locals().get("hole_result", {}).get("position_anchor"),
                 "detected_position_base_m": None,
-                "detection": hole_result.get("detection"),
-                "position_camera": hole_result.get("position"),
-                "panel": hole_result.get("debug_outputs", {}).get("panel_history"),
+                "detection": locals().get("hole_result", {}).get("detection"),
+                "position_camera": locals().get("hole_result", {}).get("position"),
             }
             report["stopped_reason"] = "unreliable_hole_geometry"
             report["error"] = str(exc)
             _log(f"hole geometry rejected: {exc}")
             print(json.dumps(report, indent=None if args.compact else 2, ensure_ascii=False, default=str))
             return 2
+        report["timings_sec"]["wrist_perception_total"] = time.monotonic() - perception_started
         hole_base_raw = hole_base.copy()
         hole_base = apply_hole_y_offset(hole_base_raw, hole_y_offset_m)
         report["hole"] = {
@@ -1140,6 +1338,7 @@ def main(argv: list[str] | None = None) -> int:
                     "large descent requested; moving XY/posture at current height first "
                     f"(descent={descent_m:.4f}m)"
                 )
+                approach_started = time.monotonic()
                 approach_stage = skill.move_dual_absolute(
                     client=client,
                     side=args.side,
@@ -1150,7 +1349,13 @@ def main(argv: list[str] | None = None) -> int:
                     execute=True,
                 )
                 report["xy_posture_approach_stage"] = approach_stage
-                approach_arrival_check = p2p_stage_succeeded_ignoring_z(approach_stage, args.side)
+                report["timings_sec"]["xy_posture_approach"] = time.monotonic() - approach_started
+                approach_arrival_check = p2p_stage_arrival_check(
+                    approach_stage,
+                    args.side,
+                    ignore_z=True,
+                    require_rotation=False,
+                )
                 report["xy_posture_approach_arrival_check"] = approach_arrival_check
                 if not approach_arrival_check["ok"]:
                     report["stopped_reason"] = "xy_posture_approach_failed"
@@ -1166,7 +1371,14 @@ def main(argv: list[str] | None = None) -> int:
                     stage_prefix=f"correct_{args.side}_vertical_tcp_posture_before_descent",
                 )
                 report["xy_posture_approach_posture"] = approach_posture_report
-                if not approach_posture_report["final_check"]["ok"]:
+                report["timings_sec"]["pre_descent_posture_corrections"] = sum(
+                    float(item.get("elapsed_sec", 0.0))
+                    for item in approach_posture_report["corrections"]
+                )
+                if (
+                    not approach_posture_report["motion_ok"]
+                    or not approach_posture_report["final_check"]["ok"]
+                ):
                     report["stopped_reason"] = "vertical_tcp_posture_before_descent_failed"
                     _log("vertical TCP posture check failed before descent; not descending")
                     print(json.dumps(report, indent=None if args.compact else 2, ensure_ascii=False, default=str))
@@ -1189,6 +1401,15 @@ def main(argv: list[str] | None = None) -> int:
                     vertical_rotvec=target[3:],
                 )
                 report["segmented_descent"] = segmented_report
+                report["timings_sec"]["segmented_descent_moves"] = sum(
+                    float(item.get("move_elapsed_sec", 0.0))
+                    for item in segmented_report.get("stages", [])
+                )
+                report["timings_sec"]["segmented_descent_posture_corrections"] = sum(
+                    float(correction.get("elapsed_sec", 0.0))
+                    for item in segmented_report.get("stages", [])
+                    for correction in _mapping(item.get("posture")).get("corrections", [])
+                )
                 if not segmented_report["ok"]:
                     report["stopped_reason"] = segmented_report.get("stopped_reason", "segmented_descent_failed")
                     _log("segmented descent failed; not releasing gripper")
@@ -1205,6 +1426,7 @@ def main(argv: list[str] | None = None) -> int:
                 report["posture_check_after_corrections"] = last_posture.get("final_check")
             else:
                 _log("sending P2P move to wrist-detected hole standoff")
+                move_started = time.monotonic()
                 stage = skill.move_dual_absolute(
                     client=client,
                     side=args.side,
@@ -1215,16 +1437,23 @@ def main(argv: list[str] | None = None) -> int:
                     execute=True,
                 )
                 report["move_stage"] = stage
-                arrival_check = p2p_stage_succeeded_ignoring_z(stage, args.side)
+                report["timings_sec"]["direct_standoff_move"] = time.monotonic() - move_started
+                arrival_check = p2p_stage_arrival_check(
+                    stage,
+                    args.side,
+                    ignore_z=True,
+                    require_rotation=False,
+                )
                 report["move_arrival_check"] = arrival_check
                 if not arrival_check["ok"]:
                     report["stopped_reason"] = "move_to_standoff_failed"
-                    _log("move failed XY/rotation arrival check; not releasing gripper")
+                    _log("move failed XY arrival/feedback check; not releasing gripper")
                     print(json.dumps(report, indent=None if args.compact else 2, ensure_ascii=False, default=str))
                     return 3
                 _log(
-                    "move reached XY/rotation tolerance "
-                    f"(z ignored: {arrival_check.get('z_error_m', 0.0):.4f}m)"
+                    "move reached XY tolerance; deferring posture to roll/pitch gate "
+                    f"(z ignored: {arrival_check.get('z_error_m', 0.0):.4f}m, "
+                    f"rotation={arrival_check.get('rotation_error_rad', 0.0):.4f}rad)"
                 )
 
                 posture_report, poses = run_vertical_posture_correction(
@@ -1238,7 +1467,11 @@ def main(argv: list[str] | None = None) -> int:
                 report["posture_corrections"] = posture_report["corrections"]
                 posture_check = posture_report["final_check"]
                 report["posture_check_after_corrections"] = posture_check
-                if not posture_check["ok"]:
+                report["timings_sec"]["post_move_posture_corrections"] = sum(
+                    float(item.get("elapsed_sec", 0.0))
+                    for item in posture_report["corrections"]
+                )
+                if not posture_report["motion_ok"] or not posture_check["ok"]:
                     report["stopped_reason"] = "vertical_tcp_posture_failed"
                     _log(
                         "vertical TCP posture check failed after correction; not releasing gripper "
@@ -1270,6 +1503,7 @@ def main(argv: list[str] | None = None) -> int:
         report["final_force"] = _force_summary(final_observation, args.side)
         report["tcp_height_above_hole_m"] = float(final_pose[2] - hole_base[2])
         report["tcp_xy_error_to_hole_m"] = float(np.linalg.norm(final_pose[:2] - hole_base[:2]))
+        report["timings_sec"]["total"] = time.monotonic() - flow_started
         _log(
             f"done height={report['tcp_height_above_hole_m']:.4f}m "
             f"xy_error={report['tcp_xy_error_to_hole_m']:.4f}m "

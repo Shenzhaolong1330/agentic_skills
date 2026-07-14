@@ -21,6 +21,7 @@ import subprocess
 import sys
 import threading
 import traceback
+import time
 from typing import Any, Mapping
 
 
@@ -125,8 +126,19 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--rack-config", type=Path, default=DEFAULT_RACK_CONFIG)
+    parser.add_argument(
+        "--rack-result-json",
+        type=Path,
+        default=None,
+        help="Cached initial head-camera rack detection; skips repeated rack perception.",
+    )
     parser.add_argument("--left-hole-config", type=Path, default=DEFAULT_LEFT_HOLE_CONFIG)
     parser.add_argument("--right-hole-config", type=Path, default=DEFAULT_RIGHT_HOLE_CONFIG)
+    parser.add_argument("--wrist-perception-mode", choices=("cached-grid", "legacy-vlm"), default="legacy-vlm")
+    parser.add_argument("--rack-grid-json", type=Path, default=None)
+    parser.add_argument("--target-slot-id", default=None)
+    parser.add_argument("--wrist-camera-socket", type=Path, default=None)
+    parser.add_argument("--wrist-perception-report", type=Path, default=None)
 
     parser.add_argument("--observe-height-m", type=float, default=0.12)
     parser.add_argument("--observe-rate-hz", type=float, default=50.0)
@@ -153,7 +165,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--wrist-max-translation-step", type=float, default=0.05)
     parser.add_argument("--wrist-max-rotation-step", type=float, default=0.3)
     parser.add_argument("--wrist-position-tolerance-m", type=float, default=0.008)
-    parser.add_argument("--wrist-rotation-tolerance-rad", type=float, default=0.08)
+    parser.add_argument("--wrist-rotation-tolerance-rad", type=float, default=0.035)
     parser.add_argument("--wrist-max-correction-iters", type=int, default=6)
     parser.add_argument("--wrist-max-posture-correction-iters", type=int, default=4)
 
@@ -297,6 +309,11 @@ def build_stage_commands(args: argparse.Namespace, *, holder_side: str) -> list[
             *rack_plane_args,
             "--rack-config",
             _str(args.rack_config),
+            *(
+                []
+                if args.rack_result_json is None
+                else ["--rack-result-json", _str(args.rack_result_json)]
+            ),
             "--left-hole-config",
             _str(args.left_hole_config),
             "--right-hole-config",
@@ -366,6 +383,12 @@ def build_stage_commands(args: argparse.Namespace, *, holder_side: str) -> list[
             _str(args.wrist_max_correction_iters),
             "--max-posture-correction-iters",
             _str(args.wrist_max_posture_correction_iters),
+            "--wrist-perception-mode",
+            args.wrist_perception_mode,
+            *([] if args.rack_grid_json is None else ["--rack-grid-json", _str(args.rack_grid_json)]),
+            *([] if args.target_slot_id is None else ["--target-slot-id", args.target_slot_id]),
+            *([] if args.wrist_camera_socket is None else ["--wrist-camera-socket", _str(args.wrist_camera_socket)]),
+            *([] if args.wrist_perception_report is None else ["--wrist-perception-report", _str(args.wrist_perception_report)]),
         ],
     )
     insert_argv = [
@@ -598,6 +621,7 @@ def print_report(report: Mapping[str, Any], *, compact: bool) -> None:
 
 
 def run_stage(command: StageCommand) -> dict[str, Any]:
+    stage_started = time.monotonic()
     description = STAGE_DESCRIPTIONS.get(command.name, command.name)
     log(f"开始阶段 {command.name}: {description}")
     log("执行命令: " + " ".join(command.argv))
@@ -623,6 +647,7 @@ def run_stage(command: StageCommand) -> dict[str, Any]:
         "argv": command.argv,
         "returncode": returncode,
         "report": report,
+        "elapsed_sec": time.monotonic() - stage_started,
     }
     if returncode != 0:
         stage_report["stdout_tail"] = _tail_text(stdout)
@@ -865,6 +890,20 @@ def main(argv: list[str] | None = None) -> int:
             print_report(report, compact=args.compact)
             return int(stage_report["returncode"])
 
+        if command.name == "insert_release_retract":
+            insert_report = _mapping(stage_report.get("report"))
+            completion_status = insert_report.get("completion_status", "complete")
+            report["completion_status"] = completion_status
+            report["completion_flag"] = bool(insert_report.get("completion_flag", True))
+            if completion_status == "completed_with_insert_tolerance_warning":
+                report["insert_tolerance_warning"] = insert_report.get("insert_stage_warning")
+                report["achieved_insert_depth_m"] = insert_report.get("achieved_insert_depth_m")
+                report["release_confirmed_open"] = insert_report.get("release_confirmed_open")
+                log(
+                    "下插最终位姿容差未满足，但深度已达到且释放/上提/回 home 完成；"
+                    "按带警告完成处理"
+                )
+
         if command.name == "move_above_hole_from_wrist":
             wrist_report = _mapping(stage_report.get("report"))
             wrist_hole = _mapping(wrist_report.get("hole"))
@@ -903,6 +942,8 @@ def main(argv: list[str] | None = None) -> int:
                     head_rack_plane_z,
                 )
 
+    report.setdefault("completion_status", "complete")
+    report.setdefault("completion_flag", True)
     log("流程完成")
     print_report(report, compact=args.compact)
     return 0

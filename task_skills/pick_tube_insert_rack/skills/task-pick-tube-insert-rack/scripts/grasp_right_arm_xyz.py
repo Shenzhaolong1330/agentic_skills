@@ -174,6 +174,15 @@ def build_parser() -> argparse.ArgumentParser:
             "This does not change the commanded target or any other stage."
         ),
     )
+    parser.add_argument(
+        "--grasp-target-z-offset-m",
+        type=float,
+        default=0.0,
+        help=(
+            "Offset added to the commanded grasp TCP z after loading --xyz/--result-json. "
+            "Use a positive value to account for fingers extending below the TCP."
+        ),
+    )
     parser.add_argument("--position_tolerance_m", "--position-tolerance-m", dest="position_tolerance_m", type=float, default=0.003)
     parser.add_argument("--rotation_tolerance_rad", "--rotation-tolerance-rad", dest="rotation_tolerance_rad", type=float, default=0.03)
     parser.add_argument(
@@ -626,6 +635,8 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if not math.isfinite(args.grasp_arrival_observed_z_offset_m):
         raise ValueError("--grasp-arrival-observed-z-offset-m must be finite")
+    if not math.isfinite(args.grasp_target_z_offset_m):
+        raise ValueError("--grasp-target-z-offset-m must be finite")
     active_side = args.arm
     partner_side = other_side(active_side)
     active_label = short_side(active_side)
@@ -644,6 +655,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.xyz is None:
         raise ValueError("No target xyz available. Pass --xyz or --result-json.")
+    raw_grasp_xyz = np.asarray(args.xyz, dtype=float).reshape(3).copy()
+    args.xyz = raw_grasp_xyz.copy()
+    args.xyz[2] += float(args.grasp_target_z_offset_m)
 
     if not args.execute:
         plan_report = {
@@ -653,6 +667,8 @@ def main(argv: list[str] | None = None) -> int:
             "active_arm": active_side,
             "partner_arm": partner_side,
             "target_xyz": args.xyz.tolist() if hasattr(args.xyz, "tolist") else list(args.xyz),
+            "raw_grasp_xyz": raw_grasp_xyz.tolist(),
+            "grasp_target_z_offset_m": float(args.grasp_target_z_offset_m),
             "result_json": None if args.result_json is None else str(args.result_json.expanduser()),
             "result_base_frame": args.result_base_frame,
             "result_grasp_point": args.result_grasp_point,
@@ -688,6 +704,8 @@ def main(argv: list[str] | None = None) -> int:
         print("active_arm:", active_side)
         print("partner_arm:", partner_side)
         print_pose("target_xyz", args.xyz)
+        print_pose("raw_grasp_xyz", raw_grasp_xyz)
+        print("grasp_target_z_offset_m:", float(args.grasp_target_z_offset_m))
 
         left_current, right_current = read_ee_poses(client)
         print_pose("left0", left_current)

@@ -30,10 +30,110 @@ Safe shell wrapper for the complete task defaults to `dry_run`:
   --artifact-dir /tmp/agentic_skills_pick_tube_insert_rack_full
 ```
 
-In explicitly gated live mode, this wrapper runs tube localization, tail-side
-arm selection, grasp and transition handover, then rack/hole localization,
-insertion, release, and retract. It does not run an unconditional reset. Use
-`--help` to inspect the live gates and per-stage passthrough arguments.
+In explicitly gated live mode, this wrapper captures the head-camera RGB-D frame
+once, inventories all safely localized loose tubes plus the fixed rack, sorts
+tubes by initial image x from left to right, and then repeats tail-side arm
+selection, grasp, transition handover, cached-slot local correction,
+insertion, release, and retract for each cached tube. The cached rack pose is
+reused for every observation move. Live mode defaults to the proven per-insert
+`--wrist-perception-mode legacy-vlm`, which uses the existing wrist
+object-locator VLM+SAM empty-hole method. Treat `cached-grid` as an experimental
+opt-in only. The
+atomic perception and motion skills are not modified. It
+does not run an unconditional reset. Use `--help` to inspect the live gates and
+per-stage passthrough arguments.
+
+After model loading and the complete initial tube/rack inventory, pause before
+the first robot motion and require the operator to press Enter. Print the RGB
+and inventory artifact paths for inspection. Ctrl-C or closed stdin aborts with
+no grasp motion. Require an interactive terminal by default; use
+`--no-wait-before-motion` only for explicitly intended automation.
+
+During a multi-tube live run, a nonzero insertion subprocess is recorded in its
+per-tube log and does not terminate the left-to-right loop; the wrapper processes
+the remaining cached tubes and reports the aggregate failure count at the end.
+If the insertion P2P misses final-pose tolerance but reaches the requested
+downward depth and confirms gripper release plus retract/home cleanup, it is
+reported as `completed_with_insert_tolerance_warning` rather than a stopped task.
+
+By default, a nonzero grasp/handover or insertion subprocess triggers the
+existing full `procedure-robot-reset-home` workflow before the loop advances to
+the next cached tube. Full reset opens both grippers and returns both arms Home,
+so a held tube may be released; each attempt is saved as
+`reset_after_tube_NN_<stage>.log`. The loop resumes only after reset returns
+success. A failed reset stops further robot commands. Use
+`--no-reset-after-error` only when an operator is providing another recovery
+path.
+
+The live wrapper also starts one task-local persistent `facebook/sam-vit-base`
+service before the initial capture. Model loading overlaps the initial camera/VLM
+work, and the same resident model refines every initial tube box and every later
+wrist-camera empty-hole box. This avoids reloading SAM for each object-locator
+subprocess while leaving the atomic object-locator unchanged. The service is
+stopped automatically when the wrapper exits; `sam_cache_ready.json` records its
+PID and preload time. If the cache is unavailable or returns an error, perception
+fails closed instead of continuing without the requested SAM refinement.
+
+At program startup, also start one task-local persistent RealSense service for
+the head camera and every currently enumerated wrist camera. Warm each available
+camera for 30 frames and keep acquiring RGB-D in the background. Read the
+initial inventory from a fresh head frame and run the legacy wrist VLM+SAM hole
+detector on a fresh frame from the matching wrist without reopening the device.
+Require frames to be no older than 500 ms. After robot reset, discard cached
+frames and wait for one new frame from each available camera. Keep the head
+camera mandatory; record a physically absent wrist camera in
+`realsense_cache_ready.json` and fail immediately if that missing side is later
+requested.
+
+Only when explicitly selecting cached-grid, require both wrist RealSense devices
+at persistent-service startup. Cached-grid live execution fails before motion unless
+left serial `347622074336` and right serial `337322072568` both produce fresh
+frames. Each insertion consumes a frame no older than 500 ms, projects the
+reserved cached slot into it, performs local circular-hole and occupancy checks,
+and uses resident SAM for refinement. Low confidence, unreliable depth, or
+uncertain occupancy falls back to VLM+SAM on that exact frame. A corrected XY
+more than 15 mm from the cached slot is rejected. After robot reset, retain the
+service, flush both old frames, and require fresh frames from both sides.
+
+The initial multi-tube inventory is written to `tube_detection.json` and the
+same-frame rack localization to `rack_detection.json` by default. Do not build a
+rack grid in the default legacy path. Experimental cached-grid mode fits the
+fixed 3x4 holes with at least 8 observed centers and at most 4 px RMS, then writes
+`rack_grid.json` and `rack_grid_overlay.jpg`. Number slots row-major in the head
+image as `r1c1` through `r3c4`. Track confirmed slots as
+`empty -> reserved -> occupied/unknown`; never reuse `unknown` during the run.
+Write each wrist decision and timing breakdown to
+`wrist_perception_tube_NN.json`. Compatible
+per-tube object-locator JSON files under `tubes/`. If transparent
+head/tail endpoints lack depth, the existing grasp wrapper falls back to the
+calibrated bbox center while retaining pixel head/tail for arm selection.
+Candidates without either a calibrated bbox center or pixel orientation abort
+the inventory; partial inventory requires the explicit
+`--locator-arg --allow-rejected-candidates` override.
+
+All task-level rack and wrist-hole `object-locator` calls use a camera capture
+watchdog. If no RGB-D capture-ready signal arrives within 3 seconds, the task
+terminates that locator process, waits for its USB handle to be released,
+hardware-resets only the RealSense selected by that locator config, and retries.
+Reset recovery waits 2 seconds for UVC handle release and permits up to 3 reset
+attempts; each attempt gets 15 seconds to produce a frame. VLM/SAM inference time
+starts after capture and is not limited by the 3-second watchdog. Advanced
+overrides are available through `REALSENSE_CAPTURE_WATCHDOG_SEC`,
+`REALSENSE_RESET_COOLDOWN_SEC`, `REALSENSE_RESET_CAPTURE_TIMEOUT_SEC`, and
+`REALSENSE_RESET_MAX_ATTEMPTS`.
+
+Use a strict `0.035 rad` wrist P2P rotation tolerance, matching the vertical
+roll/pitch gate. Keep at most four additional in-place posture corrections and
+retain the 20 mm segmented descent, force checks, settle times, and motion
+speeds. Reports include monotonic capture/reset/inference, XY approach, posture
+correction, and per-descent-segment timings.
+
+Before the first full live run, validate detection without robot motion:
+
+```bash
+scripts/run_full_pick_tube_insert_rack.sh --mode live --execute \
+  --stop-after-inventory --artifact-dir /tmp/tube_inventory_check
+```
 
 ## Live Entry
 
