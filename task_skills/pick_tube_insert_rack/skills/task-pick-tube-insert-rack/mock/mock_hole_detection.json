@@ -1,0 +1,47 @@
+{
+  "found": true,
+  "candidates": [
+    {
+      "label": "hole_A",
+      "confidence": 0.62,
+      "pose": {
+        "frame": "base",
+        "xyz_m": [
+          0.55,
+          0.02,
+          0.012
+        ],
+        "rotvec_rad": null,
+        "source": "mock_hole_A"
+      }
+    },
+    {
+      "label": "hole_B",
+      "confidence": 0.94,
+      "pose": {
+        "frame": "base",
+        "xyz_m": [
+          0.57,
+          0.04,
+          0.012
+        ],
+        "rotvec_rad": null,
+        "source": "mock_hole_B"
+      }
+    },
+    {
+      "label": "hole_C",
+      "confidence": 0.75,
+      "pose": {
+        "frame": "base",
+        "xyz_m": [
+          0.59,
+          0.06,
+          0.012
+        ],
+        "rotvec_rad": null,
+        "source": "mock_hole_C"
+      }
+    }
+  ]
+}

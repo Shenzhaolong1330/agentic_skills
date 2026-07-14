@@ -17,6 +17,7 @@ venv/
 
 # Experiment outputs
 runs/
+logs/
 *.bag
 *.npy
 *.npz

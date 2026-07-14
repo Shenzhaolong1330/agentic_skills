@@ -1,0 +1,7 @@
+{
+  "ok": false,
+  "state": "ABNORMAL",
+  "requires_reset": true,
+  "reset_recommended": true,
+  "source": "mock"
+}

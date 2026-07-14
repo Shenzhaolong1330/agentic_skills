@@ -1,0 +1,7 @@
+{
+  "ok": true,
+  "state": "READY",
+  "requires_reset": false,
+  "reset_recommended": false,
+  "source": "mock"
+}

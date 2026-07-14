@@ -1,0 +1,371 @@
+{
+  "version": "0.1.0",
+  "default_mode": "mock",
+  "artifact_root_default": "/tmp/agentic_skills_runs",
+  "hardware_gate": {
+    "requires_execute": true,
+    "requires_hardware_allowed": true,
+    "requires_operator_token": true,
+    "env_token_name": "AGENTIC_SKILLS_HARDWARE_TOKEN"
+  },
+  "recovery_policy": {
+    "auto_reset_on_abnormal": true,
+    "max_auto_reset_attempts_default": 1,
+    "reset_allowed_as_recovery": true,
+    "resume_after_held_object_reset_default": false
+  },
+  "skills": [
+    {
+      "name": "atomic-perception-locate-object-3d",
+      "layer": "atomic",
+      "path": "atomic_skills/object_locator/skills/atomic-perception-locate-object-3d/SKILL.md",
+      "description": "RealSense/VLM/Grounded-SAM/depth object localization.",
+      "entrypoints": [
+        {
+          "name": "object-locator-json",
+          "path": "atomic_skills/object_locator/.venv/bin/object-locator",
+          "type": "python",
+          "requires_hardware": true,
+          "opens_camera": true,
+          "connects_robot_rpc": false,
+          "moves_robot": false,
+          "controls_gripper": false,
+          "default_safe_to_run": false,
+          "allowed_as_recovery": false,
+          "execute_flag": null,
+          "notes": "Live camera perception; task dry_run records a command plan instead."
+        }
+      ],
+      "inputs_schema_ref": "schemas/common.schema.json#/definitions/DetectionResult",
+      "outputs_schema_ref": "schemas/common.schema.json#/definitions/DetectionResult",
+      "dependencies": [
+        "RealSense",
+        "OpenRouter optional",
+        "calibration/extrinsics.yaml"
+      ],
+      "safety_gates": [
+        "mode live requires HardwareGate for camera access"
+      ],
+      "side_effects": [
+        "opens RealSense pipeline",
+        "writes object_locator runs artifacts"
+      ]
+    },
+    {
+      "name": "atomic-motion-franka-move-to-pose",
+      "layer": "atomic",
+      "path": "atomic_skills/dual_franka_p2p/skills/atomic-motion-franka-move-to-pose/SKILL.md",
+      "description": "Dual Franka base-frame xyz+rotvec P2P motion.",
+      "entrypoints": [
+        {
+          "name": "move_to_pose",
+          "path": "atomic_skills/dual_franka_p2p/skills/atomic-motion-franka-move-to-pose/scripts/move_to_pose.py",
+          "type": "python",
+          "requires_hardware": true,
+          "opens_camera": false,
+          "connects_robot_rpc": true,
+          "moves_robot": true,
+          "controls_gripper": false,
+          "default_safe_to_run": false,
+          "allowed_as_recovery": false,
+          "execute_flag": "--execute",
+          "notes": "Default should be plan-only; live motion requires HardwareGate."
+        }
+      ],
+      "inputs_schema_ref": "schemas/common.schema.json#/definitions/Pose6D",
+      "outputs_schema_ref": "schemas/common.schema.json#/definitions/MotionResult",
+      "dependencies": [
+        "dual_franka_robotiq_rpc_client.py"
+      ],
+      "safety_gates": [
+        "HardwareGate",
+        "pose/error thresholds"
+      ],
+      "side_effects": [
+        "connects robot RPC",
+        "moves robot arms"
+      ]
+    },
+    {
+      "name": "atomic-gripper-franka-open-close",
+      "layer": "atomic",
+      "path": "atomic_skills/dual_franka_gripper/skills/atomic-gripper-franka-open-close/SKILL.md",
+      "description": "Robotiq gripper open/close/initialize/status.",
+      "entrypoints": [
+        {
+          "name": "gripper_control",
+          "path": "atomic_skills/dual_franka_gripper/skills/atomic-gripper-franka-open-close/scripts/gripper_control.py",
+          "type": "python",
+          "requires_hardware": true,
+          "opens_camera": false,
+          "connects_robot_rpc": true,
+          "moves_robot": false,
+          "controls_gripper": true,
+          "default_safe_to_run": false,
+          "allowed_as_recovery": false,
+          "execute_flag": "--execute",
+          "notes": "status is read-only but still connects RPC; open/close require gate."
+        }
+      ],
+      "inputs_schema_ref": "schemas/common.schema.json#/definitions/GripperResult",
+      "outputs_schema_ref": "schemas/common.schema.json#/definitions/GripperResult",
+      "dependencies": [
+        "dual_franka_robotiq_rpc_client.py"
+      ],
+      "safety_gates": [
+        "HardwareGate",
+        "release gate"
+      ],
+      "side_effects": [
+        "connects robot RPC",
+        "controls gripper"
+      ]
+    },
+    {
+      "name": "atomic-state-dual-franka-reset",
+      "layer": "atomic",
+      "path": "atomic_skills/dual_franka_reset/skills/atomic-state-dual-franka-reset/SKILL.md",
+      "description": "Dual Franka health check and guarded reset.",
+      "entrypoints": [
+        {
+          "name": "check_and_reset_status",
+          "path": "atomic_skills/dual_franka_reset/skills/atomic-state-dual-franka-reset/scripts/check_and_reset.py",
+          "type": "python",
+          "requires_hardware": true,
+          "opens_camera": false,
+          "connects_robot_rpc": true,
+          "moves_robot": false,
+          "controls_gripper": false,
+          "default_safe_to_run": false,
+          "allowed_as_recovery": true,
+          "execute_flag": null,
+          "notes": "Use status for live health check; no reset command is sent."
+        },
+        {
+          "name": "check_and_reset_ensure",
+          "path": "atomic_skills/dual_franka_reset/skills/atomic-state-dual-franka-reset/scripts/check_and_reset.py",
+          "type": "python",
+          "requires_hardware": true,
+          "opens_camera": false,
+          "connects_robot_rpc": true,
+          "moves_robot": true,
+          "controls_gripper": true,
+          "default_safe_to_run": false,
+          "allowed_as_recovery": true,
+          "execute_flag": "--execute",
+          "notes": "Preferred AUTO_RESET_RECOVERY entrypoint; may move arms, clear faults, home/reset robot, and alter gripper/object state depending the underlying reset script."
+        }
+      ],
+      "inputs_schema_ref": "schemas/common.schema.json#/definitions/RobotHealthStatus",
+      "outputs_schema_ref": "schemas/common.schema.json#/definitions/ResetRecoveryResult",
+      "dependencies": [
+        "atomic-motion-franka-move-to-pose",
+        "procedure-robot-reset-home"
+      ],
+      "safety_gates": [
+        "HardwareGate",
+        "allowed_as_recovery",
+        "max_auto_reset_attempts"
+      ],
+      "side_effects": [
+        "connects robot RPC",
+        "may move arms",
+        "may clear faults",
+        "may open grippers",
+        "may alter held object state"
+      ]
+    },
+    {
+      "name": "atomic-state-realsense-viewer",
+      "layer": "atomic",
+      "path": "atomic_skills/state_realsense_viewer/skills/atomic-state-realsense-viewer/SKILL.md",
+      "description": "Capture state and RealSense images for supervision/debugging.",
+      "entrypoints": [
+        {
+          "name": "view_state_realsense",
+          "path": "atomic_skills/state_realsense_viewer/skills/atomic-state-realsense-viewer/scripts/view_state_realsense.py",
+          "type": "python",
+          "requires_hardware": true,
+          "opens_camera": true,
+          "connects_robot_rpc": true,
+          "moves_robot": false,
+          "controls_gripper": false,
+          "default_safe_to_run": false,
+          "allowed_as_recovery": false,
+          "execute_flag": null,
+          "notes": "Supervision only; not a default task stage."
+        }
+      ],
+      "inputs_schema_ref": "schemas/common.schema.json",
+      "outputs_schema_ref": "schemas/common.schema.json",
+      "dependencies": [
+        "object_locator",
+        "dual_franka_rpc_client"
+      ],
+      "safety_gates": [
+        "HardwareGate for live camera/RPC"
+      ],
+      "side_effects": [
+        "opens RealSense",
+        "reads robot RPC",
+        "writes runs artifacts"
+      ]
+    },
+    {
+      "name": "procedure-franka-handover-transition",
+      "layer": "procedure",
+      "path": "procedure_skills/dual_franka_handover_transition/skills/procedure-franka-handover-transition/SKILL.md",
+      "description": "Fixed dual-Franka handover transition.",
+      "entrypoints": [
+        {
+          "name": "handover_transition",
+          "path": "procedure_skills/dual_franka_handover_transition/skills/procedure-franka-handover-transition/scripts/handover_transition.py",
+          "type": "python",
+          "requires_hardware": true,
+          "opens_camera": false,
+          "connects_robot_rpc": true,
+          "moves_robot": true,
+          "controls_gripper": true,
+          "default_safe_to_run": false,
+          "allowed_as_recovery": false,
+          "execute_flag": "--execute",
+          "notes": "Task runner must gate partner close and active release."
+        }
+      ],
+      "inputs_schema_ref": "schemas/task_pick_tube_insert_rack.schema.json",
+      "outputs_schema_ref": "schemas/common.schema.json#/definitions/StageResult",
+      "dependencies": [
+        "atomic-motion-franka-move-to-pose",
+        "atomic-gripper-franka-open-close"
+      ],
+      "safety_gates": [
+        "HardwareGate",
+        "handover verification gate"
+      ],
+      "side_effects": [
+        "moves both arms",
+        "closes partner gripper",
+        "opens active gripper"
+      ]
+    },
+    {
+      "name": "procedure-robot-reset-home",
+      "layer": "procedure",
+      "path": "procedure_skills/robot_reset_home/skills/procedure-robot-reset-home/SKILL.md",
+      "description": "Run le_nero robot-reset to return robot home.",
+      "entrypoints": [
+        {
+          "name": "run_robot_reset",
+          "path": "procedure_skills/robot_reset_home/skills/procedure-robot-reset-home/scripts/run_robot_reset.sh",
+          "type": "shell",
+          "requires_hardware": true,
+          "opens_camera": false,
+          "connects_robot_rpc": true,
+          "moves_robot": true,
+          "controls_gripper": true,
+          "default_safe_to_run": false,
+          "allowed_as_recovery": true,
+          "execute_flag": null,
+          "notes": "Script has no own --execute flag; call only through reset guard or HardwareGate fallback. It may move arms and open grippers."
+        }
+      ],
+      "inputs_schema_ref": "schemas/common.schema.json#/definitions/ResetRecoveryResult",
+      "outputs_schema_ref": "schemas/common.schema.json#/definitions/ResetRecoveryResult",
+      "dependencies": [
+        "Le-nero/dual_arm_teleop"
+      ],
+      "safety_gates": [
+        "HardwareGate",
+        "allowed_as_recovery"
+      ],
+      "side_effects": [
+        "moves robot",
+        "may open grippers",
+        "may alter held object state"
+      ]
+    },
+    {
+      "name": "task-pick-tube-insert-rack",
+      "layer": "task",
+      "path": "task_skills/pick_tube_insert_rack/skills/task-pick-tube-insert-rack/SKILL.md",
+      "description": "Task-level pick tube, handover, locate rack/hole, insert, release.",
+      "entrypoints": [
+        {
+          "name": "task_runner",
+          "path": "task_skills/pick_tube_insert_rack/skills/task-pick-tube-insert-rack/scripts/task_pick_tube_insert_rack_runner.py",
+          "type": "python",
+          "requires_hardware": true,
+          "opens_camera": true,
+          "connects_robot_rpc": true,
+          "moves_robot": true,
+          "controls_gripper": true,
+          "default_safe_to_run": true,
+          "allowed_as_recovery": false,
+          "execute_flag": "--execute",
+          "notes": "Default mode is mock/dry_run. Live uses HardwareGate and AUTO_RESET_RECOVERY."
+        },
+        {
+          "name": "task_live_locate_tube",
+          "path": "atomic_skills/object_locator/.venv/bin/object-locator",
+          "type": "python",
+          "requires_hardware": true,
+          "opens_camera": true,
+          "connects_robot_rpc": false,
+          "moves_robot": false,
+          "controls_gripper": false,
+          "default_safe_to_run": false,
+          "allowed_as_recovery": false,
+          "execute_flag": null,
+          "notes": "Task-owned live tube localization; callable only by the gated task runner."
+        },
+        {
+          "name": "task_live_grasp_handover",
+          "path": "task_skills/pick_tube_insert_rack/skills/task-pick-tube-insert-rack/scripts/grasp_right_arm_xyz.sh",
+          "type": "shell",
+          "requires_hardware": true,
+          "opens_camera": false,
+          "connects_robot_rpc": true,
+          "moves_robot": true,
+          "controls_gripper": true,
+          "default_safe_to_run": false,
+          "allowed_as_recovery": false,
+          "execute_flag": "--execute",
+          "notes": "Task-owned grasp and transition handover; callable only by the gated task runner."
+        },
+        {
+          "name": "task_live_insert_flow",
+          "path": "task_skills/pick_tube_insert_rack/skills/task-pick-tube-insert-rack/scripts/run_manual_grip_to_insert.py",
+          "type": "python",
+          "requires_hardware": true,
+          "opens_camera": true,
+          "connects_robot_rpc": true,
+          "moves_robot": true,
+          "controls_gripper": true,
+          "default_safe_to_run": false,
+          "allowed_as_recovery": false,
+          "execute_flag": "--execute",
+          "notes": "Task-owned rack/hole localization, insertion, release, and retract; callable only by the gated task runner."
+        }
+      ],
+      "inputs_schema_ref": "schemas/task_pick_tube_insert_rack.schema.json#/definitions/TaskInputs",
+      "outputs_schema_ref": "schemas/task_pick_tube_insert_rack.schema.json#/definitions/TaskOutputs",
+      "dependencies": [
+        "atomic-perception-locate-object-3d",
+        "atomic-motion-franka-move-to-pose",
+        "atomic-gripper-franka-open-close",
+        "atomic-state-dual-franka-reset",
+        "procedure-franka-handover-transition",
+        "procedure-robot-reset-home"
+      ],
+      "safety_gates": [
+        "HardwareGate",
+        "AUTO_RESET_RECOVERY",
+        "release gate",
+        "held-object reset abort policy"
+      ],
+      "side_effects": [
+        "in live mode may open camera, move robot, control grippers, and reset robot through gated recovery"
+      ]
+    }
+  ]
+}

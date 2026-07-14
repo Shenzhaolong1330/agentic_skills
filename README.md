@@ -40,6 +40,11 @@ agentic_skills/
 当前已有：
 
 - `atomic_skills/object_locator`: atomic perception skill，负责 RealSense / VLM / Grounded-SAM / depth 的目标或部位 3D 定位。
+- `atomic_skills/dual_franka_p2p`: atomic motion skill，负责双 Franka 末端点到点 base-frame xyz+rotvec 运动。
+- `atomic_skills/dual_franka_gripper`: atomic gripper skill，负责双 Franka Robotiq 夹爪开、闭、初始化和状态读取。
+- `procedure_skills/dual_franka_handover_transition`: procedure skill，负责两只手在标定 transition 位姿进行交接。
+- `procedure_skills/robot_reset_home`: procedure skill，在 `le_nero` 环境运行 `robot-reset`，让机械臂回到原位。
+- `task_skills/pick_tube_insert_rack`: task skill，负责定位试管、选择抓取手、抓取并插入试管架。
 
 未来新增目录时使用按类型分组的命名：
 
@@ -124,6 +129,11 @@ task-pick-vial
 ## 现有项目
 
 - [`atomic_skills/object_locator/`](atomic_skills/object_locator/README.md): RealSense D435i RGB-D 目标/部位定位，支持 `grounded_sam`、`color`、`vlm`，可输出相机坐标系和机器人 base 坐标系下的位置。
+- [`atomic_skills/dual_franka_p2p/`](atomic_skills/dual_franka_p2p/): 双 Franka 点到点末端位姿运动。
+- [`atomic_skills/dual_franka_gripper/`](atomic_skills/dual_franka_gripper/): 双 Franka Robotiq 夹爪开闭。
+- [`procedure_skills/dual_franka_handover_transition/`](procedure_skills/dual_franka_handover_transition/): 双手交接 transition 流程。
+- [`procedure_skills/robot_reset_home/`](procedure_skills/robot_reset_home/): 激活 `le_nero` 并运行 `robot-reset` 复位机械臂。
+- [`task_skills/pick_tube_insert_rack/`](task_skills/pick_tube_insert_rack/): 试管抓取并插入试管架任务。
 - [`atomic_skills/object_locator/RUNNING.md`](atomic_skills/object_locator/RUNNING.md): 当前机器的运行笔记和 smoke test 命令。
 - [`docs/conventions.md`](docs/conventions.md): 团队约定、skill 格式和机器人安全边界。
 
@@ -204,3 +214,13 @@ cd atomic_skills/object_locator
 source .venv/bin/activate
 python -m pytest -q
 ```
+
+## Harness / Manifest / Auto Reset Recovery
+
+- [`SKILL_INDEX.md`](SKILL_INDEX.md): 仓库级 skill 路由索引，供 Codex 预加载，避免每次全仓搜索。
+- [`skill_manifest.json`](skill_manifest.json): 机器可读 manifest，声明 entrypoint、硬件副作用和 safety gates。
+- [`schemas/`](schemas/): `Pose6D`、`Error6DoF`、`RobotHealthStatus`、`ResetRecoveryResult`、`TaskResult` 等契约。
+- [`agentic_skills_harness/`](agentic_skills_harness/): manifest loader、HardwareGate、trace writer、command runner、robot health monitor、ResetRecoveryController。
+- [`docs/harness.md`](docs/harness.md): harness 模式、trace、reset recovery 和新增 manifest entry 的说明。
+
+`task_pick_tube_insert_rack_runner.py` 是 `pick_tube_insert_rack` 推荐入口。默认使用 `mock`/`dry_run`，不会打开相机、连接机器人、移动机械臂或控制夹爪。reset 功能没有禁用；live 模式下 abnormal robot state 会自动进入受控 `AUTO_RESET_RECOVERY`。reset 仍是真机动作，必须通过 HardwareGate，并且所有 reset 都写入 trace。持管阶段 reset 后默认 abort，等待对象状态重验证。
