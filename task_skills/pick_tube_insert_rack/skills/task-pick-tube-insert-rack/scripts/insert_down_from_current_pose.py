@@ -127,6 +127,40 @@ def _force_summary(observation: Mapping[str, Any], side: str) -> dict[str, Any]:
     return {"force": arr.tolist(), "force_norm": float(np.linalg.norm(arr))}
 
 
+def _gripper_closed_fraction(observation: Mapping[str, Any], side: str) -> float | None:
+    side_obs = observation.get(f"{side}_arm", {}) if isinstance(observation, Mapping) else {}
+    gripper = side_obs.get("gripper", {}) if isinstance(side_obs, Mapping) else {}
+    try:
+        position = float(gripper["position"])
+        open_position = float(gripper["open_position"])
+        closed_position = float(gripper["closed_position"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    span = closed_position - open_position
+    if not np.isfinite(span) or abs(span) < 1e-9:
+        return None
+    return float(np.clip((position - open_position) / span, 0.0, 1.0))
+
+
+def insertion_warning_is_completed(
+    *,
+    achieved_depth_m: float,
+    requested_depth_m: float,
+    position_tolerance_m: float,
+    release_after_insert: bool,
+    release_confirmed_open: bool,
+    cleanup_path_completed: bool,
+) -> bool:
+    depth_floor = max(0.0, float(requested_depth_m) - float(position_tolerance_m))
+    return bool(
+        np.isfinite(achieved_depth_m)
+        and achieved_depth_m >= depth_floor
+        and release_after_insert
+        and release_confirmed_open
+        and cleanup_path_completed
+    )
+
+
 def compute_insert_down_target_pose(*, current_pose: np.ndarray, insert_depth_m: float) -> np.ndarray:
     depth = float(insert_depth_m)
     if not np.isfinite(depth) or depth < 0.0:
@@ -359,6 +393,12 @@ def main(argv: list[str] | None = None) -> int:
         observation, poses = skill.read_ee_poses(client)
         after_insert = poses[args.side].copy()
         report["after_insert_pose"] = after_insert.tolist()
+        achieved_insert_depth_m = float(current[2] - after_insert[2])
+        report["achieved_insert_depth_m"] = achieved_insert_depth_m
+        report["insert_depth_reached"] = bool(
+            achieved_insert_depth_m
+            >= max(0.0, insert_depth - float(args.position_tolerance_m))
+        )
         report["after_insert_force"] = _force_summary(observation, args.side)
 
         if args.release_after_insert:
@@ -410,11 +450,37 @@ def main(argv: list[str] | None = None) -> int:
         final_observation, final_poses = skill.read_ee_poses(client)
         report["final_pose"] = final_poses[args.side].tolist()
         report["final_force"] = _force_summary(final_observation, args.side)
+        final_closed_fraction = _gripper_closed_fraction(final_observation, args.side)
+        report["final_gripper_closed_fraction"] = final_closed_fraction
+        report["release_confirmed_open"] = bool(
+            final_closed_fraction is not None and final_closed_fraction <= 0.20
+        )
         if not insert_stage_ok:
+            cleanup_path_completed = bool(args.release_after_insert)
+            report["release_cleanup_path_completed"] = cleanup_path_completed
+            if insertion_warning_is_completed(
+                achieved_depth_m=achieved_insert_depth_m,
+                requested_depth_m=insert_depth,
+                position_tolerance_m=args.position_tolerance_m,
+                release_after_insert=bool(args.release_after_insert),
+                release_confirmed_open=bool(report["release_confirmed_open"]),
+                cleanup_path_completed=cleanup_path_completed,
+            ):
+                report["completion_status"] = "completed_with_insert_tolerance_warning"
+                report["completion_flag"] = True
+                report["physical_verified"] = False
+                report["insert_stage_warning"] = (
+                    "P2P final pose tolerance was not met, but requested downward depth was reached "
+                    "and release/retract/home cleanup completed"
+                )
+                report["stopped_reason"] = None
+                print(json.dumps(report, indent=None if args.compact else 2, ensure_ascii=False, default=str))
+                return 0
             report["stopped_reason"] = "insert_down_stage_failed_after_release_cleanup"
-            report["release_cleanup_path_completed"] = bool(args.release_after_insert)
             print(json.dumps(report, indent=None if args.compact else 2, ensure_ascii=False, default=str))
             return 3
+        report["completion_status"] = "complete"
+        report["completion_flag"] = True
         print(json.dumps(report, indent=None if args.compact else 2, ensure_ascii=False, default=str))
         return 0
     finally:

@@ -368,7 +368,17 @@ def _object_locator_invocation(
     executable = any_pose_dir / ".venv" / "bin" / "object-locator"
     if not executable.exists():
         raise FileNotFoundError(f"object-locator executable does not exist: {executable}")
-    command = [str(executable), "--config", str(config), "--json"]
+    sam_socket = os.environ.get("TASK_PICK_TUBE_SAM_SOCKET")
+    if sam_socket:
+        wrapper = Path(__file__).with_name("object_locator_with_sam_cache.py")
+        python = any_pose_dir / ".venv" / "bin" / "python"
+        if not wrapper.exists() or not python.exists():
+            raise FileNotFoundError(
+                f"persistent SAM wrapper is unavailable: wrapper={wrapper}, python={python}"
+            )
+        command = [str(python), str(wrapper), "--config", str(config), "--json"]
+    else:
+        command = [str(executable), "--config", str(config), "--json"]
     if extra_args:
         command.extend(extra_args)
     env = dict(os.environ)
@@ -411,23 +421,128 @@ def _parse_object_locator_result(
         raise RuntimeError(f"object-locator did not return JSON: {stdout[:500]}") from exc
 
 
+def _capture_watchdog_seconds(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    value = default if raw is None else float(raw)
+    if not np.isfinite(value) or value <= 0.0:
+        raise ValueError(f"{name} must be a positive finite number, got {raw!r}")
+    return float(value)
+
+
+def _capture_watchdog_attempts(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    value = default if raw is None else int(raw)
+    if value < 1:
+        raise ValueError(f"{name} must be >= 1, got {raw!r}")
+    return int(value)
+
+
+def recover_object_locator_after_camera_reset(
+    any_pose_dir: Path,
+    config_path: Path,
+    capture_ready_file: Path,
+) -> tuple[PendingObjectLocator, dict[str, Any]]:
+    """Retry capture with forced hardware reset, tolerating delayed UVC release."""
+    recovery_sec = _capture_watchdog_seconds("REALSENSE_RESET_CAPTURE_TIMEOUT_SEC", 15.0)
+    cooldown_sec = _capture_watchdog_seconds("REALSENSE_RESET_COOLDOWN_SEC", 2.0)
+    max_attempts = _capture_watchdog_attempts("REALSENSE_RESET_MAX_ATTEMPTS", 3)
+    last_error: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        print(
+            f"[tube-insertion] waiting {cooldown_sec:.1f}s for RealSense USB handle release "
+            f"before reset attempt {attempt}/{max_attempts}",
+            file=sys.stderr,
+            flush=True,
+        )
+        time.sleep(cooldown_sec)
+        pending = start_object_locator_after_capture_signal(
+            any_pose_dir,
+            config_path,
+            capture_ready_file,
+            extra_args=["--reset-realsense"],
+        )
+        try:
+            capture_status = wait_for_object_locator_capture(
+                pending,
+                timeout_sec=recovery_sec,
+            )
+        except Exception as exc:
+            last_error = exc
+            cancel_pending_object_locator(pending)
+            print(
+                f"[tube-insertion] RealSense reset attempt {attempt}/{max_attempts} failed: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+            continue
+        print(
+            f"[tube-insertion] RealSense recovered on reset attempt {attempt}/{max_attempts}; "
+            "continuing inference",
+            file=sys.stderr,
+            flush=True,
+        )
+        return pending, capture_status
+    raise RuntimeError(
+        f"RealSense did not recover after {max_attempts} forced reset attempt(s) "
+        f"for config={config_path}: {last_error}"
+    ) from last_error
+
+
 def run_object_locator(any_pose_dir: Path, config_path: Path) -> dict[str, Any]:
-    command, env = _object_locator_invocation(any_pose_dir, config_path)
-    completed = subprocess.run(
-        command,
-        cwd=str(any_pose_dir),
-        env=env,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
-    return _parse_object_locator_result(
-        command=command,
-        returncode=int(completed.returncode),
-        stdout=completed.stdout,
-        stderr=completed.stderr,
-    )
+    """Run locator with a camera-only watchdog and one forced-reset retry.
+
+    The short watchdog covers only RGB-D capture. Once capture_ready is written,
+    VLM/SAM inference may take its normal configured amount of time.
+    """
+    watchdog_sec = _capture_watchdog_seconds("REALSENSE_CAPTURE_WATCHDOG_SEC", 3.0)
+    signal_dir = Path("/tmp/agentic_skills_runs/object_locator_capture_watchdog")
+    signal_file = signal_dir / f"capture_ready_{os.getpid()}_{time.time_ns()}.json"
+
+    def start(*, reset_realsense: bool) -> PendingObjectLocator:
+        extra_args = ["--reset-realsense"] if reset_realsense else None
+        return start_object_locator_after_capture_signal(
+            any_pose_dir,
+            config_path,
+            signal_file,
+            extra_args=extra_args,
+        )
+
+    total_started = time.monotonic()
+    reset_started: float | None = None
+    capture_status: dict[str, Any] | None = None
+    reset_attempted = False
+    pending = start(reset_realsense=False)
+    try:
+        try:
+            capture_status = wait_for_object_locator_capture(pending, timeout_sec=watchdog_sec)
+        except TimeoutError:
+            reset_attempted = True
+            reset_started = time.monotonic()
+            cancel_pending_object_locator(pending)
+            print(
+                f"[tube-insertion] RealSense produced no frame within {watchdog_sec:.1f}s; "
+                f"forcing camera reset and retry for config={config_path}",
+                file=sys.stderr,
+                flush=True,
+            )
+            pending, capture_status = recover_object_locator_after_camera_reset(
+                any_pose_dir,
+                config_path,
+                signal_file,
+            )
+        inference_started = time.monotonic()
+        result = finish_pending_object_locator(pending)
+        timings = {
+            "capture": None if capture_status is None else float(capture_status.get("wait_sec", 0.0)),
+            "reset_recovery": 0.0 if reset_started is None else inference_started - reset_started,
+            "inference_after_capture": time.monotonic() - inference_started,
+            "total": time.monotonic() - total_started,
+            "reset_attempted": reset_attempted,
+        }
+        result["task_timings_sec"] = timings
+        return result
+    finally:
+        signal_file.unlink(missing_ok=True)
 
 
 @dataclass
@@ -442,13 +557,18 @@ def start_object_locator_after_capture_signal(
     any_pose_dir: Path,
     config_path: Path,
     capture_ready_file: Path,
+    *,
+    extra_args: list[str] | None = None,
 ) -> PendingObjectLocator:
     capture_ready_file.parent.mkdir(parents=True, exist_ok=True)
     capture_ready_file.unlink(missing_ok=True)
+    invocation_args = ["--capture-ready-file", str(capture_ready_file)]
+    if extra_args:
+        invocation_args.extend(extra_args)
     command, env = _object_locator_invocation(
         any_pose_dir,
         config_path,
-        extra_args=["--capture-ready-file", str(capture_ready_file)],
+        extra_args=invocation_args,
     )
     process = subprocess.Popen(
         command,
@@ -806,6 +926,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--rack-config", type=Path, default=ANY_POSE_DIR / "config_rack_center_vlm.yaml")
     parser.add_argument(
+        "--rack-result-json",
+        type=Path,
+        default=None,
+        help="Cached initial rack localization; skip head-camera capture and rack VLM inference.",
+    )
+    parser.add_argument(
         "--no-parallel-rack-localization",
         action="store_false",
         dest="parallel_rack_localization",
@@ -815,8 +941,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--rack-capture-ready-timeout-sec",
         type=float,
-        default=120.0,
-        help="Maximum wait for the head camera frame to be fixed before robot preparation starts.",
+        default=3.0,
+        help="Head-camera no-frame watchdog before a forced RealSense reset (default: 3 seconds).",
     )
     parser.add_argument("--left-hole-config", type=Path, default=DEFAULT_HOLE_CONFIG["left"])
     parser.add_argument("--right-hole-config", type=Path, default=DEFAULT_HOLE_CONFIG["right"])
@@ -1090,12 +1216,31 @@ def main(argv: list[str] | None = None) -> int:
             )
         report["axis_alignment"] = axis_alignment
 
+        cached_rack = args.rack_result_json is not None
         rack_concurrency: dict[str, Any] = {
-            "enabled": bool(args.parallel_rack_localization),
-            "mode": "capture_then_parallel_inference" if args.parallel_rack_localization else "serial",
+            "enabled": bool(args.parallel_rack_localization and not cached_rack),
+            "mode": (
+                "cached_initial_artifact"
+                if cached_rack
+                else "capture_then_parallel_inference"
+                if args.parallel_rack_localization
+                else "serial"
+            ),
         }
         report["rack_localization_concurrency"] = rack_concurrency
-        if args.parallel_rack_localization:
+        if cached_rack:
+            rack_concurrency.update(
+                {
+                    "rack_result_json": str(args.rack_result_json),
+                    "head_camera_capture_skipped": True,
+                }
+            )
+            print(
+                f"[tube-insertion] using cached initial rack detection: {args.rack_result_json}",
+                file=sys.stderr,
+                flush=True,
+            )
+        elif args.parallel_rack_localization:
             rack_capture_ready_file = args.artifact_dir / (
                 f"rack_capture_ready_{os.getpid()}_{time.time_ns()}.json"
             )
@@ -1109,10 +1254,24 @@ def main(argv: list[str] | None = None) -> int:
                 args.rack_config,
                 rack_capture_ready_file,
             )
-            capture_status = wait_for_object_locator_capture(
-                pending_rack_locator,
-                timeout_sec=args.rack_capture_ready_timeout_sec,
-            )
+            try:
+                capture_status = wait_for_object_locator_capture(
+                    pending_rack_locator,
+                    timeout_sec=args.rack_capture_ready_timeout_sec,
+                )
+            except TimeoutError:
+                cancel_pending_object_locator(pending_rack_locator)
+                print(
+                    f"[tube-insertion] head RealSense produced no frame within "
+                    f"{args.rack_capture_ready_timeout_sec:.1f}s; forcing reset",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                pending_rack_locator, capture_status = recover_object_locator_after_camera_reset(
+                    args.any_pose_dir,
+                    args.rack_config,
+                    rack_capture_ready_file,
+                )
             rack_concurrency.update(
                 {
                     "capture_ready_before_robot_motion": True,
@@ -1193,7 +1352,9 @@ def main(argv: list[str] | None = None) -> int:
             axis_alignment["tcp_rotvec_after_align_actual"] = holder_pose[3:].tolist()
             axis_alignment["posture_target_reused_after_align"] = True
 
-        if pending_rack_locator is None:
+        if args.rack_result_json is not None:
+            rack_result = load_result_json(args.rack_result_json)
+        elif pending_rack_locator is None:
             rack_result = run_object_locator(args.any_pose_dir, args.rack_config)
         else:
             post_preparation_wait_started = time.monotonic()
@@ -1213,6 +1374,8 @@ def main(argv: list[str] | None = None) -> int:
             rack_plane_z_base_m=args.rack_plane_z_base_m,
         )
         report["rack"] = {
+            "source": "cached_initial_artifact" if args.rack_result_json is not None else "live_head_detection",
+            "rack_result_json": None if args.rack_result_json is None else str(args.rack_result_json),
             "position_base_m": rack_base.tolist(),
             "position_base_for_motion_m": rack_base_for_motion.tolist(),
             "rack_plane_z_base_m": None if args.rack_plane_z_base_m is None else float(args.rack_plane_z_base_m),
