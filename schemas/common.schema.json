@@ -1,0 +1,399 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "common.schema.json",
+  "title": "agentic_skills common schemas",
+  "definitions": {
+    "Pose6D": {
+      "type": "object",
+      "required": [
+        "frame",
+        "xyz_m",
+        "source"
+      ],
+      "properties": {
+        "frame": {
+          "type": "string"
+        },
+        "xyz_m": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "rotvec_rad": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 3,
+              "maxItems": 3
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rpy_rad": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 3,
+              "maxItems": 3
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "quaternion_xyzw": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 4,
+              "maxItems": 4
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source": {
+          "type": "string"
+        },
+        "timestamp": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "confidence": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "quality": {
+          "type": [
+            "object",
+            "null"
+          ]
+        }
+      }
+    },
+    "Error6DoF": {
+      "type": "object",
+      "required": [
+        "translation_m",
+        "rotation_rad",
+        "translation_threshold_m",
+        "rotation_threshold_rad",
+        "within_threshold",
+        "source"
+      ],
+      "properties": {
+        "translation_m": {
+          "type": "number"
+        },
+        "rotation_rad": {
+          "type": "number"
+        },
+        "translation_threshold_m": {
+          "type": "number"
+        },
+        "rotation_threshold_rad": {
+          "type": "number"
+        },
+        "within_threshold": {
+          "type": "boolean"
+        },
+        "source": {
+          "type": "string"
+        }
+      }
+    },
+    "DetectionResult": {
+      "type": "object",
+      "required": [
+        "found",
+        "confidence"
+      ],
+      "properties": {
+        "found": {
+          "type": "boolean"
+        },
+        "label": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "confidence": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "pose": {
+          "$ref": "#/definitions/Pose6D"
+        },
+        "points_base": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "bbox_px": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "orientation": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "raw_artifact": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "MotionResult": {
+      "type": "object",
+      "required": [
+        "ok",
+        "executed"
+      ],
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "command": {
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "executed": {
+          "type": "boolean"
+        },
+        "final_error": {
+          "$ref": "#/definitions/Error6DoF"
+        },
+        "abnormal_robot_state_detected": {
+          "type": "boolean"
+        },
+        "raw_result": {
+          "type": [
+            "object",
+            "null"
+          ]
+        }
+      }
+    },
+    "GripperResult": {
+      "type": "object",
+      "required": [
+        "ok",
+        "side",
+        "command",
+        "executed"
+      ],
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "side": {
+          "type": "string"
+        },
+        "command": {
+          "type": "string"
+        },
+        "executed": {
+          "type": "boolean"
+        },
+        "object_present": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "abnormal_robot_state_detected": {
+          "type": "boolean"
+        },
+        "raw_result": {
+          "type": [
+            "object",
+            "null"
+          ]
+        }
+      }
+    },
+    "RobotHealthStatus": {
+      "type": "object",
+      "required": [
+        "ok",
+        "state",
+        "source",
+        "requires_reset",
+        "reset_recommended"
+      ],
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "state": {
+          "enum": [
+            "UNKNOWN",
+            "READY",
+            "WARNING",
+            "ABNORMAL",
+            "FAULT",
+            "ESTOP_OR_UNSAFE",
+            "UNREACHABLE"
+          ]
+        },
+        "source": {
+          "type": "string"
+        },
+        "checked_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "raw_result": {
+          "type": [
+            "object",
+            "string",
+            "null"
+          ]
+        },
+        "errors": {
+          "type": "array"
+        },
+        "warnings": {
+          "type": "array"
+        },
+        "requires_reset": {
+          "type": "boolean"
+        },
+        "reset_recommended": {
+          "type": "boolean"
+        },
+        "reset_blocked_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "ResetRecoveryResult": {
+      "type": "object",
+      "required": [
+        "ok",
+        "outcome",
+        "attempted",
+        "executed",
+        "planned_only",
+        "attempt_index",
+        "max_attempts"
+      ],
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "outcome": {
+          "enum": [
+            "NOT_NEEDED",
+            "PLANNED_ONLY",
+            "MOCK_RESET_OK",
+            "RESET_OK",
+            "RESET_FAILED",
+            "RESET_DENIED_BY_GATE",
+            "RESET_SKIPPED_HELD_OBJECT_POLICY",
+            "RESET_EXCEEDED_MAX_ATTEMPTS"
+          ]
+        },
+        "attempted": {
+          "type": "boolean"
+        },
+        "executed": {
+          "type": "boolean"
+        },
+        "planned_only": {
+          "type": "boolean"
+        },
+        "before_health": {
+          "$ref": "#/definitions/RobotHealthStatus"
+        },
+        "after_health": {
+          "$ref": "#/definitions/RobotHealthStatus"
+        },
+        "command": {
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "gate_decision": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "attempt_index": {
+          "type": "integer"
+        },
+        "max_attempts": {
+          "type": "integer"
+        },
+        "held_object_state": {
+          "type": "string"
+        },
+        "held_object_risk": {
+          "type": "boolean"
+        },
+        "resumed_after_reset": {
+          "type": "boolean"
+        },
+        "aborted_after_reset": {
+          "type": "boolean"
+        },
+        "errors": {
+          "type": "array"
+        },
+        "warnings": {
+          "type": "array"
+        },
+        "artifacts": {
+          "type": "object"
+        }
+      }
+    },
+    "StageResult": {
+      "type": "object"
+    },
+    "SkillContext": {
+      "type": "object"
+    },
+    "TaskResult": {
+      "type": "object"
+    }
+  }
+}

@@ -1,0 +1,238 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "task_pick_tube_insert_rack.schema.json",
+  "title": "pick_tube_insert_rack task schema",
+  "definitions": {
+    "TaskState": {
+      "enum": [
+        "INIT",
+        "PREFLIGHT_ROBOT_HEALTH_CHECK",
+        "AUTO_RESET_RECOVERY",
+        "RESET_RECOVERY_VERIFY",
+        "LOCATE_TUBE",
+        "SELECT_ARM",
+        "MOVE_TO_PREGRASP",
+        "ALIGN_GRASP_POSE",
+        "GRASP_TUBE_BODY",
+        "HANDOVER",
+        "LOCATE_RACK",
+        "NON_HOLDER_HOME",
+        "HOLDER_ALIGN_RACK_ABOVE",
+        "WRIST_LOCATE_HOLE",
+        "SELECT_HOLE",
+        "INSERT_ALIGN_REFINE",
+        "INSERT_DESCEND",
+        "RELEASE",
+        "RETURN_HOME",
+        "POST_STAGE_ROBOT_HEALTH_CHECK",
+        "COMPLETE",
+        "ABORT"
+      ]
+    },
+    "TaskInputs": {
+      "type": "object",
+      "properties": {
+        "tube_result_json": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rack_result_json": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "hole_result_json": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "robot_health_json": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mode": {
+          "enum": [
+            "mock",
+            "dry_run",
+            "from_artifacts",
+            "live"
+          ]
+        },
+        "artifact_dir": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "thresholds": {
+          "type": "object"
+        },
+        "max_refine_retries": {
+          "type": "integer",
+          "default": 3
+        },
+        "max_auto_reset_attempts": {
+          "type": "integer",
+          "default": 1
+        },
+        "auto_reset_on_abnormal": {
+          "type": "boolean",
+          "default": true
+        },
+        "resume_after_held_object_reset": {
+          "type": "boolean",
+          "default": false
+        },
+        "allowed_arms": {
+          "type": "array"
+        },
+        "handover_pose_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "configs": {
+          "type": "object"
+        }
+      }
+    },
+    "TaskOutputs": {
+      "type": "object",
+      "properties": {
+        "tube_pose": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "tube_xyz": {
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "tube_mouth_direction": {
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "tube_body_axis": {
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "selected_arm": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "opposite_arm": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pregrasp_pose": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "grasp_pose": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "handover_pose": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "rack_pose": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "empty_hole_candidates": {
+          "type": "array"
+        },
+        "selected_hole_pose": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "hole_confidence": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "wrist_camera_pose": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "error_xyz": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "error_rot": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "error_6dof": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "retry_count": {
+          "type": "integer"
+        },
+        "task_state": {
+          "$ref": "#/definitions/TaskState"
+        },
+        "held_object_state": {
+          "type": "string"
+        },
+        "robot_health": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "reset_recovery": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "completion_flag": {
+          "type": "boolean"
+        },
+        "physical_verified": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

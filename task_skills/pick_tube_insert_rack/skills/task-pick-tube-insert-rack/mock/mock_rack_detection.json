@@ -1,0 +1,26 @@
+{
+  "found": true,
+  "detection": {
+    "found": true,
+    "label": "black test tube rack",
+    "confidence": 0.88
+  },
+  "position_base": {
+    "available": true,
+    "frame": "base",
+    "x_m": 0.56,
+    "y_m": 0.04,
+    "z_m": 0.01
+  },
+  "pose": {
+    "frame": "base",
+    "xyz_m": [
+      0.56,
+      0.04,
+      0.01
+    ],
+    "rotvec_rad": null,
+    "source": "mock_rack_detection",
+    "confidence": 0.88
+  }
+}

@@ -1,0 +1,58 @@
+{
+  "found": true,
+  "target": "leftmost loose test tube",
+  "detection": {
+    "found": true,
+    "label": "test tube",
+    "confidence": 0.91,
+    "bbox": {
+      "x_min": 100,
+      "y_min": 200,
+      "x_max": 180,
+      "y_max": 230
+    }
+  },
+  "position_base": {
+    "available": true,
+    "frame": "base",
+    "x_m": 0.45,
+    "y_m": -0.04,
+    "z_m": 0.025
+  },
+  "points_base": {
+    "available": true,
+    "frame": "base",
+    "head": {
+      "x_m": 0.48,
+      "y_m": 0.02,
+      "z_m": 0.025
+    },
+    "tail": {
+      "x_m": 0.42,
+      "y_m": -0.06,
+      "z_m": 0.025
+    },
+    "tail_to_head_1_5": {
+      "x_m": 0.45,
+      "y_m": -0.02,
+      "z_m": 0.025
+    },
+    "bbox_center": {
+      "x_m": 0.45,
+      "y_m": -0.02,
+      "z_m": 0.025
+    }
+  },
+  "orientation": {
+    "head_px": {
+      "x": 170,
+      "y": 210
+    },
+    "tail_px": {
+      "x": 110,
+      "y": 220
+    },
+    "definition": "tail_px -> head_px; points toward tube mouth/head"
+  },
+  "source": "mock"
+}

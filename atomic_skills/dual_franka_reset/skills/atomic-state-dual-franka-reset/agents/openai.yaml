@@ -1,0 +1,4 @@
+interface:
+  display_name: "Dual Franka Conditional Reset"
+  short_description: "Check dual Franka faults and reset when needed"
+  default_prompt: "Use $atomic-state-dual-franka-reset to inspect the dual Franka state and run robot-reset only when recovery is needed."
