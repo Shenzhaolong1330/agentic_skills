@@ -142,7 +142,6 @@ case "$WRIST_PERCEPTION_MODE" in
     cached-grid|legacy-vlm) ;;
     *) printf 'ERROR: unsupported wrist perception mode: %s\n' "$WRIST_PERCEPTION_MODE" >&2; exit 2 ;;
 esac
-
 if [[ "$MODE" != "live" ]]; then
     if [[ "$EXECUTE" == "1" || "$STOP_AFTER_INVENTORY" == "1" ]]; then
         printf 'ERROR: execution and hardware gate flags are only valid with --mode live\n' >&2

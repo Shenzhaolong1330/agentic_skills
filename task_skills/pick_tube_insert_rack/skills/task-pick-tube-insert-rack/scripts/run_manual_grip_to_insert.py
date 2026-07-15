@@ -170,6 +170,38 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--wrist-max-posture-correction-iters", type=int, default=4)
 
     parser.add_argument("--insert-depth-m", type=float, default=0.055)
+    parser.add_argument(
+        "--near-insert-depth-tolerance-m",
+        type=float,
+        default=0.008,
+        help=(
+            "Accept a force-safe insertion within this additional depth slack as "
+            "completion-with-warning; no insertion retry is performed."
+        ),
+    )
+    parser.add_argument("--insert-rate-hz", type=float, default=50.0)
+    parser.add_argument("--insert-max-translation-speed", type=float, default=0.01)
+    parser.add_argument("--insert-max-translation-step", type=float, default=0.001)
+    parser.add_argument("--insert-position-tolerance-m", type=float, default=0.006)
+    parser.add_argument("--insert-settle-time-sec", type=float, default=0.8)
+    parser.add_argument(
+        "--insert-max-correction-iters",
+        type=int,
+        default=3,
+        help="Maximum force-monitored P2P tolerance corrections after the initial descent.",
+    )
+    parser.add_argument(
+        "--no-monitor-insert-force",
+        action="store_false",
+        dest="monitor_insert_force",
+        default=True,
+        help="Disable stepwise force monitoring during insertion descent.",
+    )
+    parser.add_argument("--insert-force-step-m", type=float, default=0.0005)
+    parser.add_argument("--max-insert-force-delta-n", type=float, default=12.0)
+    parser.add_argument("--max-insert-lateral-force-delta-n", type=float, default=4.0)
+    parser.add_argument("--seated-axial-force-delta-n", type=float, default=6.0)
+    parser.add_argument("--seated-min-depth-m", type=float, default=0.003)
     parser.add_argument("--retract-after-release-m", type=float, default=0.06)
     parser.add_argument(
         "--no-home-after-insert",
@@ -180,10 +212,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--home-after-insert-duration-sec", type=float, default=4.0)
     parser.add_argument("--home-after-insert-rate-hz", type=float, default=50.0)
-    parser.add_argument("--insert-rate-hz", type=float, default=50.0)
-    parser.add_argument("--insert-max-translation-speed", type=float, default=0.01)
-    parser.add_argument("--insert-max-translation-step", type=float, default=0.001)
-    parser.add_argument("--insert-position-tolerance-m", type=float, default=0.006)
     parser.add_argument("--retract-max-translation-speed", type=float, default=0.05)
     parser.add_argument("--retract-max-rotation-speed", type=float, default=0.2)
     parser.add_argument("--retract-max-translation-step", type=float, default=0.002)
@@ -400,6 +428,8 @@ def build_stage_commands(args: argparse.Namespace, *, holder_side: str) -> list[
         *_maybe_execute(args),
         "--insert-depth-m",
         _str(args.insert_depth_m),
+        "--near-insert-depth-tolerance-m",
+        _str(args.near_insert_depth_tolerance_m),
         "--retract-after-release-m",
         _str(args.retract_after_release_m),
         "--rate-hz",
@@ -410,6 +440,10 @@ def build_stage_commands(args: argparse.Namespace, *, holder_side: str) -> list[
         _str(args.insert_max_translation_step),
         "--position-tolerance-m",
         _str(args.insert_position_tolerance_m),
+        "--settle-time-sec",
+        _str(args.insert_settle_time_sec),
+        "--max-correction-iters",
+        _str(args.insert_max_correction_iters),
         "--retract-max-translation-speed",
         _str(args.retract_max_translation_speed),
         "--retract-max-rotation-speed",
@@ -421,6 +455,22 @@ def build_stage_commands(args: argparse.Namespace, *, holder_side: str) -> list[
         "--retract-settle-time-sec",
         _str(args.retract_settle_time_sec),
     ]
+    if args.monitor_insert_force:
+        insert_argv.extend(
+            [
+                "--monitor-force-during-insert",
+                "--insert-force-step-m",
+                _str(args.insert_force_step_m),
+                "--max-insert-force-delta-n",
+                _str(args.max_insert_force_delta_n),
+                "--max-insert-lateral-force-delta-n",
+                _str(args.max_insert_lateral_force_delta_n),
+                "--seated-axial-force-delta-n",
+                _str(args.seated_axial_force_delta_n),
+                "--seated-min-depth-m",
+                _str(args.seated_min_depth_m),
+            ]
+        )
     if args.release_after_insert:
         insert_argv.append("--release-after-insert")
     if args.home_after_insert:
@@ -757,6 +807,18 @@ def _insert_down_error(stage_report: Mapping[str, Any], side: str) -> dict[str, 
     segment_errors: list[dict[str, Any]] = []
     for stage in stages:
         stage_mapping = _mapping(stage)
+        if str(stage_mapping.get("stage", "")).startswith(f"guarded_insert_{side}_vertical"):
+            samples = stage_mapping.get("samples", [])
+            last_sample = _mapping(samples[-1]) if isinstance(samples, list) and samples else {}
+            return {
+                "guarded_insert": {
+                    "ok": stage_mapping.get("ok"),
+                    "stopped_reason": stage_mapping.get("stopped_reason"),
+                    "insert_success_kind": stage_mapping.get("insert_success_kind"),
+                    "sample_count": len(samples) if isinstance(samples, list) else None,
+                    "last_sample": last_sample,
+                }
+            }
         if str(stage_mapping.get("stage", "")).startswith(f"insert_{side}_straight_down"):
             segment_errors.append(
                 {
@@ -787,8 +849,10 @@ def maybe_print_requested_error(stage_report: Mapping[str, Any], side: str) -> N
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if args.home_after_insert and not args.release_after_insert:
-        raise ValueError("--no-release-after-insert requires --no-home-after-insert")
+    if args.insert_max_correction_iters < 0:
+        raise ValueError("--insert-max-correction-iters must be non-negative")
+    if not math.isfinite(args.insert_settle_time_sec) or args.insert_settle_time_sec < 0.0:
+        raise ValueError("--insert-settle-time-sec must be a non-negative finite value")
     set_log_file(
         args.log_file if args.log_file is not None else default_log_file(),
         truncate=args.log_file is None,
@@ -871,6 +935,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     commands = build_stage_commands(args, holder_side=decision["side"])
+    insertion_attempts = 0
     for command_index in range(len(commands)):
         command = commands[command_index]
         try:
@@ -883,6 +948,9 @@ def main(argv: list[str] | None = None) -> int:
             _write_log_file(traceback_text.rstrip("\n"))
             print_report(report, compact=args.compact)
             return 1
+        if command.name == "insert_release_retract":
+            insertion_attempts += 1
+            stage_report["attempt"] = insertion_attempts
         report["stages"].append(stage_report)
         maybe_print_requested_error(stage_report, decision["side"])
         if stage_report["returncode"] != 0:

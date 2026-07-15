@@ -430,7 +430,6 @@ def _detected_position_camera(result: Mapping[str, Any]) -> np.ndarray | None:
 
 
 _BBOX_CORNER_KEYS = ("bbox_x1_y1", "bbox_x2_y1", "bbox_x1_y2", "bbox_x2_y2")
-_BBOX_DIAGONAL_CORNER_PAIRS = (("bbox_x1_y1", "bbox_x2_y2"), ("bbox_x2_y1", "bbox_x1_y2"))
 _POINT_BASE_VARIANT_KEYS = ("base", "flange_T_camera", "baseright", "baseleft")
 
 
@@ -483,18 +482,11 @@ def bbox_corner_center_base_from_detection(result: Mapping[str, Any]) -> tuple[n
         report.update({"ok": True, "source": "bbox_4_corner_points", "used_corner_keys": list(_BBOX_CORNER_KEYS)})
         return center, report
 
-    for pair in _BBOX_DIAGONAL_CORNER_PAIRS:
-        first, second = points[pair[0]], points[pair[1]]
-        if first is not None and second is not None:
-            center = (first + second) * 0.5
-            report.update({"ok": True, "source": "bbox_diagonal_corner_points", "used_corner_keys": list(pair)})
-            return center, report
-
     report.update(
         {
             "ok": False,
             "source": "bbox_corner_points_unavailable",
-            "reason": "need all four bbox corners or one complete diagonal corner pair",
+            "reason": "need all four bbox corners",
         }
     )
     return None, report
@@ -530,6 +522,22 @@ def resolve_hole_base_for_target(
     plane_z_override = _finite_float(rack_plane_z_base_m)
     if rack_plane_z_base_m is not None and plane_z_override is None:
         raise ValueError(f"--rack-plane-z-base-m must be finite, got {rack_plane_z_base_m!r}")
+
+    if corner_base is not None:
+        pose = np.asarray(current_pose, dtype=float).reshape(6)
+        report.update(
+            {
+                "source": "bbox-4-corner-average",
+                "plane_z_base_m": float(corner_base[2]),
+                "current_tcp_z_m": float(pose[2]),
+                "current_standoff_m": float(pose[2] - corner_base[2]),
+                "ray_plane_used": False,
+                "fallback_used": False,
+                "corner_average_used": True,
+                "ignored_object_locator_base_points": bool(detected_base is not None),
+            }
+        )
+        return corner_base, report
 
     if hole_plane_z_source == "detected-depth":
         depth_failure_reasons = list(quality["reasons"])

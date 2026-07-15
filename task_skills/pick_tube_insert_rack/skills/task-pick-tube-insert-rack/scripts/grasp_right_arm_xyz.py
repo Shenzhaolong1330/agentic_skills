@@ -197,6 +197,42 @@ def build_parser() -> argparse.ArgumentParser:
         default=1,
         help="Full same-target P2P retries after an attempt finishes outside the configured pose tolerances.",
     )
+    parser.add_argument(
+        "--recover-stalled-controller",
+        action="store_true",
+        help=(
+            "Before grasping, restart the active arm Cartesian controller when a failed P2P attempt "
+            "produces essentially no observed motion, then retry the same absolute target."
+        ),
+    )
+    parser.add_argument(
+        "--controller-stall-translation-epsilon-m",
+        type=float,
+        default=0.0005,
+        help="Maximum observed translation counted as no progress for controller-stall recovery.",
+    )
+    parser.add_argument(
+        "--controller-stall-rotation-epsilon-rad",
+        type=float,
+        default=0.005,
+        help="Maximum observed rotation counted as no progress for controller-stall recovery.",
+    )
+    parser.add_argument(
+        "--controller-recovery-settle-time-sec",
+        type=float,
+        default=1.0,
+        help="Wait after recover_robot restarts the selected Cartesian controller.",
+    )
+    parser.add_argument(
+        "--max-stalled-correction-iters",
+        type=parse_nonnegative_int,
+        default=1,
+        help=(
+            "Return early from an active-arm P2P attempt after this many consecutive no-progress "
+            "observations, so controller recovery does not wait for every tolerance correction. "
+            "Use 0 to disable early stall return."
+        ),
+    )
     parser.add_argument("--max_steps", "--max-steps", dest="max_steps", type=int, default=3000)
     parser.add_argument("--down_pitch_rad", "--down-pitch-rad", dest="down_pitch_rad", type=float, default=0.0)
     parser.add_argument(
@@ -250,6 +286,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-transfer-release",
         action="store_true",
         help="Do not close the partner gripper and open the grasping gripper after returning to transition.",
+    )
+    parser.add_argument(
+        "--stop-after-partner-close",
+        action="store_true",
+        help=(
+            "After returning to transition, close the partner gripper, open the active grasping "
+            "gripper, then stop."
+        ),
+    )
+    parser.add_argument(
+        "--stop-before-partner-close",
+        action="store_true",
+        help="After returning to transition, stop before closing the partner gripper.",
     )
     parser.add_argument("--no-reanchor", action="store_true", help="Do not call step(None) before each stage.")
     parser.add_argument("--execute", action="store_true", help="Actually connect RPC, move robot, and control gripper. Default is plan-only.")
@@ -500,6 +549,7 @@ def move_stage(
     settle_time_sec: float | None = None,
     arrival_observed_z_offset_side: str | None = None,
     arrival_observed_z_offset_m: float = 0.0,
+    recover_stalled_side: str | None = None,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
     effective_position_tolerance_m = float(
         args.position_tolerance_m if position_tolerance_m is None else position_tolerance_m
@@ -530,6 +580,11 @@ def move_stage(
         )
     if not math.isfinite(effective_arrival_observed_z_offset_m):
         raise ValueError("arrival_observed_z_offset_m must be finite")
+    if recover_stalled_side not in (None, "left_arm", "right_arm"):
+        raise ValueError(
+            "recover_stalled_side must be None, 'left_arm', or 'right_arm', "
+            f"got {recover_stalled_side!r}"
+        )
     print(f"\n=== {name} ===")
     print_pose("left_target", left_target)
     print_pose("right_target", right_target)
@@ -546,13 +601,25 @@ def move_stage(
         f"rotation_step={effective_max_rotation_step:.4f} rad",
         f"settle={effective_settle_time_sec:.2f} s",
     )
-    max_attempts = int(getattr(args, "p2p_retries", 1)) + 1
+    regular_retries_remaining = int(getattr(args, "p2p_retries", 1))
+    controller_recovery_available = bool(
+        getattr(args, "recover_stalled_controller", False) and recover_stalled_side is not None
+    )
+    stall_detection_enabled = bool(
+        getattr(args, "recover_stalled_controller", False)
+        and recover_stalled_side is not None
+        and int(args.max_stalled_correction_iters) > 0
+    )
+    max_possible_attempts = 1 + regular_retries_remaining + int(controller_recovery_available)
+    attempt_index = 0
 
-    for attempt_index in range(max_attempts):
+    while True:
         attempt_number = attempt_index + 1
         if attempt_index > 0:
             reanchor(client, enabled=not bool(getattr(args, "no_reanchor", False)))
-        print(f"p2p attempt: {attempt_number}/{max_attempts}")
+        print(f"p2p attempt: {attempt_number}/up-to-{max_possible_attempts}")
+
+        left_before, right_before = read_ee_poses(client)
 
         result = client.dual_robot_move_to_ee_pose(
             left_target.tolist(),
@@ -570,6 +637,12 @@ def move_stage(
             rotation_tolerance_rad=effective_rotation_tolerance_rad,
             max_correction_iters=args.max_correction_iters,
             max_steps=args.max_steps,
+            stall_detection_side=recover_stalled_side if stall_detection_enabled else None,
+            stall_translation_epsilon_m=float(args.controller_stall_translation_epsilon_m),
+            stall_rotation_epsilon_rad=float(args.controller_stall_rotation_epsilon_rad),
+            max_stalled_correction_iters=(
+                int(args.max_stalled_correction_iters) if stall_detection_enabled else 0
+            ),
         )
         left_current, right_current = read_ee_poses(client)
         left_arrival = left_current.copy()
@@ -580,7 +653,12 @@ def move_stage(
             right_arrival[2] += effective_arrival_observed_z_offset_m
         left_error = pose_error(left_arrival, left_target)
         right_error = pose_error(right_arrival, right_target)
-        print("client ok:", result.get("ok"))
+        print("p2p pose-tolerance ok (RPC returned):", result.get("ok"))
+        if result.get("stalled") is not None:
+            print(
+                "p2p stall detection:",
+                json.dumps(result.get("stalled"), indent=None if args.compact else 2, ensure_ascii=False),
+            )
         print(
             "final_error:",
             json.dumps(
@@ -615,20 +693,66 @@ def move_stage(
                 print(f"{name}: accepting RPC ok=false because observed residual is within configured tolerance")
             return left_current, right_current, result
 
-        if attempt_number < max_attempts:
-            print(
-                f"{name}: residual exceeds tolerance after P2P attempt "
-                f"{attempt_number}/{max_attempts}; retrying the same absolute target from the latest pose"
+        controller_recovered = False
+        if controller_recovery_available:
+            before = pose_for_side(left_before, right_before, recover_stalled_side)
+            after = pose_for_side(left_current, right_current, recover_stalled_side)
+            observed_motion = pose_error(before, after)
+            translation_epsilon_m = float(args.controller_stall_translation_epsilon_m)
+            rotation_epsilon_rad = float(args.controller_stall_rotation_epsilon_rad)
+            stalled = (
+                observed_motion["translation_norm_m"] <= translation_epsilon_m
+                and observed_motion["rotation_norm_rad"] <= rotation_epsilon_rad
             )
+            print(
+                f"{name}: observed attempt motion for {recover_stalled_side}:",
+                f"translation={observed_motion['translation_norm_m']:.6f} m",
+                f"rotation={observed_motion['rotation_norm_rad']:.6f} rad",
+                f"stalled={stalled}",
+            )
+            if stalled:
+                print(
+                    f"{name}: controller made no measurable progress; recovering "
+                    f"{recover_stalled_side} before retry"
+                )
+                recovery = client.recover_robot(recover_stalled_side)
+                print(
+                    "controller recovery:",
+                    json.dumps(recovery, indent=None if args.compact else 2, ensure_ascii=False, default=str),
+                )
+                if not isinstance(recovery, dict) or not bool(recovery.get("ok")):
+                    raise RuntimeError(
+                        f"{name}: {recover_stalled_side} controller recovery failed; "
+                        "motion stopped before any gripper action"
+                    )
+                controller_recovered = True
+                controller_recovery_available = False
+                recovery_settle = float(args.controller_recovery_settle_time_sec)
+                if recovery_settle > 0.0:
+                    time.sleep(recovery_settle)
+
+        if controller_recovered:
+            print(
+                f"{name}: retrying the same absolute target after controller recovery; "
+                f"regular retries still available={regular_retries_remaining}"
+            )
+            attempt_index += 1
+            continue
+
+        if regular_retries_remaining > 0:
+            regular_retries_remaining -= 1
+            print(
+                f"{name}: residual exceeds tolerance after P2P attempt {attempt_number}; "
+                "retrying the same absolute target from the latest pose"
+            )
+            attempt_index += 1
             continue
 
         raise RuntimeError(
-            f"{name} failed after {max_attempts} P2P attempt(s); "
+            f"{name} failed after {attempt_number} P2P attempt(s); "
             f"motion stopped before any subsequent gripper action "
-            f"(rpc_ok={result_ok}, residual_ok={residual_ok})"
+            f"(p2p_ok={result_ok}, residual_ok={residual_ok})"
         )
-
-    raise AssertionError("unreachable")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -637,6 +761,14 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("--grasp-arrival-observed-z-offset-m must be finite")
     if not math.isfinite(args.grasp_target_z_offset_m):
         raise ValueError("--grasp-target-z-offset-m must be finite")
+    for name in (
+        "controller_stall_translation_epsilon_m",
+        "controller_stall_rotation_epsilon_rad",
+        "controller_recovery_settle_time_sec",
+    ):
+        value = float(getattr(args, name))
+        if not math.isfinite(value) or value < 0.0:
+            raise ValueError(f"--{name.replace('_', '-')} must be a non-negative finite value")
     active_side = args.arm
     partner_side = other_side(active_side)
     active_label = short_side(active_side)
@@ -683,6 +815,8 @@ def main(argv: list[str] | None = None) -> int:
             ],
             "would_close_gripper": not bool(args.no_close),
             "would_transfer_release": not bool(args.no_transfer_release or args.no_close),
+            "would_stop_before_partner_close": bool(args.stop_before_partner_close),
+            "would_stop_after_transfer_release": bool(args.stop_after_partner_close),
             "requires_execute_for_rpc": True,
             "abnormal_robot_state_detected": False,
         }
@@ -733,6 +867,7 @@ def main(argv: list[str] | None = None) -> int:
             left_target,
             right_target,
             args,
+            recover_stalled_side=active_side,
         )
 
         reanchor(client, enabled=not args.no_reanchor)
@@ -764,6 +899,7 @@ def main(argv: list[str] | None = None) -> int:
             left_target,
             right_target,
             args,
+            recover_stalled_side=active_side,
         )
 
         if not args.skip_z:
@@ -785,6 +921,7 @@ def main(argv: list[str] | None = None) -> int:
                 settle_time_sec=args.approach_settle_time_sec,
                 arrival_observed_z_offset_side=active_side,
                 arrival_observed_z_offset_m=args.grasp_arrival_observed_z_offset_m,
+                recover_stalled_side=active_side,
             )
 
         final_left, final_right = read_ee_poses(client)
@@ -856,6 +993,12 @@ def main(argv: list[str] | None = None) -> int:
         elif args.no_transfer_release:
             print(f"{partner_label} close/{active_label} open skipped by --no-transfer-release")
         else:
+            if args.stop_before_partner_close:
+                print(
+                    f"stopped before close_{partner_label}_gripper "
+                    "by --stop-before-partner-close"
+                )
+                return 0
             partner_close_result = client.close_gripper(partner_side)
             print(
                 f"close_{partner_label}_gripper:",
@@ -871,6 +1014,12 @@ def main(argv: list[str] | None = None) -> int:
             )
             if args.after_active_open_sleep_sec > 0:
                 time.sleep(args.after_active_open_sleep_sec)
+            if args.stop_after_partner_close:
+                print(
+                    f"stopped after close_{partner_label}_gripper and open_{active_label}_gripper "
+                    "by --stop-after-partner-close"
+                )
+                return 0
         return 0
     finally:
         client.close()
