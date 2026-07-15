@@ -520,6 +520,10 @@ class DualFrankaRobotiqRpcClient:
     ):
         return self._call('go_home', _side_or_both(side), duration_sec, rate_hz)
 
+    def recover_robot(self, side: str = 'both'):
+        """Recover Franka errors and restart the selected Cartesian controller."""
+        return self._call('recover_robot', _side_or_both(side))
+
     def command_gripper(
         self,
         side: str = 'left_arm',
@@ -620,6 +624,10 @@ class DualFrankaRobotiqRpcClient:
         position_tolerance_m: float = 0.0015,
         rotation_tolerance_rad: float = 0.01,
         max_correction_iters: int = 1,
+        stall_detection_side: Optional[str] = None,
+        stall_translation_epsilon_m: float = 0.0005,
+        stall_rotation_epsilon_rad: float = 0.005,
+        max_stalled_correction_iters: int = 0,
     ):
         """Move both end-effectors through the server Cartesian pose API.
 
@@ -655,6 +663,10 @@ class DualFrankaRobotiqRpcClient:
                 position_tolerance_m=position_tolerance_m,
                 rotation_tolerance_rad=rotation_tolerance_rad,
                 max_correction_iters=max_correction_iters,
+                stall_detection_side=stall_detection_side,
+                stall_translation_epsilon_m=stall_translation_epsilon_m,
+                stall_rotation_epsilon_rad=stall_rotation_epsilon_rad,
+                max_stalled_correction_iters=max_stalled_correction_iters,
             )
 
         try:
@@ -690,6 +702,10 @@ class DualFrankaRobotiqRpcClient:
         position_tolerance_m: float,
         rotation_tolerance_rad: float,
         max_correction_iters: int,
+        stall_detection_side: Optional[str],
+        stall_translation_epsilon_m: float,
+        stall_rotation_epsilon_rad: float,
+        max_stalled_correction_iters: int,
     ):
         # Smooth trajectory streaming is synchronous by design; ``wait`` is kept
         # for API compatibility with older callers.
@@ -713,6 +729,25 @@ class DualFrankaRobotiqRpcClient:
         max_correction_iters = int(max_correction_iters)
         if max_correction_iters < 0:
             raise ValueError(f'max_correction_iters must be non-negative, got {max_correction_iters!r}.')
+        if stall_detection_side not in (None, 'left_arm', 'right_arm'):
+            raise ValueError(
+                "stall_detection_side must be None, 'left_arm', or 'right_arm', "
+                f'got {stall_detection_side!r}.'
+            )
+        max_stalled_correction_iters = int(max_stalled_correction_iters)
+        if max_stalled_correction_iters < 0:
+            raise ValueError(
+                'max_stalled_correction_iters must be non-negative, '
+                f'got {max_stalled_correction_iters!r}.'
+            )
+        stall_translation_epsilon_m = _nonnegative_float(
+            stall_translation_epsilon_m,
+            'stall_translation_epsilon_m',
+        )
+        stall_rotation_epsilon_rad = _nonnegative_float(
+            stall_rotation_epsilon_rad,
+            'stall_rotation_epsilon_rad',
+        )
 
         trajectory, metadata = _plan_smooth_absolute_trajectory(
             left_start,
@@ -751,6 +786,12 @@ class DualFrankaRobotiqRpcClient:
             time.sleep(settle_time_sec)
 
         final_error: dict[str, Any] | None = None
+        stalled_report: dict[str, Any] | None = None
+        stalled_correction_count = 0
+        previous_stall_pose = {
+            'left_arm': left_start,
+            'right_arm': right_start,
+        }.get(stall_detection_side)
         for correction_index in range(max_correction_iters + 1):
             current_observation = self.get_observation()
             if not isinstance(current_observation, Mapping):
@@ -762,6 +803,35 @@ class DualFrankaRobotiqRpcClient:
             correction_reports.append(final_error)
             if _pose_error_within_tolerance(final_error, position_tolerance_m, rotation_tolerance_rad):
                 break
+            if (
+                stall_detection_side is not None
+                and max_stalled_correction_iters > 0
+                and previous_stall_pose is not None
+            ):
+                current_stall_pose = left_current if stall_detection_side == 'left_arm' else right_current
+                observed_delta = _absolute_target_to_delta(previous_stall_pose, current_stall_pose)
+                observed_translation_m = math.sqrt(sum(value * value for value in observed_delta[:3]))
+                observed_rotation_rad = math.sqrt(sum(value * value for value in observed_delta[3:]))
+                no_progress = (
+                    observed_translation_m <= stall_translation_epsilon_m
+                    and observed_rotation_rad <= stall_rotation_epsilon_rad
+                )
+                stalled_correction_count = stalled_correction_count + 1 if no_progress else 0
+                stalled_report = {
+                    'side': stall_detection_side,
+                    'detected': stalled_correction_count >= max_stalled_correction_iters,
+                    'consecutive_no_progress_observations': stalled_correction_count,
+                    'max_stalled_correction_iters': max_stalled_correction_iters,
+                    'observed_translation_m': observed_translation_m,
+                    'observed_rotation_rad': observed_rotation_rad,
+                    'translation_epsilon_m': stall_translation_epsilon_m,
+                    'rotation_epsilon_rad': stall_rotation_epsilon_rad,
+                    'correction_index': correction_index,
+                }
+                final_error['stall_detection'] = stalled_report
+                previous_stall_pose = current_stall_pose
+                if stalled_report['detected']:
+                    break
             if correction_index >= max_correction_iters:
                 break
 
@@ -795,6 +865,7 @@ class DualFrankaRobotiqRpcClient:
             'trajectory': metadata,
             'final_error': final_error,
             'corrections': correction_reports,
+            'stalled': stalled_report,
             'tolerances': {
                 'position_tolerance_m': position_tolerance_m,
                 'rotation_tolerance_rad': rotation_tolerance_rad,
