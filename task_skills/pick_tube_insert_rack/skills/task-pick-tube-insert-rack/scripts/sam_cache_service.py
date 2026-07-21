@@ -8,6 +8,7 @@ remain in the existing object-locator flow.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 import pickle
@@ -36,6 +37,38 @@ from object_locator.models import BoundingBox, DetectionResult  # noqa: E402
 
 SOCKET_ENV = "TASK_PICK_TUBE_SAM_SOCKET"
 _HEADER = struct.Struct("!Q")
+
+
+def resolve_sam_model_source(
+    sam_model: str,
+    *,
+    allow_model_download: bool,
+) -> str:
+    """Resolve a Hub model ID to a local snapshot so Transformers stays offline."""
+    local_path = Path(sam_model).expanduser()
+    if local_path.exists():
+        return str(local_path.resolve())
+
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError as exc:
+        raise RuntimeError("persistent SAM cache requires huggingface_hub") from exc
+
+    try:
+        return str(
+            Path(
+                snapshot_download(
+                    repo_id=sam_model,
+                    local_files_only=not allow_model_download,
+                )
+            ).resolve()
+        )
+    except Exception as exc:
+        mode = "download allowed" if allow_model_download else "local cache only"
+        raise RuntimeError(
+            f"failed to resolve SAM model {sam_model!r} ({mode}); "
+            "pre-download the model or pass --allow-model-download"
+        ) from exc
 
 
 def _receive_exact(connection: socket.socket, size: int) -> bytes:
@@ -181,7 +214,14 @@ class CachedSamRefiner:
         )
 
 
-def serve(socket_path: Path, ready_file: Path | None, sam_model: str, device: str) -> int:
+def serve(
+    socket_path: Path,
+    ready_file: Path | None,
+    sam_model: str,
+    device: str,
+    *,
+    allow_model_download: bool,
+) -> int:
     socket_path.parent.mkdir(parents=True, exist_ok=True)
     socket_path.unlink(missing_ok=True)
     if ready_file is not None:
@@ -201,7 +241,18 @@ def serve(socket_path: Path, ready_file: Path | None, sam_model: str, device: st
     signal.signal(signal.SIGTERM, request_stop)
     signal.signal(signal.SIGINT, request_stop)
 
-    detector = GroundedSamDetector(GroundedSamConfig(sam_model=sam_model, device=device))
+    resolved_sam_model = resolve_sam_model_source(
+        sam_model,
+        allow_model_download=allow_model_download,
+    )
+    print(
+        f"[sam-cache] model source logical={sam_model} resolved={resolved_sam_model}",
+        file=sys.stderr,
+        flush=True,
+    )
+    detector = GroundedSamDetector(
+        GroundedSamConfig(sam_model=resolved_sam_model, device=device)
+    )
     started = time.perf_counter()
     detector._load_torch()
     detector._load_sam()
@@ -213,7 +264,17 @@ def serve(socket_path: Path, ready_file: Path | None, sam_model: str, device: st
     )
     if ready_file is not None:
         ready_file.write_text(
-            f'{{"pid": {os.getpid()}, "model": "{sam_model}", "load_sec": {load_sec:.6f}}}\n',
+            json.dumps(
+                {
+                    "pid": os.getpid(),
+                    "model": sam_model,
+                    "resolved_model": resolved_sam_model,
+                    "local_files_only": not allow_model_download,
+                    "load_sec": load_sec,
+                },
+                ensure_ascii=False,
+            )
+            + "\n",
             encoding="utf-8",
         )
 
@@ -266,12 +327,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ready-file", type=Path, default=None)
     parser.add_argument("--sam-model", default="facebook/sam-vit-base")
     parser.add_argument("--device", default="auto")
+    parser.add_argument(
+        "--allow-model-download",
+        action="store_true",
+        help="Allow Hugging Face network downloads. Default is strict local-cache-only loading.",
+    )
     return parser
 
 
 def main() -> int:
     args = build_parser().parse_args()
-    return serve(args.socket, args.ready_file, args.sam_model, args.device)
+    return serve(
+        args.socket,
+        args.ready_file,
+        args.sam_model,
+        args.device,
+        allow_model_download=args.allow_model_download,
+    )
 
 
 if __name__ == "__main__":

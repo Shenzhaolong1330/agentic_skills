@@ -232,7 +232,7 @@ cleanup_sam_cache() {
 }
 trap cleanup_sam_cache EXIT
 export TASK_PICK_TUBE_SAM_SOCKET="$SAM_CACHE_SOCKET"
-printf '[full-flow] starting persistent SAM cache (preload overlaps initial capture/VLM)\n'
+printf '[full-flow] starting persistent SAM cache from local Hugging Face files\n'
 "$LOCATOR_PYTHON" "$SAM_CACHE_SERVICE" \
     --serve \
     --socket "$SAM_CACHE_SOCKET" \
@@ -272,6 +272,21 @@ if [[ ! -f "$WRIST_CAMERA_READY" ]]; then
     exit 1
 fi
 printf '[full-flow] persistent RealSense status: %s\n' "$(tr -d '\n' < "$WRIST_CAMERA_READY")"
+
+for _ in $(seq 1 300); do
+    [[ -f "$SAM_CACHE_READY" ]] && break
+    if ! kill -0 "$SAM_CACHE_PID" 2>/dev/null; then
+        wait "$SAM_CACHE_PID" || true
+        printf 'ERROR: persistent SAM cache exited before model preload completed\n' >&2
+        exit 1
+    fi
+    sleep 0.1
+done
+if [[ ! -f "$SAM_CACHE_READY" ]]; then
+    printf 'ERROR: persistent SAM cache did not become ready within 30 seconds\n' >&2
+    exit 1
+fi
+printf '[full-flow] persistent SAM status: %s\n' "$(tr -d '\n' < "$SAM_CACHE_READY")"
 
 require_fresh_realsense_frames() {
     local stage="$1"
