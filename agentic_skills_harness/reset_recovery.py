@@ -31,6 +31,17 @@ class ResetRecoveryController:
     def should_reset(self, health: RobotHealthStatus | None, stage_result: Any, context: SkillContext) -> bool:
         if not context.auto_reset_on_abnormal:
             return False
+        if health and health.state == RobotHealthState.ESTOP_OR_UNSAFE:
+            return False
+        if isinstance(stage_result, dict):
+            state_values = [
+                stage_result.get("health_state"),
+                stage_result.get("robot_health_state"),
+                stage_result.get("classification"),
+                stage_result.get("state"),
+            ]
+            if any(str(value).upper() in {"ESTOP", "ESTOP_OR_UNSAFE", "UNSAFE", "USER_STOPPED"} for value in state_values if value is not None):
+                return False
         if health and (health.requires_reset or health.state in {RobotHealthState.ABNORMAL, RobotHealthState.FAULT, RobotHealthState.UNREACHABLE}):
             return True
         if isinstance(stage_result, dict) and stage_result.get("abnormal_robot_state_detected"):
@@ -40,7 +51,9 @@ class ResetRecoveryController:
     def build_reset_command(self, context: SkillContext) -> list[str]:
         entrypoint = find_entrypoint(self.manifest, RESET_SKILL, RESET_ENTRYPOINT)
         script = self.repo_root / entrypoint["path"]
-        command = ["python3", str(script), "ensure", "--compact"]
+        command = ["python3", str(script), "ensure", "--mode", "live", "--compact"]
+        if context.hardware_allowed:
+            command.append("--hardware-allowed")
         if context.robot_server and ":" in context.robot_server:
             host, port = context.robot_server.rsplit(":", 1)
             command.extend(["--server-host", host, "--server-port", port])
@@ -56,6 +69,19 @@ class ResetRecoveryController:
         held_object_state: HeldObjectState,
         before_health: RobotHealthStatus | None = None,
     ) -> ResetRecoveryResult:
+        if before_health and before_health.state == RobotHealthState.ESTOP_OR_UNSAFE:
+            return ResetRecoveryResult(
+                ok=False,
+                outcome=ResetOutcome.RESET_DENIED_BY_GATE,
+                attempted=False,
+                executed=False,
+                planned_only=False,
+                before_health=before_health,
+                held_object_state=held_object_state,
+                held_object_risk=held_object_state not in {HeldObjectState.NONE, HeldObjectState.RELEASED},
+                aborted_after_reset=True,
+                errors=["E-stop or unsafe state requires manual intervention; automatic recovery is disabled"],
+            )
         attempt_index = context.reset_attempt_count + 1
         max_attempts = int(context.max_auto_reset_attempts)
         held_risk = held_object_state not in {HeldObjectState.NONE, HeldObjectState.RELEASED}

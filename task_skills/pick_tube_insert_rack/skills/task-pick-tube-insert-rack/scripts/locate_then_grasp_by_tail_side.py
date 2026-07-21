@@ -13,6 +13,13 @@ import sys
 from pathlib import Path
 from typing import Any
 
+for _parent in Path(__file__).resolve().parents:
+    if (_parent / "skill_manifest.json").is_file():
+        sys.path.insert(0, str(_parent))
+        break
+
+from scripts.hardware_preflight import evaluate_operation
+
 ANY_POSE_ROOT = Path("/home/deepcybo/agentic_skills/atomic_skills/object_locator")
 DEFAULT_GRASP_SCRIPT = Path(__file__).resolve().with_name("grasp_right_arm_xyz.sh")
 
@@ -20,13 +27,14 @@ DEFAULT_GRASP_SCRIPT = Path(__file__).resolve().with_name("grasp_right_arm_xyz.s
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--result-json", "--result-json-from-file", dest="result_json", type=Path, required=True)
-    parser.add_argument("--grasp-script", type=Path, default=DEFAULT_GRASP_SCRIPT)
     parser.add_argument("--result-base-frame", choices=("base", "baseright", "baseleft"), default="base")
     parser.add_argument("--right-y-sign", choices=("negative", "positive"), default="negative")
     parser.add_argument("--side-deadband-m", type=float, default=0.002)
     parser.add_argument("--grasp-arg", action="append", default=[])
     parser.add_argument("--preferred-grasp-point", default="tail_to_head_1_5")
     parser.add_argument("--fallback-grasp-point", default="bbox_center")
+    parser.add_argument("--mode", choices=("mock", "dry_run", "from_artifacts", "live"), default="dry_run")
+    parser.add_argument("--hardware-allowed", action="store_true", help="Allow real hardware access in live mode.")
     parser.add_argument("--execute", action="store_true", help="Actually call the lower-level grasp script.")
     parser.add_argument("--dry-run", action="store_true", help="Alias for the default plan-only behavior.")
     parser.add_argument("--compact", action="store_true")
@@ -92,6 +100,19 @@ def resolve_result_json(path: Path) -> Path:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    _, _, gate_decision = evaluate_operation(
+        "grasp",
+        mode=args.mode,
+        hardware_allowed=args.hardware_allowed,
+        execute=args.execute,
+        manifest_path=next(parent / "skill_manifest.json" for parent in Path(__file__).resolve().parents if (parent / "skill_manifest.json").is_file()),
+    )
+    if not gate_decision.allowed:
+        if gate_decision.planned_only:
+            args.execute = False
+        else:
+            print(json.dumps({"ok": False, "gate_decision": gate_decision.to_dict()}, ensure_ascii=False), file=sys.stderr)
+            return 1
     result_json = resolve_result_json(args.result_json)
     if not result_json.exists():
         raise FileNotFoundError(f"result.json does not exist: {result_json}")
@@ -106,7 +127,7 @@ def main(argv: list[str] | None = None) -> int:
         grasp_point = fallback
         grasp_args.extend(["--no-result-orientation"])
     grasp_cmd = [
-        str(args.grasp_script),
+        str(DEFAULT_GRASP_SCRIPT),
         "--arm",
         arm,
         "--result-json",
@@ -130,6 +151,9 @@ def main(argv: list[str] | None = None) -> int:
         report["planned_only"] = True
         print(json.dumps(report, indent=None if args.compact else 2, ensure_ascii=False))
         return 0
+    grasp_cmd.extend(["--mode", args.mode])
+    if args.hardware_allowed:
+        grasp_cmd.append("--hardware-allowed")
     return subprocess.call([*grasp_cmd, "--execute"], cwd=str(DEFAULT_GRASP_SCRIPT.parent.parent))
 
 

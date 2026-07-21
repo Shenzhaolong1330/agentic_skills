@@ -23,6 +23,7 @@ class CommandPlan:
     executed: bool = False
     recovery: bool = False
     reason: str = ""
+    gate_decision: dict[str, Any] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -77,6 +78,7 @@ class CommandRunner:
         )
         decision = self.gate.evaluate(context, entrypoint, recovery=recovery)
         plan.reason = decision.reason
+        plan.gate_decision = decision.to_dict()
         if context.mode != SkillMode.LIVE or not decision.allowed:
             return CommandResult(
                 plan=plan,

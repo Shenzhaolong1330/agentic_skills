@@ -6,10 +6,20 @@ RESULT_JSON="${RESULT_JSON:-/home/deepcybo/agentic_skills/atomic_skills/object_l
 STOP_AFTER_HANDOVER_CLOSE="${STOP_AFTER_HANDOVER_CLOSE:-0}"
 STOP_BEFORE_HANDOVER_CLOSE="${STOP_BEFORE_HANDOVER_CLOSE:-0}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MODE="dry_run"
+HARDWARE_ALLOWED=0
 EXTRA_ARGS=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --mode)
+            MODE="$2"
+            shift 2
+            ;;
+        --hardware-allowed)
+            HARDWARE_ALLOWED=1
+            shift
+            ;;
         --arm)
             ARM="$2"
             shift 2
@@ -42,8 +52,12 @@ if [[ "$STOP_BEFORE_HANDOVER_CLOSE" == "1" || "$STOP_BEFORE_HANDOVER_CLOSE" == "
     EXTRA_ARGS+=(--stop-before-partner-close)
 fi
 
+PYTHON_CMD=(python3 -u "$SCRIPT_DIR/grasp_right_arm_xyz.py" --mode "$MODE")
+if [[ "$HARDWARE_ALLOWED" == "1" ]]; then
+    PYTHON_CMD+=(--hardware-allowed)
+fi
 # User-approved relaxed grasp position tolerance (25 mm).
-python3 -u "$SCRIPT_DIR/grasp_right_arm_xyz.py" \
+PYTHON_CMD+=( \
     --arm "$ARM" \
     --result-json "$RESULT_JSON" \
     --result-grasp-point tail_to_head_1_5 \
@@ -72,4 +86,6 @@ python3 -u "$SCRIPT_DIR/grasp_right_arm_xyz.py" \
     --rotation-tolerance-rad 0.05 \
     --transition-rotation-tolerance-rad 0.06 \
     --compact \
-    "${EXTRA_ARGS[@]}"
+    "${EXTRA_ARGS[@]}" \
+)
+"${PYTHON_CMD[@]}"

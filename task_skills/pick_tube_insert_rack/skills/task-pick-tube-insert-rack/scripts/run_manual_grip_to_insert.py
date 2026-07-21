@@ -26,6 +26,13 @@ from typing import Any, Mapping
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+for _parent in SCRIPT_DIR.parents:
+    if (_parent / "skill_manifest.json").is_file():
+        sys.path.insert(0, str(_parent))
+        break
+
+from scripts.hardware_preflight import evaluate_operation
+
 ANY_POSE_DIR = Path("/home/deepcybo/agentic_skills/atomic_skills/object_locator")
 SKILL_PATH = SCRIPT_DIR / "tube_insertion_skill.py"
 DEFAULT_RACK_CONFIG = ANY_POSE_DIR / "config_rack_center_vlm.yaml"
@@ -109,6 +116,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Directory for per-insertion artifacts such as raw wrist VLM responses.",
     )
+    parser.add_argument("--mode", choices=("mock", "dry_run", "from_artifacts", "live"), default="dry_run")
+    parser.add_argument("--hardware-allowed", action="store_true", help="Allow real hardware access in live mode.")
     parser.add_argument("--execute", action="store_true", help="Actually send robot and gripper commands.")
     parser.add_argument("--compact", action="store_true")
     parser.add_argument(
@@ -860,6 +869,19 @@ def maybe_print_requested_error(stage_report: Mapping[str, Any], side: str) -> N
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    _, _, gate_decision = evaluate_operation(
+        "insert",
+        mode=args.mode,
+        hardware_allowed=args.hardware_allowed,
+        execute=args.execute,
+        manifest_path=next(parent / "skill_manifest.json" for parent in SCRIPT_DIR.parents if (parent / "skill_manifest.json").is_file()),
+    )
+    if not gate_decision.allowed:
+        if gate_decision.planned_only:
+            args.execute = False
+        else:
+            print(json.dumps({"ok": False, "gate_decision": gate_decision.to_dict()}, ensure_ascii=False), file=sys.stderr)
+            return 1
     if args.insert_max_correction_iters < 0:
         raise ValueError("--insert-max-correction-iters must be non-negative")
     if not math.isfinite(args.insert_settle_time_sec) or args.insert_settle_time_sec < 0.0:

@@ -193,7 +193,7 @@ Commit message 建议：
 
 不要提交：
 
-- `.env`、API key、token。
+- `.env`、API key 和其他凭据。
 - `.venv/`、`__pycache__/`、`.pytest_cache/`。
 - `runs/`、实验图片、`.npy`、`.bag`、模型权重、数据集。
 - 未脱敏的真实机器人/相机私密标定，除非团队明确要求纳入版本管理。
@@ -223,4 +223,4 @@ python -m pytest -q
 - [`agentic_skills_harness/`](agentic_skills_harness/): manifest loader、HardwareGate、trace writer、command runner、robot health monitor、ResetRecoveryController。
 - [`docs/harness.md`](docs/harness.md): harness 模式、trace、reset recovery 和新增 manifest entry 的说明。
 
-`task_pick_tube_insert_rack_runner.py` 是 `pick_tube_insert_rack` 推荐入口。默认使用 `mock`/`dry_run`，不会打开相机、连接机器人、移动机械臂或控制夹爪。reset 功能没有禁用；live 模式下 abnormal robot state 会自动进入受控 `AUTO_RESET_RECOVERY`。reset 仍是真机动作，必须通过 HardwareGate，并且所有 reset 都写入 trace。持管阶段 reset 后默认 abort，等待对象状态重验证。
+`task_pick_tube_insert_rack_runner.py` 是 `pick_tube_insert_rack` 推荐入口。默认使用 `mock`/`dry_run`，不会打开相机、连接机器人、移动机械臂或控制夹爪。live 任务必须显式给出 `--hardware-allowed --execute`；只读诊断只需 `--hardware-allowed`。reset 功能没有禁用；live 模式下 abnormal robot state 会自动进入受控 `AUTO_RESET_RECOVERY`。reset 仍是真机动作，必须通过 HardwareGate，并且所有 reset 都写入 trace。持管阶段 reset 后默认 abort，等待对象状态重验证。

@@ -16,6 +16,13 @@ from typing import Any
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 
+for _parent in Path(__file__).resolve().parents:
+    if (_parent / "skill_manifest.json").is_file():
+        sys.path.insert(0, str(_parent))
+        break
+
+from scripts.hardware_preflight import evaluate_operation
+
 DEFAULT_CLIENT_PATH = Path(
     os.environ.get(
         "DUAL_FRANKA_RPC_CLIENT_PATH",
@@ -325,6 +332,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="After returning to transition, stop before closing the partner gripper.",
     )
     parser.add_argument("--no-reanchor", action="store_true", help="Do not call step(None) before each stage.")
+    parser.add_argument("--mode", choices=("mock", "dry_run", "from_artifacts", "live"), default="dry_run")
+    parser.add_argument("--hardware-allowed", action="store_true", help="Allow real hardware access in live mode.")
     parser.add_argument("--execute", action="store_true", help="Actually connect RPC, move robot, and control gripper. Default is plan-only.")
     parser.add_argument("--compact", action="store_true", help="Print compact JSON for result payloads.")
     return parser
@@ -882,6 +891,19 @@ def move_stage(
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    _, _, gate_decision = evaluate_operation(
+        "grasp",
+        mode=args.mode,
+        hardware_allowed=args.hardware_allowed,
+        execute=args.execute,
+        manifest_path=next(parent / "skill_manifest.json" for parent in Path(__file__).resolve().parents if (parent / "skill_manifest.json").is_file()),
+    )
+    if not gate_decision.allowed:
+        if gate_decision.planned_only:
+            args.execute = False
+        else:
+            print(json.dumps({"ok": False, "gate_decision": gate_decision.to_dict()}, ensure_ascii=False), file=sys.stderr)
+            return 1
     if not math.isfinite(args.grasp_arrival_observed_z_offset_m):
         raise ValueError("--grasp-arrival-observed-z-offset-m must be finite")
     if not math.isfinite(args.grasp_target_z_offset_m):

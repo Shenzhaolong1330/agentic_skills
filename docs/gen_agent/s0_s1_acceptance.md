@@ -18,4 +18,3 @@ python3 scripts/run_gen_agent_acceptance.py \
 ## 使用边界
 
 公开 live task 入口必须同时显式给出 `--hardware-allowed` 和（任务有物理副作用时）`--execute`。只读观测入口只需 `--hardware-allowed`。mock、dry-run 和 artifact 回放继续可在没有任何硬件授权的情况下运行。
-

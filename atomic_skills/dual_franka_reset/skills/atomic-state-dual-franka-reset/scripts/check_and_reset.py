@@ -12,23 +12,24 @@ from pathlib import Path
 import re
 import signal
 import subprocess
+import sys
 import time
 from typing import Any, Mapping, Sequence
 
+REPO_ROOT = Path(__file__).resolve().parents[5]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from scripts.hardware_preflight import evaluate_operation
+
 
 DEFAULT_CLIENT_PATH = Path(
-    os.environ.get(
-        "DUAL_FRANKA_RPC_CLIENT_PATH",
-        "/home/deepcybo/agentic_skills/atomic_skills/dual_franka_p2p/skills/"
-        "atomic-motion-franka-move-to-pose/dual_franka_robotiq_rpc_client.py",
-    )
+    "/home/deepcybo/agentic_skills/atomic_skills/dual_franka_p2p/skills/"
+    "atomic-motion-franka-move-to-pose/dual_franka_robotiq_rpc_client.py"
 )
 DEFAULT_RESET_SCRIPT = Path(
-    os.environ.get(
-        "DUAL_FRANKA_RESET_SCRIPT",
-        "/home/deepcybo/agentic_skills/procedure_skills/robot_reset_home/skills/"
-        "procedure-robot-reset-home/scripts/run_robot_reset.sh",
-    )
+    "/home/deepcybo/agentic_skills/procedure_skills/robot_reset_home/skills/"
+    "procedure-robot-reset-home/scripts/run_robot_reset.sh"
 )
 DEFAULT_RESET_CONFIG = Path(
     os.environ.get(
@@ -471,7 +472,7 @@ def _unwrap_state_file(value: Any) -> Any:
 
 
 def _read_live_state(args: argparse.Namespace) -> tuple[Any, Any]:
-    rpc = _load_rpc_client(args.client_path.expanduser())
+    rpc = _load_rpc_client(DEFAULT_CLIENT_PATH)
     client = rpc.DualFrankaRobotiqRpcClient(
         ip=args.server_host,
         port=args.server_port,
@@ -499,7 +500,7 @@ def _read_status(args: argparse.Namespace) -> tuple[dict[str, Any], Any, Any]:
 
 
 def _build_reset_command(args: argparse.Namespace) -> list[str]:
-    reset_script = args.reset_script.expanduser()
+    reset_script = DEFAULT_RESET_SCRIPT.expanduser()
     reset_config = args.reset_config.expanduser()
     reset_repo_root = args.reset_repo_root.expanduser()
     if not reset_script.is_file():
@@ -636,7 +637,8 @@ def _run_reset(command: list[str], timeout_sec: float) -> dict[str, Any]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("status", "ensure"))
-    parser.add_argument("--client-path", type=Path, default=DEFAULT_CLIENT_PATH)
+    parser.add_argument("--mode", choices=("mock", "dry_run", "from_artifacts", "live"), default="live")
+    parser.add_argument("--hardware-allowed", action="store_true", help="Allow access to the real robot in live mode.")
     parser.add_argument(
         "--server-host",
         type=_server_host,
@@ -654,7 +656,6 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Treat complete dual-arm telemetry as healthy when native diagnostics are absent.",
     )
-    parser.add_argument("--reset-script", type=Path, default=DEFAULT_RESET_SCRIPT)
     parser.add_argument("--reset-config", type=Path, default=DEFAULT_RESET_CONFIG)
     parser.add_argument(
         "--reset-repo-root",
@@ -677,8 +678,17 @@ def _print_report(report: Mapping[str, Any], compact: bool) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    operation = "status" if args.command == "status" else "ensure"
+    _, _, decision = evaluate_operation(
+        operation,
+        mode=args.mode,
+        hardware_allowed=args.hardware_allowed,
+        execute=args.execute,
+        manifest_path=REPO_ROOT / "skill_manifest.json",
+    )
     report: dict[str, Any] = {
         "command": args.command,
+        "mode": args.mode,
         "server": None if args.state_file else f"{args.server_host}:{args.server_port}",
         "source": str(args.state_file.expanduser()) if args.state_file else "live_rpc",
         "execute": bool(args.execute),
@@ -686,6 +696,11 @@ def main(argv: list[str] | None = None) -> int:
         "reset": {"attempted": False},
         "status_after": None,
     }
+
+    if not decision.allowed and not (args.mode == "from_artifacts" and args.state_file is not None):
+        report["gate_decision"] = decision.to_dict()
+        _print_report(report, args.compact)
+        return 0 if decision.planned_only else 1
 
     if args.execute and args.command != "ensure":
         report["error"] = "--execute is valid only with the ensure command"

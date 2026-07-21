@@ -160,7 +160,7 @@ class EvaluateStateTest(unittest.TestCase):
 
 
 class MainSafetyTest(unittest.TestCase):
-    def test_ensure_without_execute_only_prints_plan(self) -> None:
+    def test_ensure_without_execute_is_denied_before_hardware(self) -> None:
         status = {
             "classification": "needs_reset",
             "needs_reset": True,
@@ -175,11 +175,10 @@ class MainSafetyTest(unittest.TestCase):
             patch.object(RESET, "_run_reset", side_effect=AssertionError("must not execute")),
             contextlib.redirect_stdout(output),
         ):
-            exit_code = RESET.main(["ensure", "--compact"])
+            exit_code = RESET.main(["--mode", "live", "--hardware-allowed", "ensure", "--compact"])
         report = json.loads(output.getvalue())
-        self.assertEqual(exit_code, 2)
-        self.assertTrue(report["reset"]["planned"])
-        self.assertFalse(report["reset"]["attempted"])
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(report["gate_decision"]["reason"], "execute_required_for_side_effects")
 
     def test_healthy_status_skips_reset(self) -> None:
         status = {
@@ -194,7 +193,7 @@ class MainSafetyTest(unittest.TestCase):
             patch.object(RESET, "_run_reset", side_effect=AssertionError("must not execute")),
             contextlib.redirect_stdout(output),
         ):
-            exit_code = RESET.main(["ensure", "--compact"])
+            exit_code = RESET.main(["--mode", "live", "--hardware-allowed", "ensure", "--execute", "--compact"])
         report = json.loads(output.getvalue())
         self.assertEqual(exit_code, 0)
         self.assertEqual(report["reset"]["skipped"], "reset not needed")
@@ -213,14 +212,17 @@ class MainSafetyTest(unittest.TestCase):
             patch.object(RESET, "_run_reset", side_effect=AssertionError("must not execute")),
             contextlib.redirect_stdout(output),
         ):
-            exit_code = RESET.main(["ensure", "--execute", "--compact"])
+            exit_code = RESET.main(["--mode", "live", "--hardware-allowed", "ensure", "--execute", "--compact"])
         report = json.loads(output.getvalue())
         self.assertEqual(exit_code, 3)
         self.assertFalse(report["reset"]["attempted"])
 
     def test_reset_target_must_match_inspected_endpoint(self) -> None:
         args = RESET.build_parser().parse_args(["ensure"])
+        args.reset_config = Path(__file__)
+        args.reset_repo_root = Path(__file__).resolve().parent
         with (
+            patch.object(RESET, "DEFAULT_RESET_SCRIPT", Path(__file__)),
             patch.object(RESET, "_reset_target_from_config", return_value=("10.0.0.99", 4242)),
             self.assertRaisesRegex(RuntimeError, "status/reset target mismatch"),
         ):

@@ -14,7 +14,8 @@ Choose the narrowest command that matches the requested operation.
 Run the configured `robot-reset` workflow:
 
 ```bash
-/home/deepcybo/agentic_skills/procedure_skills/robot_reset_home/skills/procedure-robot-reset-home/scripts/run_robot_reset.sh
+/home/deepcybo/agentic_skills/procedure_skills/robot_reset_home/skills/procedure-robot-reset-home/scripts/run_robot_reset.sh \
+  --mode live --hardware-allowed --execute
 ```
 
 What it does:
@@ -34,6 +35,7 @@ Override config only if needed:
 
 ```bash
 /home/deepcybo/agentic_skills/procedure_skills/robot_reset_home/skills/procedure-robot-reset-home/scripts/run_robot_reset.sh \
+  --mode live --hardware-allowed --execute \
   --config /home/deepcybo/Le-nero/dual_arm_teleop/scripts/config/record_cfg.yaml
 ```
 
@@ -42,13 +44,15 @@ Override config only if needed:
 Move both arms to the RPC server's saved Home pose. Do not open or close either gripper:
 
 ```bash
-/home/deepcybo/agentic_skills/procedure_skills/robot_reset_home/skills/procedure-robot-reset-home/scripts/run_robot_go_home.sh
+/home/deepcybo/agentic_skills/procedure_skills/robot_reset_home/skills/procedure-robot-reset-home/scripts/run_robot_go_home.sh \
+  --mode live --hardware-allowed --execute
 ```
 
 Move only one arm or tune the trajectory:
 
 ```bash
 /home/deepcybo/agentic_skills/procedure_skills/robot_reset_home/skills/procedure-robot-reset-home/scripts/run_robot_go_home.sh \
+  --mode live --hardware-allowed --execute \
   --side left_arm \
   --duration-sec 5 \
   --rate-hz 50
@@ -61,13 +65,15 @@ This command does not perform controller error recovery. If the arm is faulted, 
 Request Franka controller error recovery for both arms without commanding a Home trajectory or changing either gripper:
 
 ```bash
-/home/deepcybo/agentic_skills/procedure_skills/robot_reset_home/skills/procedure-robot-reset-home/scripts/run_robot_recover.sh
+/home/deepcybo/agentic_skills/procedure_skills/robot_reset_home/skills/procedure-robot-reset-home/scripts/run_robot_recover.sh \
+  --mode live --hardware-allowed --execute
 ```
 
 Recover one arm only:
 
 ```bash
 /home/deepcybo/agentic_skills/procedure_skills/robot_reset_home/skills/procedure-robot-reset-home/scripts/run_robot_recover.sh \
+  --mode live --hardware-allowed --execute \
   --side right_arm
 ```
 
@@ -85,6 +91,7 @@ Safety checks before running:
 - Neither gripper is holding a test tube or another object that could fall when a full reset opens the grippers.
 - The correct robot server/config is active.
 - Emergency stop is reachable.
+- E-stop or another unsafe state is not automatically cleared. After E-stop, use only read-only diagnosis or request manual intervention; reset and Home are physical operations, not E-stop recovery.
 
 Verification:
 

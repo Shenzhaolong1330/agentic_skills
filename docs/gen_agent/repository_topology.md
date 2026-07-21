@@ -21,4 +21,3 @@
 ## artifact 约束
 
 运行 trace、图像、深度数组、模型权重、设备日志、私密标定和临时服务 socket 必须写入 `/tmp/agentic_skills_runs/` 或用户显式指定的外部 artifact 目录，不得写入 Git 跟踪目录。S0/S1 原始 baseline 和 final 验收日志位于 `/tmp/agentic_skills_gen_agent/S00_S01/`，不提交。
-

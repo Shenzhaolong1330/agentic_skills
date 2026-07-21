@@ -30,4 +30,3 @@
 只读能力包括相机观测、机器人状态、gripper status 和只读 RPC health check。移动、夹爪控制、reset/home、清除控制器故障、恢复控制器、改变持物状态或 manifest 明确标记的其他物理状态改变，均属于有物理副作用能力。
 
 所有判定由 `evaluate_hardware_authorization` 提供，`HardwareGate.evaluate` 只是该函数的共享入口。错误原因使用稳定标识：`non_live_mode_planned_only`、`hardware_allowed_required`、`execute_required_for_side_effects`、`recovery_not_allowed`、`hardware_gate_passed`。
-

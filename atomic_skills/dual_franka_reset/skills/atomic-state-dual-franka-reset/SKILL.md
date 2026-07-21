@@ -26,7 +26,7 @@ Run the read-only check first:
 
 ```bash
 python3 /home/deepcybo/agentic_skills/atomic_skills/dual_franka_reset/skills/atomic-state-dual-franka-reset/scripts/check_and_reset.py \
-  status
+  --mode live --hardware-allowed status
 ```
 
 Interpret `classification`:
@@ -47,24 +47,24 @@ Preview the conditional action without moving the robot:
 
 ```bash
 python3 /home/deepcybo/agentic_skills/atomic_skills/dual_franka_reset/skills/atomic-state-dual-franka-reset/scripts/check_and_reset.py \
-  ensure
+  --mode dry_run ensure
 ```
 
 After completing the safety checks, allow real execution:
 
 ```bash
 python3 /home/deepcybo/agentic_skills/atomic_skills/dual_franka_reset/skills/atomic-state-dual-franka-reset/scripts/check_and_reset.py \
-  ensure --execute
+  --mode live --hardware-allowed --execute ensure
 ```
 
-`ensure --execute` runs `robot-reset` only when the pre-check is `needs_reset`. It then reconnects to RPC and writes `status_after` into the JSON report.
+`--mode live --hardware-allowed --execute ensure` runs `robot-reset` only when the pre-check is `needs_reset`. It then reconnects to RPC and writes `status_after` into the JSON report. The manifest must also mark the reset entrypoint as recovery-allowed.
 
 Before planning or executing, the script resolves `robot_ip` and `robot_port` from the reset config (including `scripts/config/robots/franka_config.yaml` when needed) and requires them to exactly match the RPC endpoint that was inspected. A mismatch is a hard failure so one robot's fault cannot reset another robot.
 
 Exit codes:
 
 - `0`: healthy, or reset completed and post-check is healthy
-- `2`: `status` found reset is needed, or `ensure` only planned it because `--execute` was omitted
+- `2`: `status` found reset is needed, or `ensure` only planned it because live hardware authorization or `--execute` was omitted
 - `3`: status is `unknown`, `manual_intervention`, or `recovering`, or fault evidence exists without complete dual-arm telemetry and diagnostics; no reset was attempted
 - `1`: RPC, reset command, or post-reset verification failed
 
@@ -78,6 +78,8 @@ Before `--execute`, verify all of the following:
 - The emergency stop is reachable.
 
 With the current Franka config, `robot-reset` moves both arms home and opens both grippers. It is not a motion-free error-clear operation. The dual-Franka RPC server separately exposes `recover_robot`/`recover`, which is the dedicated error-recovery path, but this skill follows the requested `robot-reset` workflow and reports a failure if the fault remains.
+
+An E-stop or unsafe state is never automatically cleared. After E-stop, only read-only diagnosis or a request for manual intervention is permitted. Reset and Home are physical state changes, not E-stop recovery.
 
 If `robot-reset` times out, treat the robot as still active until physically verified: the script terminates the local process group, but a trajectory already accepted by the remote server may continue. Use the emergency stop when motion is unsafe.
 

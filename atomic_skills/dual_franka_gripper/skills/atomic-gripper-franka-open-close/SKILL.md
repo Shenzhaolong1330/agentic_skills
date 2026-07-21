@@ -21,11 +21,11 @@ RPC defaults:
 
 ## Status
 
-Status is read-only and does not need `--execute`:
+Status is read-only: live access requires `--hardware-allowed`, but not `--execute`:
 
 ```bash
 python3 /home/deepcybo/agentic_skills/atomic_skills/dual_franka_gripper/skills/atomic-gripper-franka-open-close/scripts/gripper_control.py \
-  status --side both
+  --mode live --hardware-allowed status --side both
 ```
 
 ## Open / Close
@@ -34,28 +34,28 @@ Dry-run plan:
 
 ```bash
 python3 /home/deepcybo/agentic_skills/atomic_skills/dual_franka_gripper/skills/atomic-gripper-franka-open-close/scripts/gripper_control.py \
-  close --side right
+  --mode dry_run close --side right
 ```
 
-Real command:
+Real command requires both `--hardware-allowed` and `--execute`:
 
 ```bash
 python3 /home/deepcybo/agentic_skills/atomic_skills/dual_franka_gripper/skills/atomic-gripper-franka-open-close/scripts/gripper_control.py \
-  close --side right --execute
+  --mode live --hardware-allowed --execute close --side right
 ```
 
 Open:
 
 ```bash
 python3 /home/deepcybo/agentic_skills/atomic_skills/dual_franka_gripper/skills/atomic-gripper-franka-open-close/scripts/gripper_control.py \
-  open --side left --execute
+  --mode live --hardware-allowed --execute open --side left
 ```
 
 Initialize/reactivate:
 
 ```bash
 python3 /home/deepcybo/agentic_skills/atomic_skills/dual_franka_gripper/skills/atomic-gripper-franka-open-close/scripts/gripper_control.py \
-  initialize --side both --execute
+  --mode live --hardware-allowed --execute initialize --side both
 ```
 
 ## Safety Checks

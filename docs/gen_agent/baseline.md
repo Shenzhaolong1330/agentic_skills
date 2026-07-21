@@ -11,4 +11,3 @@
 - skipped: 0
 - 硬件限制：baseline 未打开相机、未连接 RPC、未启动 ROS/SAM/RealSense 服务、未执行 reset、运动或夹爪动作。
 - 拓扑限制：`git submodule status --recursive` 因缺失 `.gitmodules` 与现存 gitlink 不匹配而失败；详见 `repository_topology.md`。
-

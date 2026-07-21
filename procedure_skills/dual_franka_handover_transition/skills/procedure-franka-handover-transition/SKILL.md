@@ -29,16 +29,17 @@ Dry-run plan, no robot motion:
 
 ```bash
 python3 /home/deepcybo/agentic_skills/procedure_skills/dual_franka_handover_transition/skills/procedure-franka-handover-transition/scripts/handover_transition.py \
-  --active-arm right
+  --mode dry_run --active-arm right
 ```
 
 ## Execute Transition
 
-Real execution requires `--execute`:
+Real execution requires both `--hardware-allowed` and `--execute`:
 
 ```bash
 python3 /home/deepcybo/agentic_skills/procedure_skills/dual_franka_handover_transition/skills/procedure-franka-handover-transition/scripts/handover_transition.py \
   --active-arm right \
+  --mode live --hardware-allowed \
   --execute
 ```
 

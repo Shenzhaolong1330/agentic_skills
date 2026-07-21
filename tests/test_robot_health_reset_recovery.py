@@ -4,7 +4,7 @@ from pathlib import Path
 from agentic_skills_harness.manifest import load_manifest
 from agentic_skills_harness.reset_recovery import ResetRecoveryController
 from agentic_skills_harness.robot_health import RobotHealthMonitor
-from agentic_skills_harness.types import HeldObjectState, ResetOutcome, RobotHealthState, SkillContext, SkillMode
+from agentic_skills_harness.types import HeldObjectState, ResetOutcome, RobotHealthState, RobotHealthStatus, SkillContext, SkillMode
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -47,6 +47,21 @@ class RobotHealthResetRecoveryTests(unittest.TestCase):
         context = SkillContext("reset", mode=SkillMode.LIVE, execute=False, hardware_allowed=False)
         result = controller.perform_auto_reset(context, reason="test", held_object_state=HeldObjectState.NONE)
         self.assertEqual(result.outcome, ResetOutcome.RESET_DENIED_BY_GATE)
+
+    def test_estop_never_auto_recovers(self):
+        controller = ResetRecoveryController(self.manifest, ROOT)
+        context = SkillContext("estop", mode=SkillMode.LIVE, execute=True, hardware_allowed=True)
+        health = RobotHealthStatus(ok=False, state=RobotHealthState.ESTOP_OR_UNSAFE, source="test")
+        self.assertFalse(controller.should_reset(health, None, context))
+        self.assertFalse(controller.should_reset(None, {"abnormal_robot_state_detected": True, "state": "ESTOP_OR_UNSAFE"}, context))
+        result = controller.perform_auto_reset(
+            context,
+            reason="test",
+            held_object_state=HeldObjectState.NONE,
+            before_health=health,
+        )
+        self.assertEqual(result.outcome, ResetOutcome.RESET_DENIED_BY_GATE)
+        self.assertFalse(result.attempted)
 
     def test_attempts_exceeded_and_held_object_policy(self):
         controller = ResetRecoveryController(self.manifest, ROOT)

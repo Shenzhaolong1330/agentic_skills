@@ -26,14 +26,17 @@ Dry-run plan:
 
 ```bash
 python3 /home/deepcybo/agentic_skills/atomic_skills/dual_franka_p2p/skills/atomic-motion-franka-move-to-pose/scripts/move_to_pose.py \
+  --mode dry_run \
   --left-pose '[0.5268, 0.0149, 0.0489, 1.7531, -1.8206, 0.8700]' \
   --right-pose '[0.5310, -0.0281, 0.0235, -1.8203, -1.7759, -0.9711]'
 ```
 
-Real motion requires `--execute`:
+Real motion requires both `--hardware-allowed` and `--execute`:
 
 ```bash
 python3 /home/deepcybo/agentic_skills/atomic_skills/dual_franka_p2p/skills/atomic-motion-franka-move-to-pose/scripts/move_to_pose.py \
+  --mode live \
+  --hardware-allowed \
   --right-pose '[0.5310, -0.0281, 0.0235, -1.8203, -1.7759, -0.9711]' \
   --max-translation-speed 0.04 \
   --max-rotation-speed 0.20 \
