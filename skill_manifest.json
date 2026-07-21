@@ -1,5 +1,5 @@
 {
-  "version": "0.1.1",
+  "version": "0.2.0",
   "default_mode": "mock",
   "artifact_root_default": "/tmp/agentic_skills_runs",
   "hardware_gate": {
@@ -22,32 +22,54 @@
       "entrypoints": [
         {
           "name": "object-locator-json",
+          "capability_id": "perception.locate_object_3d",
+          "capability_version": "1.0.0",
+          "kind": "observation",
+          "visibility": "public",
           "path": "atomic_skills/object_locator/.venv/bin/object-locator",
           "type": "python",
+          "description": "RealSense/VLM/Grounded-SAM/depth object localization. Entrypoint: object-locator-json.",
+          "input_schema_ref": "schemas/capabilities/empty_input.schema.json",
+          "output_schema_ref": "schemas/observation_result.schema.json",
           "requires_hardware": true,
           "opens_camera": true,
           "connects_robot_rpc": false,
           "moves_robot": false,
           "controls_gripper": false,
+          "physical_side_effects": [],
+          "risk_class": "READ_ONLY_HARDWARE",
+          "resources": [
+            {
+              "resource_id": "camera.realsense",
+              "mode": "shared",
+              "description": "RealSense camera"
+            }
+          ],
+          "preconditions": [
+            "hardware_gate_checked"
+          ],
+          "effects": [
+            "command_result_available"
+          ],
+          "invalidates": [],
+          "timeout_s": 60.0,
+          "verifier": {
+            "type": "output_schema",
+            "capability_id": null,
+            "required_for_physical_success": false,
+            "physical_verification_limited": false,
+            "notes": "Observation output contract only; it does not prove a higher-level goal."
+          },
+          "error_codes": [
+            "INVALID_INPUT",
+            "CAPABILITY_EXECUTION_FAILED",
+            "PERCEPTION_NOT_FOUND"
+          ],
           "default_safe_to_run": false,
           "allowed_as_recovery": false,
           "execute_flag": null,
           "notes": "Live camera perception; task dry_run records a command plan instead."
         }
-      ],
-      "inputs_schema_ref": "schemas/common.schema.json#/definitions/DetectionResult",
-      "outputs_schema_ref": "schemas/common.schema.json#/definitions/DetectionResult",
-      "dependencies": [
-        "RealSense",
-        "OpenRouter optional",
-        "calibration/extrinsics.yaml"
-      ],
-      "safety_gates": [
-        "mode live requires HardwareGate for camera access"
-      ],
-      "side_effects": [
-        "opens RealSense pipeline",
-        "writes object_locator runs artifacts"
       ]
     },
     {
@@ -58,31 +80,56 @@
       "entrypoints": [
         {
           "name": "move_to_pose",
+          "capability_id": "motion.move_to_pose",
+          "capability_version": "1.0.0",
+          "kind": "action",
+          "visibility": "public",
           "path": "atomic_skills/dual_franka_p2p/skills/atomic-motion-franka-move-to-pose/scripts/move_to_pose.py",
           "type": "python",
+          "description": "Dual Franka base-frame xyz+rotvec P2P motion. Entrypoint: move_to_pose.",
+          "input_schema_ref": "schemas/capabilities/motion_move_to_pose.input.schema.json",
+          "output_schema_ref": "schemas/action_result.schema.json",
           "requires_hardware": true,
           "opens_camera": false,
           "connects_robot_rpc": true,
           "moves_robot": true,
           "controls_gripper": false,
+          "physical_side_effects": [
+            "moves robot arms"
+          ],
+          "risk_class": "MOTION",
+          "resources": [
+            {
+              "resource_id": "robot.dual_franka.shared_workspace",
+              "mode": "exclusive",
+              "description": "Dual-arm workspace"
+            }
+          ],
+          "preconditions": [
+            "hardware_gate_checked"
+          ],
+          "effects": [
+            "physical_effect_requires_observation"
+          ],
+          "invalidates": [],
+          "timeout_s": 120.0,
+          "verifier": {
+            "type": "capability",
+            "capability_id": "motion.move_to_pose",
+            "required_for_physical_success": true,
+            "physical_verification_limited": true,
+            "notes": "Contract declaration only; runtime physical verification is not executed in this phase."
+          },
+          "error_codes": [
+            "INVALID_INPUT",
+            "CAPABILITY_EXECUTION_FAILED",
+            "MOTION_TARGET_NOT_REACHED"
+          ],
           "default_safe_to_run": false,
           "allowed_as_recovery": false,
           "execute_flag": "--execute",
           "notes": "Default should be plan-only; live motion requires HardwareGate."
         }
-      ],
-      "inputs_schema_ref": "schemas/common.schema.json#/definitions/Pose6D",
-      "outputs_schema_ref": "schemas/common.schema.json#/definitions/MotionResult",
-      "dependencies": [
-        "dual_franka_robotiq_rpc_client.py"
-      ],
-      "safety_gates": [
-        "HardwareGate",
-        "pose/error thresholds"
-      ],
-      "side_effects": [
-        "connects robot RPC",
-        "moves robot arms"
       ]
     },
     {
@@ -93,13 +140,49 @@
       "entrypoints": [
         {
           "name": "gripper_status",
+          "capability_id": "gripper.observe_status",
+          "capability_version": "1.0.0",
+          "kind": "observation",
+          "visibility": "public",
           "path": "atomic_skills/dual_franka_gripper/skills/atomic-gripper-franka-open-close/scripts/gripper_control.py",
           "type": "python",
+          "description": "Robotiq gripper open/close/initialize/status. Entrypoint: gripper_status.",
+          "input_schema_ref": "schemas/capabilities/empty_input.schema.json",
+          "output_schema_ref": "schemas/observation_result.schema.json",
           "requires_hardware": true,
           "opens_camera": false,
           "connects_robot_rpc": true,
           "moves_robot": false,
           "controls_gripper": false,
+          "physical_side_effects": [],
+          "risk_class": "READ_ONLY_HARDWARE",
+          "resources": [
+            {
+              "resource_id": "robot.dual_franka.grippers",
+              "mode": "shared",
+              "description": "Gripper state"
+            }
+          ],
+          "preconditions": [
+            "hardware_gate_checked"
+          ],
+          "effects": [
+            "command_result_available"
+          ],
+          "invalidates": [],
+          "timeout_s": 120.0,
+          "verifier": {
+            "type": "output_schema",
+            "capability_id": null,
+            "required_for_physical_success": false,
+            "physical_verification_limited": false,
+            "notes": "Observation output contract only; it does not prove a higher-level goal."
+          },
+          "error_codes": [
+            "INVALID_INPUT",
+            "CAPABILITY_EXECUTION_FAILED",
+            "PERCEPTION_NOT_FOUND"
+          ],
           "default_safe_to_run": false,
           "allowed_as_recovery": false,
           "execute_flag": null,
@@ -107,31 +190,56 @@
         },
         {
           "name": "gripper_control",
+          "capability_id": "gripper.command",
+          "capability_version": "1.0.0",
+          "kind": "action",
+          "visibility": "public",
           "path": "atomic_skills/dual_franka_gripper/skills/atomic-gripper-franka-open-close/scripts/gripper_control.py",
           "type": "python",
+          "description": "Robotiq gripper open/close/initialize/status. Entrypoint: gripper_control.",
+          "input_schema_ref": "schemas/capabilities/gripper_command.input.schema.json",
+          "output_schema_ref": "schemas/action_result.schema.json",
           "requires_hardware": true,
           "opens_camera": false,
           "connects_robot_rpc": true,
           "moves_robot": false,
           "controls_gripper": true,
+          "physical_side_effects": [
+            "controls gripper"
+          ],
+          "risk_class": "GRIPPER",
+          "resources": [
+            {
+              "resource_id": "robot.dual_franka.grippers",
+              "mode": "exclusive",
+              "description": "Gripper control"
+            }
+          ],
+          "preconditions": [
+            "hardware_gate_checked"
+          ],
+          "effects": [
+            "physical_effect_requires_observation"
+          ],
+          "invalidates": [],
+          "timeout_s": 120.0,
+          "verifier": {
+            "type": "capability",
+            "capability_id": "gripper.command",
+            "required_for_physical_success": true,
+            "physical_verification_limited": true,
+            "notes": "Contract declaration only; runtime physical verification is not executed in this phase."
+          },
+          "error_codes": [
+            "INVALID_INPUT",
+            "CAPABILITY_EXECUTION_FAILED",
+            "GRASP_NOT_CONFIRMED"
+          ],
           "default_safe_to_run": false,
           "allowed_as_recovery": false,
           "execute_flag": "--execute",
           "notes": "status is read-only but still connects RPC; open/close require gate."
         }
-      ],
-      "inputs_schema_ref": "schemas/common.schema.json#/definitions/GripperResult",
-      "outputs_schema_ref": "schemas/common.schema.json#/definitions/GripperResult",
-      "dependencies": [
-        "dual_franka_robotiq_rpc_client.py"
-      ],
-      "safety_gates": [
-        "HardwareGate",
-        "release gate"
-      ],
-      "side_effects": [
-        "connects robot RPC",
-        "controls gripper"
       ]
     },
     {
@@ -142,13 +250,49 @@
       "entrypoints": [
         {
           "name": "check_and_reset_status",
+          "capability_id": "robot.observe_health",
+          "capability_version": "1.0.0",
+          "kind": "observation",
+          "visibility": "public",
           "path": "atomic_skills/dual_franka_reset/skills/atomic-state-dual-franka-reset/scripts/check_and_reset.py",
           "type": "python",
+          "description": "Dual Franka health check and guarded reset. Entrypoint: check_and_reset_status.",
+          "input_schema_ref": "schemas/capabilities/empty_input.schema.json",
+          "output_schema_ref": "schemas/observation_result.schema.json",
           "requires_hardware": true,
           "opens_camera": false,
           "connects_robot_rpc": true,
           "moves_robot": false,
           "controls_gripper": false,
+          "physical_side_effects": [],
+          "risk_class": "READ_ONLY_HARDWARE",
+          "resources": [
+            {
+              "resource_id": "robot.dual_franka.state",
+              "mode": "shared",
+              "description": "Robot health"
+            }
+          ],
+          "preconditions": [
+            "hardware_gate_checked"
+          ],
+          "effects": [
+            "command_result_available"
+          ],
+          "invalidates": [],
+          "timeout_s": 120.0,
+          "verifier": {
+            "type": "output_schema",
+            "capability_id": null,
+            "required_for_physical_success": false,
+            "physical_verification_limited": false,
+            "notes": "Observation output contract only; it does not prove a higher-level goal."
+          },
+          "error_codes": [
+            "INVALID_INPUT",
+            "CAPABILITY_EXECUTION_FAILED",
+            "PERCEPTION_NOT_FOUND"
+          ],
           "default_safe_to_run": false,
           "allowed_as_recovery": true,
           "execute_flag": null,
@@ -156,37 +300,62 @@
         },
         {
           "name": "check_and_reset_ensure",
+          "capability_id": "robot.recover_reset_home",
+          "capability_version": "1.0.0",
+          "kind": "recovery",
+          "visibility": "public",
           "path": "atomic_skills/dual_franka_reset/skills/atomic-state-dual-franka-reset/scripts/check_and_reset.py",
           "type": "python",
+          "description": "Dual Franka health check and guarded reset. Entrypoint: check_and_reset_ensure.",
+          "input_schema_ref": "schemas/capabilities/empty_input.schema.json",
+          "output_schema_ref": "schemas/action_result.schema.json",
           "requires_hardware": true,
           "opens_camera": false,
           "connects_robot_rpc": true,
           "moves_robot": true,
           "controls_gripper": true,
-          "changes_robot_state": true,
+          "physical_side_effects": [
+            "moves robot arms",
+            "controls gripper",
+            "may clear controller faults",
+            "may change held-state"
+          ],
+          "risk_class": "RECOVERY",
+          "resources": [
+            {
+              "resource_id": "robot.dual_franka.shared_workspace",
+              "mode": "exclusive",
+              "description": "Dual-arm workspace"
+            }
+          ],
+          "preconditions": [
+            "hardware_gate_checked"
+          ],
+          "effects": [
+            "physical_effect_requires_observation"
+          ],
+          "invalidates": [
+            "robot.health",
+            "world.observations"
+          ],
+          "timeout_s": 120.0,
+          "verifier": {
+            "type": "capability",
+            "capability_id": "robot.recover_reset_home",
+            "required_for_physical_success": true,
+            "physical_verification_limited": true,
+            "notes": "Contract declaration only; runtime physical verification is not executed in this phase."
+          },
+          "error_codes": [
+            "INVALID_INPUT",
+            "CAPABILITY_EXECUTION_FAILED",
+            "RECOVERY_FAILED"
+          ],
           "default_safe_to_run": false,
           "allowed_as_recovery": true,
           "execute_flag": "--execute",
           "notes": "Preferred AUTO_RESET_RECOVERY entrypoint; may move arms, clear faults, home/reset robot, and alter gripper/object state depending the underlying reset script."
         }
-      ],
-      "inputs_schema_ref": "schemas/common.schema.json#/definitions/RobotHealthStatus",
-      "outputs_schema_ref": "schemas/common.schema.json#/definitions/ResetRecoveryResult",
-      "dependencies": [
-        "atomic-motion-franka-move-to-pose",
-        "procedure-robot-reset-home"
-      ],
-      "safety_gates": [
-        "HardwareGate",
-        "allowed_as_recovery",
-        "max_auto_reset_attempts"
-      ],
-      "side_effects": [
-        "connects robot RPC",
-        "may move arms",
-        "may clear faults",
-        "may open grippers",
-        "may alter held object state"
       ]
     },
     {
@@ -197,13 +366,54 @@
       "entrypoints": [
         {
           "name": "view_state_realsense",
+          "capability_id": "state.capture_realsense",
+          "capability_version": "1.0.0",
+          "kind": "observation",
+          "visibility": "public",
           "path": "atomic_skills/state_realsense_viewer/skills/atomic-state-realsense-viewer/scripts/view_state_realsense.py",
           "type": "python",
+          "description": "Capture state and RealSense images for supervision/debugging. Entrypoint: view_state_realsense.",
+          "input_schema_ref": "schemas/capabilities/empty_input.schema.json",
+          "output_schema_ref": "schemas/observation_result.schema.json",
           "requires_hardware": true,
           "opens_camera": true,
           "connects_robot_rpc": true,
           "moves_robot": false,
           "controls_gripper": false,
+          "physical_side_effects": [],
+          "risk_class": "READ_ONLY_HARDWARE",
+          "resources": [
+            {
+              "resource_id": "camera.realsense",
+              "mode": "shared",
+              "description": "RealSense camera"
+            },
+            {
+              "resource_id": "robot.dual_franka.state",
+              "mode": "shared",
+              "description": "Robot state observation"
+            }
+          ],
+          "preconditions": [
+            "hardware_gate_checked"
+          ],
+          "effects": [
+            "command_result_available"
+          ],
+          "invalidates": [],
+          "timeout_s": 120.0,
+          "verifier": {
+            "type": "output_schema",
+            "capability_id": null,
+            "required_for_physical_success": false,
+            "physical_verification_limited": false,
+            "notes": "Observation output contract only; it does not prove a higher-level goal."
+          },
+          "error_codes": [
+            "INVALID_INPUT",
+            "CAPABILITY_EXECUTION_FAILED",
+            "PERCEPTION_NOT_FOUND"
+          ],
           "default_safe_to_run": false,
           "allowed_as_recovery": false,
           "execute_flag": null,
@@ -211,33 +421,56 @@
         },
         {
           "name": "view_state_realsense_reset",
+          "capability_id": "state.reset_realsense",
+          "capability_version": "1.0.0",
+          "kind": "action",
+          "visibility": "public",
           "path": "atomic_skills/state_realsense_viewer/skills/atomic-state-realsense-viewer/scripts/view_state_realsense.py",
           "type": "python",
+          "description": "Capture state and RealSense images for supervision/debugging. Entrypoint: view_state_realsense_reset.",
+          "input_schema_ref": "schemas/capabilities/empty_input.schema.json",
+          "output_schema_ref": "schemas/action_result.schema.json",
           "requires_hardware": true,
           "opens_camera": true,
           "connects_robot_rpc": true,
           "moves_robot": false,
           "controls_gripper": false,
-          "physical_side_effects": true,
+          "physical_side_effects": [
+            "changes camera device state"
+          ],
+          "risk_class": "HIGH_RISK",
+          "resources": [
+            {
+              "resource_id": "camera.realsense",
+              "mode": "exclusive",
+              "description": "Camera device state"
+            }
+          ],
+          "preconditions": [
+            "hardware_gate_checked"
+          ],
+          "effects": [
+            "physical_effect_requires_observation"
+          ],
+          "invalidates": [],
+          "timeout_s": 120.0,
+          "verifier": {
+            "type": "capability",
+            "capability_id": "state.reset_realsense",
+            "required_for_physical_success": true,
+            "physical_verification_limited": true,
+            "notes": "Contract declaration only; runtime physical verification is not executed in this phase."
+          },
+          "error_codes": [
+            "INVALID_INPUT",
+            "CAPABILITY_EXECUTION_FAILED",
+            "CAPABILITY_EXECUTION_FAILED"
+          ],
           "default_safe_to_run": false,
           "allowed_as_recovery": false,
           "execute_flag": "--execute",
           "notes": "Camera reset is a physical device state change and is not robot E-stop recovery."
         }
-      ],
-      "inputs_schema_ref": "schemas/common.schema.json",
-      "outputs_schema_ref": "schemas/common.schema.json",
-      "dependencies": [
-        "object_locator",
-        "dual_franka_rpc_client"
-      ],
-      "safety_gates": [
-        "HardwareGate for live camera/RPC"
-      ],
-      "side_effects": [
-        "opens RealSense",
-        "reads robot RPC",
-        "writes runs artifacts"
       ]
     },
     {
@@ -248,33 +481,57 @@
       "entrypoints": [
         {
           "name": "handover_transition",
+          "capability_id": "procedure.handover_transition",
+          "capability_version": "1.0.0",
+          "kind": "procedure",
+          "visibility": "public",
           "path": "procedure_skills/dual_franka_handover_transition/skills/procedure-franka-handover-transition/scripts/handover_transition.py",
           "type": "python",
+          "description": "Fixed dual-Franka handover transition. Entrypoint: handover_transition.",
+          "input_schema_ref": "schemas/capabilities/handover_transition.input.schema.json",
+          "output_schema_ref": "schemas/action_result.schema.json",
           "requires_hardware": true,
           "opens_camera": false,
           "connects_robot_rpc": true,
           "moves_robot": true,
           "controls_gripper": true,
+          "physical_side_effects": [
+            "moves robot arms",
+            "controls gripper"
+          ],
+          "risk_class": "HIGH_RISK",
+          "resources": [
+            {
+              "resource_id": "robot.dual_franka.shared_workspace",
+              "mode": "exclusive",
+              "description": "Dual-arm workspace"
+            }
+          ],
+          "preconditions": [
+            "hardware_gate_checked"
+          ],
+          "effects": [
+            "physical_effect_requires_observation"
+          ],
+          "invalidates": [],
+          "timeout_s": 120.0,
+          "verifier": {
+            "type": "capability",
+            "capability_id": "procedure.handover_transition",
+            "required_for_physical_success": true,
+            "physical_verification_limited": true,
+            "notes": "Contract declaration only; runtime physical verification is not executed in this phase."
+          },
+          "error_codes": [
+            "INVALID_INPUT",
+            "CAPABILITY_EXECUTION_FAILED",
+            "VERIFICATION_FAILED"
+          ],
           "default_safe_to_run": false,
           "allowed_as_recovery": false,
           "execute_flag": "--execute",
           "notes": "Task runner must gate partner close and active release."
         }
-      ],
-      "inputs_schema_ref": "schemas/task_pick_tube_insert_rack.schema.json",
-      "outputs_schema_ref": "schemas/common.schema.json#/definitions/StageResult",
-      "dependencies": [
-        "atomic-motion-franka-move-to-pose",
-        "atomic-gripper-franka-open-close"
-      ],
-      "safety_gates": [
-        "HardwareGate",
-        "handover verification gate"
-      ],
-      "side_effects": [
-        "moves both arms",
-        "closes partner gripper",
-        "opens active gripper"
       ]
     },
     {
@@ -285,13 +542,57 @@
       "entrypoints": [
         {
           "name": "run_robot_reset",
+          "capability_id": "recovery.robot_reset",
+          "capability_version": "1.0.0",
+          "kind": "recovery",
+          "visibility": "public",
           "path": "procedure_skills/robot_reset_home/skills/procedure-robot-reset-home/scripts/run_robot_reset.sh",
           "type": "shell",
+          "description": "Run le_nero robot-reset to return robot home. Entrypoint: run_robot_reset.",
+          "input_schema_ref": "schemas/capabilities/empty_input.schema.json",
+          "output_schema_ref": "schemas/action_result.schema.json",
           "requires_hardware": true,
           "opens_camera": false,
           "connects_robot_rpc": true,
           "moves_robot": true,
           "controls_gripper": true,
+          "physical_side_effects": [
+            "moves robot arms",
+            "controls gripper",
+            "may clear controller faults",
+            "may change held-state"
+          ],
+          "risk_class": "RECOVERY",
+          "resources": [
+            {
+              "resource_id": "robot.dual_franka.shared_workspace",
+              "mode": "exclusive",
+              "description": "Dual-arm workspace"
+            }
+          ],
+          "preconditions": [
+            "hardware_gate_checked"
+          ],
+          "effects": [
+            "physical_effect_requires_observation"
+          ],
+          "invalidates": [
+            "robot.health",
+            "world.observations"
+          ],
+          "timeout_s": 120.0,
+          "verifier": {
+            "type": "capability",
+            "capability_id": "recovery.robot_reset",
+            "required_for_physical_success": true,
+            "physical_verification_limited": true,
+            "notes": "Contract declaration only; runtime physical verification is not executed in this phase."
+          },
+          "error_codes": [
+            "INVALID_INPUT",
+            "CAPABILITY_EXECUTION_FAILED",
+            "RECOVERY_FAILED"
+          ],
           "default_safe_to_run": false,
           "allowed_as_recovery": true,
           "execute_flag": "--execute",
@@ -299,14 +600,54 @@
         },
         {
           "name": "run_robot_recover",
+          "capability_id": "recovery.robot_recover",
+          "capability_version": "1.0.0",
+          "kind": "recovery",
+          "visibility": "public",
           "path": "procedure_skills/robot_reset_home/skills/procedure-robot-reset-home/scripts/run_robot_recover.sh",
           "type": "shell",
+          "description": "Run le_nero robot-reset to return robot home. Entrypoint: run_robot_recover.",
+          "input_schema_ref": "schemas/capabilities/empty_input.schema.json",
+          "output_schema_ref": "schemas/action_result.schema.json",
           "requires_hardware": true,
           "opens_camera": false,
           "connects_robot_rpc": true,
           "moves_robot": false,
           "controls_gripper": false,
-          "changes_robot_state": true,
+          "physical_side_effects": [
+            "changes controller state"
+          ],
+          "risk_class": "RECOVERY",
+          "resources": [
+            {
+              "resource_id": "robot.dual_franka.shared_workspace",
+              "mode": "exclusive",
+              "description": "Dual-arm workspace"
+            }
+          ],
+          "preconditions": [
+            "hardware_gate_checked"
+          ],
+          "effects": [
+            "physical_effect_requires_observation"
+          ],
+          "invalidates": [
+            "robot.health",
+            "world.observations"
+          ],
+          "timeout_s": 120.0,
+          "verifier": {
+            "type": "capability",
+            "capability_id": "recovery.robot_recover",
+            "required_for_physical_success": true,
+            "physical_verification_limited": true,
+            "notes": "Contract declaration only; runtime physical verification is not executed in this phase."
+          },
+          "error_codes": [
+            "INVALID_INPUT",
+            "CAPABILITY_EXECUTION_FAILED",
+            "ROBOT_FAULT"
+          ],
           "default_safe_to_run": false,
           "allowed_as_recovery": true,
           "execute_flag": "--execute",
@@ -314,32 +655,56 @@
         },
         {
           "name": "run_robot_go_home",
+          "capability_id": "motion.go_home",
+          "capability_version": "1.0.0",
+          "kind": "action",
+          "visibility": "public",
           "path": "procedure_skills/robot_reset_home/skills/procedure-robot-reset-home/scripts/run_robot_go_home.sh",
           "type": "shell",
+          "description": "Run le_nero robot-reset to return robot home. Entrypoint: run_robot_go_home.",
+          "input_schema_ref": "schemas/capabilities/empty_input.schema.json",
+          "output_schema_ref": "schemas/action_result.schema.json",
           "requires_hardware": true,
           "opens_camera": false,
           "connects_robot_rpc": true,
           "moves_robot": true,
           "controls_gripper": false,
+          "physical_side_effects": [
+            "moves robot arms"
+          ],
+          "risk_class": "MOTION",
+          "resources": [
+            {
+              "resource_id": "robot.dual_franka.shared_workspace",
+              "mode": "exclusive",
+              "description": "Dual-arm workspace"
+            }
+          ],
+          "preconditions": [
+            "hardware_gate_checked"
+          ],
+          "effects": [
+            "physical_effect_requires_observation"
+          ],
+          "invalidates": [],
+          "timeout_s": 120.0,
+          "verifier": {
+            "type": "capability",
+            "capability_id": "motion.go_home",
+            "required_for_physical_success": true,
+            "physical_verification_limited": true,
+            "notes": "Contract declaration only; runtime physical verification is not executed in this phase."
+          },
+          "error_codes": [
+            "INVALID_INPUT",
+            "CAPABILITY_EXECUTION_FAILED",
+            "MOTION_TARGET_NOT_REACHED"
+          ],
           "default_safe_to_run": false,
           "allowed_as_recovery": false,
           "execute_flag": "--execute",
           "notes": "Home is a physical motion and is not E-stop recovery."
         }
-      ],
-      "inputs_schema_ref": "schemas/common.schema.json#/definitions/ResetRecoveryResult",
-      "outputs_schema_ref": "schemas/common.schema.json#/definitions/ResetRecoveryResult",
-      "dependencies": [
-        "Le-nero/dual_arm_teleop"
-      ],
-      "safety_gates": [
-        "HardwareGate",
-        "allowed_as_recovery"
-      ],
-      "side_effects": [
-        "moves robot",
-        "may open grippers",
-        "may alter held object state"
       ]
     },
     {
@@ -350,13 +715,58 @@
       "entrypoints": [
         {
           "name": "task_runner",
+          "capability_id": "task.pick_insert.run",
+          "capability_version": "1.0.0",
+          "kind": "task",
+          "visibility": "public",
           "path": "task_skills/pick_tube_insert_rack/skills/task-pick-tube-insert-rack/scripts/task_pick_tube_insert_rack_runner.py",
           "type": "python",
+          "description": "Task-level pick tube, handover, locate rack/hole, insert, release. Entrypoint: task_runner.",
+          "input_schema_ref": "schemas/capabilities/task_run.input.schema.json",
+          "output_schema_ref": "schemas/action_result.schema.json",
           "requires_hardware": true,
           "opens_camera": true,
           "connects_robot_rpc": true,
           "moves_robot": true,
           "controls_gripper": true,
+          "physical_side_effects": [
+            "moves robot arms",
+            "controls gripper",
+            "composes hardware capabilities"
+          ],
+          "risk_class": "HIGH_RISK",
+          "resources": [
+            {
+              "resource_id": "robot.dual_franka.shared_workspace",
+              "mode": "exclusive",
+              "description": "Dual-arm workspace"
+            },
+            {
+              "resource_id": "camera.realsense",
+              "mode": "exclusive",
+              "description": "RealSense camera"
+            }
+          ],
+          "preconditions": [
+            "hardware_gate_checked"
+          ],
+          "effects": [
+            "physical_effect_requires_observation"
+          ],
+          "invalidates": [],
+          "timeout_s": 120.0,
+          "verifier": {
+            "type": "task_specific",
+            "capability_id": null,
+            "required_for_physical_success": true,
+            "physical_verification_limited": true,
+            "notes": "Contract declaration only; runtime physical verification is not executed in this phase."
+          },
+          "error_codes": [
+            "INVALID_INPUT",
+            "CAPABILITY_EXECUTION_FAILED",
+            "VERIFICATION_FAILED"
+          ],
           "default_safe_to_run": false,
           "allowed_as_recovery": false,
           "execute_flag": "--execute",
@@ -364,13 +774,49 @@
         },
         {
           "name": "task_live_locate_tube",
+          "capability_id": "internal.task.locate_object",
+          "capability_version": "1.0.0",
+          "kind": "observation",
+          "visibility": "internal",
           "path": "atomic_skills/object_locator/.venv/bin/object-locator",
           "type": "python",
+          "description": "Task-level pick tube, handover, locate rack/hole, insert, release. Entrypoint: task_live_locate_tube.",
+          "input_schema_ref": "schemas/capabilities/empty_input.schema.json",
+          "output_schema_ref": "schemas/observation_result.schema.json",
           "requires_hardware": true,
           "opens_camera": true,
           "connects_robot_rpc": false,
           "moves_robot": false,
           "controls_gripper": false,
+          "physical_side_effects": [],
+          "risk_class": "READ_ONLY_HARDWARE",
+          "resources": [
+            {
+              "resource_id": "camera.realsense",
+              "mode": "exclusive",
+              "description": "RealSense camera"
+            }
+          ],
+          "preconditions": [
+            "hardware_gate_checked"
+          ],
+          "effects": [
+            "command_result_available"
+          ],
+          "invalidates": [],
+          "timeout_s": 60.0,
+          "verifier": {
+            "type": "output_schema",
+            "capability_id": null,
+            "required_for_physical_success": false,
+            "physical_verification_limited": false,
+            "notes": "Observation output contract only; it does not prove a higher-level goal."
+          },
+          "error_codes": [
+            "INVALID_INPUT",
+            "CAPABILITY_EXECUTION_FAILED",
+            "PERCEPTION_NOT_FOUND"
+          ],
           "default_safe_to_run": false,
           "allowed_as_recovery": false,
           "execute_flag": null,
@@ -378,13 +824,52 @@
         },
         {
           "name": "task_live_grasp_handover",
+          "capability_id": "internal.task.grasp_handover",
+          "capability_version": "1.0.0",
+          "kind": "action",
+          "visibility": "internal",
           "path": "task_skills/pick_tube_insert_rack/skills/task-pick-tube-insert-rack/scripts/grasp_right_arm_xyz.sh",
           "type": "shell",
+          "description": "Task-level pick tube, handover, locate rack/hole, insert, release. Entrypoint: task_live_grasp_handover.",
+          "input_schema_ref": "schemas/capabilities/empty_input.schema.json",
+          "output_schema_ref": "schemas/action_result.schema.json",
           "requires_hardware": true,
           "opens_camera": false,
           "connects_robot_rpc": true,
           "moves_robot": true,
           "controls_gripper": true,
+          "physical_side_effects": [
+            "moves robot arms",
+            "controls gripper"
+          ],
+          "risk_class": "HIGH_RISK",
+          "resources": [
+            {
+              "resource_id": "robot.dual_franka.shared_workspace",
+              "mode": "exclusive",
+              "description": "Dual-arm workspace"
+            }
+          ],
+          "preconditions": [
+            "hardware_gate_checked"
+          ],
+          "effects": [
+            "physical_effect_requires_observation"
+          ],
+          "invalidates": [],
+          "timeout_s": 120.0,
+          "verifier": {
+            "type": "task_specific",
+            "capability_id": null,
+            "required_for_physical_success": true,
+            "physical_verification_limited": true,
+            "notes": "Contract declaration only; runtime physical verification is not executed in this phase."
+          },
+          "error_codes": [
+            "INVALID_INPUT",
+            "CAPABILITY_EXECUTION_FAILED",
+            "GRASP_NOT_CONFIRMED"
+          ],
           "default_safe_to_run": false,
           "allowed_as_recovery": false,
           "execute_flag": "--execute",
@@ -392,13 +877,58 @@
         },
         {
           "name": "task_live_insert_flow",
+          "capability_id": "internal.task.insert_flow",
+          "capability_version": "1.0.0",
+          "kind": "action",
+          "visibility": "internal",
           "path": "task_skills/pick_tube_insert_rack/skills/task-pick-tube-insert-rack/scripts/run_manual_grip_to_insert.py",
           "type": "python",
+          "description": "Task-level pick tube, handover, locate rack/hole, insert, release. Entrypoint: task_live_insert_flow.",
+          "input_schema_ref": "schemas/capabilities/empty_input.schema.json",
+          "output_schema_ref": "schemas/action_result.schema.json",
           "requires_hardware": true,
           "opens_camera": true,
           "connects_robot_rpc": true,
           "moves_robot": true,
           "controls_gripper": true,
+          "physical_side_effects": [
+            "moves robot arms",
+            "controls gripper",
+            "composes hardware capabilities"
+          ],
+          "risk_class": "CONTACT",
+          "resources": [
+            {
+              "resource_id": "robot.dual_franka.shared_workspace",
+              "mode": "exclusive",
+              "description": "Dual-arm workspace"
+            },
+            {
+              "resource_id": "camera.realsense",
+              "mode": "exclusive",
+              "description": "RealSense camera"
+            }
+          ],
+          "preconditions": [
+            "hardware_gate_checked"
+          ],
+          "effects": [
+            "physical_effect_requires_observation"
+          ],
+          "invalidates": [],
+          "timeout_s": 120.0,
+          "verifier": {
+            "type": "task_specific",
+            "capability_id": null,
+            "required_for_physical_success": true,
+            "physical_verification_limited": true,
+            "notes": "Contract declaration only; runtime physical verification is not executed in this phase."
+          },
+          "error_codes": [
+            "INVALID_INPUT",
+            "CAPABILITY_EXECUTION_FAILED",
+            "CONTACT_FORCE_EXCEEDED"
+          ],
           "default_safe_to_run": false,
           "allowed_as_recovery": false,
           "execute_flag": "--execute",
@@ -406,13 +936,58 @@
         },
         {
           "name": "single_flow",
+          "capability_id": "task.pick_insert.single_flow",
+          "capability_version": "1.0.0",
+          "kind": "task",
+          "visibility": "public",
           "path": "task_skills/pick_tube_insert_rack/skills/task-pick-tube-insert-rack/scripts/run_single_pick_tube_insert_rack.sh",
           "type": "shell",
+          "description": "Task-level pick tube, handover, locate rack/hole, insert, release. Entrypoint: single_flow.",
+          "input_schema_ref": "schemas/capabilities/task_run.input.schema.json",
+          "output_schema_ref": "schemas/action_result.schema.json",
           "requires_hardware": true,
           "opens_camera": true,
           "connects_robot_rpc": true,
           "moves_robot": true,
           "controls_gripper": true,
+          "physical_side_effects": [
+            "moves robot arms",
+            "controls gripper",
+            "composes hardware capabilities"
+          ],
+          "risk_class": "HIGH_RISK",
+          "resources": [
+            {
+              "resource_id": "robot.dual_franka.shared_workspace",
+              "mode": "exclusive",
+              "description": "Dual-arm workspace"
+            },
+            {
+              "resource_id": "camera.realsense",
+              "mode": "exclusive",
+              "description": "RealSense camera"
+            }
+          ],
+          "preconditions": [
+            "hardware_gate_checked"
+          ],
+          "effects": [
+            "physical_effect_requires_observation"
+          ],
+          "invalidates": [],
+          "timeout_s": 120.0,
+          "verifier": {
+            "type": "task_specific",
+            "capability_id": null,
+            "required_for_physical_success": true,
+            "physical_verification_limited": true,
+            "notes": "Contract declaration only; runtime physical verification is not executed in this phase."
+          },
+          "error_codes": [
+            "INVALID_INPUT",
+            "CAPABILITY_EXECUTION_FAILED",
+            "VERIFICATION_FAILED"
+          ],
           "default_safe_to_run": false,
           "allowed_as_recovery": false,
           "execute_flag": "--execute",
@@ -420,37 +995,63 @@
         },
         {
           "name": "full_flow",
+          "capability_id": "task.pick_insert.full_flow",
+          "capability_version": "1.0.0",
+          "kind": "task",
+          "visibility": "public",
           "path": "task_skills/pick_tube_insert_rack/skills/task-pick-tube-insert-rack/scripts/run_full_pick_tube_insert_rack.sh",
           "type": "shell",
+          "description": "Task-level pick tube, handover, locate rack/hole, insert, release. Entrypoint: full_flow.",
+          "input_schema_ref": "schemas/capabilities/task_run.input.schema.json",
+          "output_schema_ref": "schemas/action_result.schema.json",
           "requires_hardware": true,
           "opens_camera": true,
           "connects_robot_rpc": true,
           "moves_robot": true,
           "controls_gripper": true,
+          "physical_side_effects": [
+            "moves robot arms",
+            "controls gripper",
+            "composes hardware capabilities"
+          ],
+          "risk_class": "HIGH_RISK",
+          "resources": [
+            {
+              "resource_id": "robot.dual_franka.shared_workspace",
+              "mode": "exclusive",
+              "description": "Dual-arm workspace"
+            },
+            {
+              "resource_id": "camera.realsense",
+              "mode": "exclusive",
+              "description": "RealSense camera"
+            }
+          ],
+          "preconditions": [
+            "hardware_gate_checked"
+          ],
+          "effects": [
+            "physical_effect_requires_observation"
+          ],
+          "invalidates": [],
+          "timeout_s": 120.0,
+          "verifier": {
+            "type": "task_specific",
+            "capability_id": null,
+            "required_for_physical_success": true,
+            "physical_verification_limited": true,
+            "notes": "Contract declaration only; runtime physical verification is not executed in this phase."
+          },
+          "error_codes": [
+            "INVALID_INPUT",
+            "CAPABILITY_EXECUTION_FAILED",
+            "VERIFICATION_FAILED"
+          ],
           "default_safe_to_run": false,
           "allowed_as_recovery": false,
           "execute_flag": "--execute",
           "notes": "Fixed public wrapper; authorization preflight runs before SAM, RealSense, RPC, or motion."
         }
-      ],
-      "inputs_schema_ref": "schemas/task_pick_tube_insert_rack.schema.json#/definitions/TaskInputs",
-      "outputs_schema_ref": "schemas/task_pick_tube_insert_rack.schema.json#/definitions/TaskOutputs",
-      "dependencies": [
-        "atomic-perception-locate-object-3d",
-        "atomic-motion-franka-move-to-pose",
-        "atomic-gripper-franka-open-close",
-        "atomic-state-dual-franka-reset",
-        "procedure-franka-handover-transition",
-        "procedure-robot-reset-home"
-      ],
-      "safety_gates": [
-        "HardwareGate",
-        "AUTO_RESET_RECOVERY",
-        "release gate",
-        "held-object reset abort policy"
-      ],
-      "side_effects": [
-        "in live mode may open camera, move robot, control grippers, and reset robot through gated recovery"
       ]
     }
   ]

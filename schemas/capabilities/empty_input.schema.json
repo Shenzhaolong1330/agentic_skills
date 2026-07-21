@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentic-skills.local/schemas/capabilities/empty_input.schema.json",
+  "title": "Empty capability input",
+  "type": "object",
+  "additionalProperties": false
+}
