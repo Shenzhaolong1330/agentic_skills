@@ -15,6 +15,17 @@
 - trace 至少记录上下文、manifest 快照、命令计划和 gate decision。
 - mock、dry-run、artifact 回放以及本阶段的测试均不访问真实设备。
 
+## S2/S3 contract boundary
+
+`contracts/` contains task-independent `ActionResult`, `ObservationResult`,
+`VerificationResult`, `ErrorInfo`, `ExecutionBudget`, resource requirements,
+and invalidation declarations. Legacy task-specific results remain available
+to the current runner and are not silently converted.
+
+`CapabilityRegistry` reads Manifest v0.2 and local schemas only. It is not a
+dispatcher and does not import, start, or invoke an entrypoint. `CAPABILITY_INDEX.md`
+is a deterministic public view of the same manifest entries.
+
 ## 后续方向（非 S0/S1 实现内容）
 
-后续阶段可在不破坏本基线的前提下引入 capability registry、固定 dispatcher、world state、task graph 和 memory。它们必须复用当前 Gate 与 manifest 契约，不能让 Planner 改写安全不变量或获得任意命令执行能力。
+后续阶段可在不破坏本基线的前提下引入固定 dispatcher、world state、task graph 和 memory。它们必须复用当前 Registry、Gate 与 manifest 契约，不能让 Planner 改写安全不变量或获得任意命令执行能力。

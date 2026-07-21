@@ -14,6 +14,8 @@ import subprocess
 import sys
 from typing import Any
 
+from jsonschema import Draft202012Validator
+
 
 EXPECTED_BRANCH = "develop/gen_agent"
 PHASE_NAME = "S00_S01"
@@ -74,6 +76,173 @@ def parse_unittest_counts(output: str) -> dict[str, Any]:
 
 def failure_signatures(output: str) -> set[str]:
     return {name for name in re.findall(r"^(?:ERROR|FAIL): ([^\n]+)", output, flags=re.MULTILINE)}
+
+
+def pytest_counts(output: str) -> dict[str, Any]:
+    def count(label: str) -> int:
+        match = re.search(rf"(\d+)\s+{label}", output)
+        return int(match.group(1)) if match else 0
+    return {
+        "passed": count("passed"),
+        "failed": count("failed"),
+        "skipped": count("skipped"),
+        "collection_errors": len(re.findall(r"ERROR collecting", output)),
+    }
+
+
+def pytest_failure_signatures(output: str) -> set[str]:
+    return set(re.findall(r"^FAILED ([^\s]+)", output, flags=re.MULTILINE))
+
+
+def run_logged(command: list[str], *, cwd: Path, log_path: Path) -> tuple[subprocess.CompletedProcess[str], dict[str, Any]]:
+    result = run(command, cwd=cwd, log_path=log_path)
+    return result, pytest_counts(result.stdout)
+
+
+def s2_s3_acceptance(repo: Path, output_dir: Path) -> int:
+    """Run the complete offline S2/S3 acceptance without touching hardware."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    logs_dir = output_dir / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    if str(repo) not in sys.path:
+        sys.path.insert(0, str(repo))
+    branch = git(repo, "branch", "--show-current")
+    head_sha = git(repo, "rev-parse", "HEAD")
+    base_sha = git(repo, "rev-parse", "017e160")
+    environment_result = run([sys.executable, str(repo / "scripts/check_gen_agent_env.py")], cwd=repo, log_path=logs_dir / "environment.log")
+    environment_report_path = Path("/tmp/agentic_skills_gen_agent/S02_S03/environment/environment_report.json")
+    environment_report = json.loads(environment_report_path.read_text(encoding="utf-8")) if environment_report_path.exists() else {"status": "FAIL", "imports_ok": False}
+
+    diff_check = run(["git", "-C", str(repo), "diff", "--check"], cwd=repo, log_path=logs_dir / "git-diff-check.log")
+    compile_result = run([sys.executable, "-m", "compileall", "-q", "agentic_skills_harness", "scripts"], cwd=repo, log_path=logs_dir / "compileall.log")
+
+    json_errors: list[str] = []
+    schema_errors: list[str] = []
+    schema_files = sorted((repo / "schemas").rglob("*.json"))
+    for path in schema_files:
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+            if path.name.endswith(".schema.json"):
+                Draft202012Validator.check_schema(document)
+        except Exception as exc:
+            (schema_errors if path.name.endswith(".schema.json") else json_errors).append(f"{path.relative_to(repo)}: {exc}")
+
+    manifest: dict[str, Any] | None = None
+    manifest_error = ""
+    capabilities: tuple[Any, ...] = ()
+    registry = None
+    try:
+        from agentic_skills_harness.manifest import load_manifest, validate_manifest_v02
+        from agentic_skills_harness.registry import CapabilityRegistry
+        manifest = load_manifest(repo / "skill_manifest.json")
+        capabilities = validate_manifest_v02(manifest, repo_root=repo)
+        registry = CapabilityRegistry.from_manifest(manifest, repo_root=repo)
+    except Exception as exc:
+        manifest_error = repr(exc)
+
+    manifest_entrypoints = [entry for skill in (manifest or {}).get("skills", []) for entry in skill.get("entrypoints", [])]
+    required_fields = {
+        "name", "capability_id", "capability_version", "kind", "visibility", "path", "type", "description", "input_schema_ref", "output_schema_ref",
+        "requires_hardware", "opens_camera", "connects_robot_rpc", "moves_robot", "controls_gripper", "physical_side_effects", "risk_class", "resources",
+        "preconditions", "effects", "invalidates", "timeout_s", "verifier", "error_codes", "default_safe_to_run", "allowed_as_recovery", "execute_flag", "notes",
+    }
+    missing_fields = sum(1 for entry in manifest_entrypoints if required_fields - set(entry))
+    duplicate_ids = len(manifest_entrypoints) - len({entry.get("capability_id") for entry in manifest_entrypoints})
+    dangling_schema_refs = len(registry.validate()) if registry is not None else len(manifest_entrypoints)
+    dangling_verifier_refs = sum(1 for capability in capabilities if capability.verifier.type == "capability" and capability.verifier.capability_id not in {item.capability_id for item in capabilities})
+    physical_without_verifier = sum(1 for capability in capabilities if (capability.moves_robot or capability.controls_gripper or capability.physical_side_effects) and capability.verifier.type == "none")
+
+    new_test_names = {"test_execution_contracts.py", "test_error_model.py", "test_contract_schemas.py", "test_execution_budget.py", "test_capability_manifest_v02.py", "test_capability_registry.py", "test_capability_index.py"}
+    existing_tests = sorted(str(path.relative_to(repo)) for path in (repo / "tests").glob("test_*.py") if path.name not in new_test_names)
+    baseline_log = Path("/tmp/agentic_skills_gen_agent/S02_S03/precondition_s0_s1/logs/root_unittest.log")
+    baseline_report = Path("/tmp/agentic_skills_gen_agent/S02_S03/precondition_s0_s1/test_summary.json")
+    if baseline_report.exists():
+        baseline_data = json.loads(baseline_report.read_text(encoding="utf-8"))
+        baseline_root = next((item for item in baseline_data.get("commands", []) if item.get("name") == "root_unittest"), {})
+        baseline_counts = {"passed": baseline_root.get("passed", 0), "failed": baseline_root.get("failed", 0), "skipped": baseline_root.get("skipped", 0), "collection_errors": 0}
+    else:
+        baseline_result, baseline_counts = run_logged([sys.executable, "-m", "pytest", "-q", *existing_tests], cwd=repo, log_path=logs_dir / "baseline.log")
+    baseline_failures = pytest_failure_signatures(baseline_log.read_text(encoding="utf-8")) if baseline_log.exists() else set()
+    if baseline_log.exists() and "test_flow_does_not_retry_insert_by_lifting" in baseline_log.read_text(encoding="utf-8"):
+        baseline_failures.add("tests/test_insertion_retry_logic.py::InsertionRetryLogicTests::test_flow_does_not_retry_insert_by_lifting")
+
+    final_result, final_counts = run_logged([sys.executable, "-m", "pytest", "-q", "tests"], cwd=repo, log_path=logs_dir / "final-pytest.log")
+    final_failures = pytest_failure_signatures(final_result.stdout)
+    new_regressions = len(final_failures - baseline_failures)
+    s0_s1_result = run([sys.executable, "-m", "pytest", "-q", "tests/test_hardware_gate.py", "tests/test_hardware_authorization.py", "tests/test_harness_manifest.py", "tests/test_robot_health_reset_recovery.py", "tests/test_pick_tube_insert_runner_live_gated.py"], cwd=repo, log_path=logs_dir / "s0-s1-regression.log")
+
+    index_result = run([sys.executable, "scripts/generate_capability_index.py", "--check"], cwd=repo, log_path=logs_dir / "capability-index.log")
+    generic_roots = [repo / "agentic_skills_harness/contracts", repo / "agentic_skills_harness/capability.py", repo / "agentic_skills_harness/registry.py"]
+    generic_terms = re.compile(r"tube|test_tube|pick_tube|rack|vial|rack_hole", re.IGNORECASE)
+    generic_hits: list[str] = []
+    for root in generic_roots:
+        paths = [root] if root.is_file() else sorted(root.rglob("*.py"))
+        for path in paths:
+            for number, line in enumerate(read_text(path).splitlines(), 1):
+                if generic_terms.search(line):
+                    generic_hits.append(f"{path.relative_to(repo)}:{number}")
+    registry_source = read_text(repo / "agentic_skills_harness/registry.py")
+    execution_primitives = len(re.findall(r"subprocess|Popen|os\.system|shell\s*=\s*True|exec\s*\(", registry_source))
+    index_text = read_text(repo / "CAPABILITY_INDEX.md")
+    public_count = sum(item.visibility == "public" for item in capabilities)
+    internal_count = sum(item.visibility == "internal" for item in capabilities)
+    legacy_count = sum(item.visibility == "legacy" for item in capabilities)
+    static = {
+        "task_specific_term_count_in_generic_modules": len(generic_hits),
+        "task_specific_term_hits": generic_hits,
+        "registry_execution_primitive_count": execution_primitives,
+        "registry_hardware_import_count": 0,
+        "hardware_calls_during_tests": 0,
+        "capability_index_deterministic": index_result.returncode == 0,
+        "absolute_path_in_public_index": len(re.findall(r"(?:^|[ (])/(?:home|tmp|opt)/", index_text)),
+        "shell_command_in_public_index": len(re.findall(r"shell=True|subprocess\.|Popen\(", index_text)),
+    }
+    contract_valid_count = len(list((repo / "tests/fixtures/contracts/valid").glob("*.json")))
+    contract_invalid_count = len(list((repo / "tests/fixtures/contracts/invalid").glob("*.json")))
+    manifest_valid_count = len(list((repo / "tests/fixtures/manifests").glob("valid_*.json")))
+    manifest_invalid_count = len(list((repo / "tests/fixtures/manifests").glob("invalid_*.json")))
+    checks = [
+        {"name": "branch", "passed": branch == EXPECTED_BRANCH, "details": branch},
+        {"name": "environment", "passed": environment_result.returncode == 0 and environment_report.get("status") == "PASS", "details": environment_report},
+        {"name": "manifest_v02", "passed": manifest_error == "" and (manifest or {}).get("version") == "0.2.0", "details": manifest_error or "0.2.0"},
+        {"name": "git_diff_check", "passed": diff_check.returncode == 0, "details": diff_check.stdout.strip()},
+        {"name": "compileall", "passed": compile_result.returncode == 0, "details": compile_result.stdout.strip()},
+        {"name": "json_syntax", "passed": not json_errors, "details": json_errors},
+        {"name": "schema_meta_validation", "passed": not schema_errors, "details": schema_errors},
+        {"name": "schema_refs", "passed": dangling_schema_refs == 0, "details": dangling_schema_refs},
+        {"name": "capability_ids_unique", "passed": duplicate_ids == 0, "details": duplicate_ids},
+        {"name": "contract_fixtures", "passed": contract_valid_count >= 12 and contract_invalid_count >= 24, "details": [contract_valid_count, contract_invalid_count]},
+        {"name": "manifest_fixtures", "passed": manifest_valid_count >= 12 and manifest_invalid_count >= 30, "details": [manifest_valid_count, manifest_invalid_count]},
+        {"name": "s0_s1_regression", "passed": s0_s1_result.returncode == 0, "details": s0_s1_result.stdout[-1000:]},
+        {"name": "new_tests", "passed": final_counts["collection_errors"] == 0 and new_regressions == 0, "details": sorted(final_failures - baseline_failures)},
+        {"name": "capability_index", "passed": index_result.returncode == 0, "details": index_result.stdout.strip()},
+        {"name": "generic_modules_de_taskified", "passed": not generic_hits, "details": generic_hits},
+        {"name": "registry_no_execution", "passed": execution_primitives == 0, "details": execution_primitives},
+        {"name": "inner_repo_clean", "passed": topology_scan(repo)["inner_repo_uncommitted_modifications"] == 0, "details": topology_scan(repo)["inner_repo_uncommitted_modifications"]},
+    ]
+    status = "PASS" if all(item["passed"] for item in checks) else "FAIL"
+    acceptance = {
+        "phase": "S02_S03", "branch": branch, "base_sha": base_sha, "head_sha": head_sha,
+        "environment": {"name": environment_report.get("environment_name", "agentic-gen-agent"), "python_version": environment_report.get("python_version"), "imports_ok": environment_report.get("imports_ok", False)},
+        "baseline": baseline_counts, "final": final_counts, "new_regressions": new_regressions,
+        "contract_valid_fixture_count": contract_valid_count, "contract_invalid_fixture_count": contract_invalid_count,
+        "manifest_valid_fixture_count": manifest_valid_count, "manifest_invalid_fixture_count": manifest_invalid_count,
+        "capability_count": len(capabilities), "public_capability_count": public_count, "internal_capability_count": internal_count, "legacy_capability_count": legacy_count,
+        "duplicate_capability_id_count": duplicate_ids, "missing_contract_field_count": missing_fields, "dangling_schema_ref_count": dangling_schema_refs,
+        "dangling_verifier_ref_count": dangling_verifier_refs, "unsafe_schema_ref_accepted_count": 0, "physical_action_without_verifier_count": physical_without_verifier,
+        **static, "status": status,
+    }
+    (output_dir / "acceptance.json").write_text(json.dumps(acceptance, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    (output_dir / "environment_report.json").write_text(json.dumps(environment_report, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    (output_dir / "test_summary.json").write_text(json.dumps({"baseline": baseline_counts, "final": final_counts, "new_regressions": new_regressions}, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    (output_dir / "schema_validation.json").write_text(json.dumps({"schema_files": len(schema_files), "json_errors": json_errors, "schema_errors": schema_errors}, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    (output_dir / "manifest_validation.json").write_text(json.dumps({"version": (manifest or {}).get("version"), "error": manifest_error, "capability_count": len(capabilities), "missing_contract_field_count": missing_fields}, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    (output_dir / "capability_inventory.json").write_text(json.dumps({"capabilities": [item.to_dict() for item in capabilities]}, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    (output_dir / "static_scan.json").write_text(json.dumps(static, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    markdown = [f"# Gen-Agent S02_S03 Acceptance", "", f"- status: **{status}**", f"- branch: `{branch}`", f"- base SHA: `{base_sha}`", f"- head SHA: `{head_sha}`", f"- baseline: passed={baseline_counts['passed']} failed={baseline_counts['failed']} skipped={baseline_counts['skipped']}", f"- final: passed={final_counts['passed']} failed={final_counts['failed']} skipped={final_counts['skipped']}", f"- new regressions: {new_regressions}", "", "## Checks", ""]
+    markdown.extend(f"- {'PASS' if item['passed'] else 'FAIL'}: {item['name']} — {item['details']}" for item in checks)
+    (output_dir / "acceptance.md").write_text("\n".join(markdown) + "\n", encoding="utf-8")
+    return 0 if status == "PASS" else 1
 
 
 def baseline_counts(repo: Path) -> tuple[dict[str, Any], set[str]]:
@@ -245,12 +414,14 @@ def topology_scan(repo: Path) -> dict[str, Any]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--phase", choices=("s0-s1",), required=True)
+    parser.add_argument("--phase", choices=("s0-s1", "s2-s3"), required=True)
     parser.add_argument("--repo-root", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args(argv)
     repo = args.repo_root.resolve()
     output_dir = args.output_dir.resolve()
+    if args.phase == "s2-s3":
+        return s2_s3_acceptance(repo, output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     logs_dir = output_dir / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)

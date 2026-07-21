@@ -1,0 +1,49 @@
+{
+  "name": "fixture_capability_7",
+  "capability_id": "fixture.capability_7",
+  "capability_version": "1.0.0",
+  "kind": "action",
+  "visibility": "public",
+  "path": "scripts/fixture.py",
+  "type": "python",
+  "description": "Fixture capability.",
+  "input_schema_ref": "schemas/capabilities/empty_input.schema.json",
+  "output_schema_ref": "schemas/action_result.schema.json",
+  "requires_hardware": false,
+  "opens_camera": false,
+  "connects_robot_rpc": false,
+  "moves_robot": false,
+  "controls_gripper": false,
+  "physical_side_effects": [],
+  "risk_class": "NONE",
+  "resources": [
+    {
+      "resource_id": "fixture.resource",
+      "mode": "shared",
+      "description": "Fixture resource"
+    }
+  ],
+  "preconditions": [
+    "input_is_valid"
+  ],
+  "effects": [
+    "result_available"
+  ],
+  "invalidates": [],
+  "timeout_s": 10,
+  "verifier": {
+    "type": "output_schema",
+    "capability_id": null,
+    "required_for_physical_success": false,
+    "physical_verification_limited": false,
+    "notes": "Fixture verifier."
+  },
+  "error_codes": [
+    "INVALID_INPUT",
+    "CAPABILITY_EXECUTION_FAILED"
+  ],
+  "default_safe_to_run": true,
+  "allowed_as_recovery": false,
+  "execute_flag": null,
+  "notes": "Fixture."
+}

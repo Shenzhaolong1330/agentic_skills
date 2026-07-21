@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentic-skills.local/schemas/capabilities/motion_move_to_pose.input.schema.json",
+  "title": "Move-to-pose input",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["frame", "xyz_m", "source"],
+  "properties": {
+    "frame": {"type": "string", "minLength": 1},
+    "xyz_m": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}},
+    "rotvec_rad": {"type": ["array", "null"], "minItems": 3, "maxItems": 3, "items": {"type": "number"}},
+    "source": {"type": "string", "minLength": 1},
+    "side": {"type": "string", "enum": ["left", "right", "both"]}
+  }
+}

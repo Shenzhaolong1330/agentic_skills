@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentic-skills.local/schemas/capabilities/gripper_command.input.schema.json",
+  "title": "Gripper command input",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["command", "side"],
+  "properties": {"command": {"type": "string", "enum": ["status", "open", "close", "initialize"]}, "side": {"type": "string", "enum": ["left", "right"]}, "execute": {"type": "boolean"}}
+}

@@ -2,7 +2,11 @@
 
 ## 目标
 
-`agentic_skills_harness` 提供 task/procedure/atomic skill 的统一上下文、manifest、HardwareGate、trace、命令规划、机器人健康检查和自动 reset recovery。Codex 应先读取 `SKILL_INDEX.md` 和 `skill_manifest.json`，再读取具体 SKILL。
+`agentic_skills_harness` 提供 task/procedure/atomic skill 的统一上下文、manifest、HardwareGate、trace、命令规划、机器人健康检查和自动 reset recovery。Codex 应先读取 `SKILL_INDEX.md`、`CAPABILITY_INDEX.md` 和 `skill_manifest.json`，再读取具体 SKILL。
+
+Manifest v0.2 is loaded by the read-only `CapabilityRegistry`; it provides
+stable capability IDs, local schema contracts, risk/resources, and verifier
+metadata. Registry lookup never executes a capability.
 
 ## Modes
 

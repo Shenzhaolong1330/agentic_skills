@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentic-skills.local/schemas/capability_manifest.schema.json",
+  "title": "Capability Manifest v0.2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "default_mode", "artifact_root_default", "hardware_gate", "recovery_policy", "skills"],
+  "properties": {
+    "version": {"const": "0.2.0"},
+    "default_mode": {"type": "string", "enum": ["mock", "dry_run", "from_artifacts", "live"]},
+    "artifact_root_default": {"type": "string", "minLength": 1},
+    "hardware_gate": {
+      "type": "object", "additionalProperties": false,
+      "required": ["requires_hardware_allowed", "requires_execute_for_side_effects", "default_hardware_allowed"],
+      "properties": {"requires_hardware_allowed": {"const": true}, "requires_execute_for_side_effects": {"const": true}, "default_hardware_allowed": {"const": false}}
+    },
+    "recovery_policy": {"type": "object", "additionalProperties": false, "required": ["auto_reset_on_abnormal", "max_auto_reset_attempts_default", "reset_allowed_as_recovery", "resume_after_held_object_reset_default"], "properties": {"auto_reset_on_abnormal": {"type": "boolean"}, "max_auto_reset_attempts_default": {"type": "integer", "minimum": 0}, "reset_allowed_as_recovery": {"type": "boolean"}, "resume_after_held_object_reset_default": {"type": "boolean"}}},
+    "skills": {"type": "array", "items": {"$ref": "#/$defs/skill"}}
+  },
+  "$defs": {
+    "skill": {
+      "type": "object", "additionalProperties": false, "required": ["name", "layer", "path", "description", "entrypoints"],
+      "properties": {"name": {"type": "string", "minLength": 1}, "layer": {"type": "string", "enum": ["atomic", "procedure", "task"]}, "path": {"type": "string", "minLength": 1}, "description": {"type": "string", "minLength": 1}, "entrypoints": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/entrypoint"}}}
+    },
+    "entrypoint": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "capability_id", "capability_version", "kind", "visibility", "path", "type", "description", "input_schema_ref", "output_schema_ref", "requires_hardware", "opens_camera", "connects_robot_rpc", "moves_robot", "controls_gripper", "physical_side_effects", "risk_class", "resources", "preconditions", "effects", "invalidates", "timeout_s", "verifier", "error_codes", "default_safe_to_run", "allowed_as_recovery", "execute_flag", "notes"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1}, "capability_id": {"type": "string", "pattern": "^[a-z][a-z0-9]*(?:\\.[a-z][a-z0-9_-]*)+$"}, "capability_version": {"type": "string", "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"}, "kind": {"type": "string", "enum": ["observation", "compute", "action", "procedure", "task", "recovery"]}, "visibility": {"type": "string", "enum": ["public", "internal", "legacy"]}, "path": {"type": "string", "minLength": 1}, "type": {"type": "string", "enum": ["python", "shell"]}, "description": {"type": "string", "minLength": 1}, "input_schema_ref": {"type": "string", "minLength": 1}, "output_schema_ref": {"type": "string", "minLength": 1}, "requires_hardware": {"type": "boolean"}, "opens_camera": {"type": "boolean"}, "connects_robot_rpc": {"type": "boolean"}, "moves_robot": {"type": "boolean"}, "controls_gripper": {"type": "boolean"}, "physical_side_effects": {"type": "array", "items": {"type": "string"}}, "risk_class": {"type": "string", "enum": ["NONE", "READ_ONLY_HARDWARE", "MOTION", "GRIPPER", "CONTACT", "RELEASE", "RECOVERY", "HIGH_RISK"]}, "resources": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/resource"}}, "preconditions": {"type": "array", "items": {"type": "string"}}, "effects": {"type": "array", "items": {"type": "string"}}, "invalidates": {"type": "array", "items": {"type": "string"}}, "timeout_s": {"type": "number", "exclusiveMinimum": 0}, "verifier": {"$ref": "#/$defs/verifier"}, "error_codes": {"type": "array", "minItems": 1, "items": {"type": "string"}}, "default_safe_to_run": {"type": "boolean"}, "allowed_as_recovery": {"type": "boolean"}, "execute_flag": {"type": ["string", "null"]}, "notes": {"type": "string", "minLength": 1}
+      }
+    },
+    "resource": {"type": "object", "additionalProperties": false, "required": ["resource_id", "mode", "description"], "properties": {"resource_id": {"type": "string", "minLength": 1}, "mode": {"type": "string", "enum": ["shared", "exclusive"]}, "description": {"type": "string", "minLength": 1}}},
+    "verifier": {"type": "object", "additionalProperties": false, "required": ["type", "capability_id", "required_for_physical_success", "physical_verification_limited", "notes"], "properties": {"type": {"type": "string", "enum": ["output_schema", "capability", "task_specific", "none"]}, "capability_id": {"type": ["string", "null"]}, "required_for_physical_success": {"type": "boolean"}, "physical_verification_limited": {"type": "boolean"}, "notes": {"type": "string", "minLength": 1}}}
+  }
+}

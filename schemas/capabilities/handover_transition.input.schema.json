@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentic-skills.local/schemas/capabilities/handover_transition.input.schema.json",
+  "title": "Handover transition input",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["holder_side"],
+  "properties": {"holder_side": {"type": "string", "enum": ["left", "right"]}, "execute": {"type": "boolean"}}
+}

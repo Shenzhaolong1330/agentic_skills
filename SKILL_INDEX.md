@@ -1,6 +1,8 @@
 # agentic_skills Skill Index
 
-> 这是给 Codex 和任务 harness 预加载的仓库级索引。先读本文件和 `skill_manifest.json`，再进入具体 SKILL，避免每次重新全仓搜索。
+> 这是给 Codex 和任务 harness 预加载的仓库级索引。先读本文件、`CAPABILITY_INDEX.md` 和 `skill_manifest.json`，再进入具体 SKILL，避免每次重新全仓搜索。
+
+Capability contract details and public routing metadata are in [`CAPABILITY_INDEX.md`](CAPABILITY_INDEX.md). The index is generated from the manifest and does not expose internal entrypoint commands or paths.
 
 ## 全局安全原则
 

@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentic-skills.local/schemas/capabilities/task_run.input.schema.json",
+  "title": "Task run input",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "mode": {"type": "string", "enum": ["mock", "dry_run", "from_artifacts", "live"]},
+    "hardware_allowed": {"type": "boolean"},
+    "execute": {"type": "boolean"},
+    "artifact_dir": {"type": "string", "minLength": 1},
+    "run_id": {"type": "string", "minLength": 1}
+  }
+}
