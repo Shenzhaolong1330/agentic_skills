@@ -87,8 +87,6 @@ def to_plain(value: Any) -> Any:
         result = {}
         for item_field in fields(value):
             item = getattr(value, item_field.name)
-            if value.__class__.__name__ == "SkillContext" and item_field.name == "operator_token":
-                item = None
             result[item_field.name] = to_plain(item)
         return result
     if isinstance(value, Path):
@@ -202,7 +200,6 @@ class SkillContext:
     mode: SkillMode = SkillMode.MOCK
     hardware_allowed: bool = False
     execute: bool = False
-    operator_token_present: bool = False
     artifact_dir: str = ""
     manifest_path: str = "skill_manifest.json"
     robot_server: str | None = None
@@ -213,7 +210,6 @@ class SkillContext:
     max_auto_reset_attempts: int = 1
     held_object_state: HeldObjectState = HeldObjectState.NONE
     calibration_snapshot: dict[str, Any] | None = None
-    operator_token: str | None = None
     auto_reset_on_abnormal: bool = True
     resume_after_held_object_reset: bool = False
     mock_robot_health: str = "ready"

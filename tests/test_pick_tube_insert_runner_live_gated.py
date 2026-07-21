@@ -1,6 +1,5 @@
 import importlib.util
 import json
-import os
 from pathlib import Path
 import shutil
 import sys
@@ -31,25 +30,22 @@ RUNNER = load_runner()
 
 
 class PickTubeInsertRunnerLiveGatedTests(unittest.TestCase):
-    def test_live_missing_env_token_aborts_without_subprocess(self):
+    def test_live_without_hardware_authorization_aborts_before_subprocess(self):
         with tempfile.TemporaryDirectory(prefix="agentic_live_gate_denied_") as tmp:
             args = RUNNER.build_parser().parse_args([
                 "--mode", "live",
                 "--execute",
-                "--hardware-allowed",
-                "--operator-token", "must-not-be-written",
                 "--artifact-dir", tmp,
             ])
-            with patch.dict(os.environ, {}, clear=False):
-                os.environ.pop("AGENTIC_SKILLS_HARDWARE_TOKEN", None)
-                with patch("agentic_skills_harness.command_runner.subprocess.run", side_effect=AssertionError("must not execute")):
-                    result = RUNNER.run(args)
+            with patch("agentic_skills_harness.command_runner.subprocess.run", side_effect=AssertionError("must not execute")):
+                result = RUNNER.run(args)
             self.assertFalse(result.ok)
             self.assertEqual(result.stopped_reason, "hardware_gate_denied")
             task = json.loads((Path(tmp) / "task_result.json").read_text())
             context = json.loads((Path(tmp) / "context.json").read_text())
-            self.assertIsNone(task["context"]["operator_token"])
-            self.assertIsNone(context["operator_token"])
+            self.assertFalse(task["context"]["hardware_allowed"])
+            self.assertFalse(context["hardware_allowed"])
+            self.assertNotIn("credential", json.dumps(task["context"]).lower())
 
     def test_mocked_live_commands_complete_through_command_runner(self):
         with tempfile.TemporaryDirectory(prefix="agentic_live_mocked_commands_") as tmp:
@@ -57,7 +53,6 @@ class PickTubeInsertRunnerLiveGatedTests(unittest.TestCase):
                 "--mode", "live",
                 "--execute",
                 "--hardware-allowed",
-                "--operator-token", "test-token",
                 "--artifact-dir", tmp,
             ])
 
@@ -96,23 +91,23 @@ class PickTubeInsertRunnerLiveGatedTests(unittest.TestCase):
                     gate_decision={"allowed": True, "reason": "hardware gate passed"},
                 )
 
-            with patch.dict(os.environ, {"AGENTIC_SKILLS_HARDWARE_TOKEN": "test-token"}, clear=False):
-                with patch.object(RUNNER.CommandRunner, "run", new=fake_run):
-                    result = RUNNER.run(args)
+            with patch.object(RUNNER.CommandRunner, "run", new=fake_run):
+                result = RUNNER.run(args)
             self.assertTrue(result.ok)
             self.assertEqual(result.task_state.value, "COMPLETE")
             self.assertTrue(result.completion_flag)
             self.assertTrue(result.physical_verified)
             task = json.loads((Path(tmp) / "task_result.json").read_text())
             plans = json.loads((Path(tmp) / "command_plan.json").read_text())
-            self.assertIsNone(task["context"]["operator_token"])
+            self.assertNotIn("credential", json.dumps(task["context"]).lower())
             self.assertEqual([item["entrypoint_ref"] for item in plans], [
+                "LIVE_TASK_PREFLIGHT",
                 "PREFLIGHT_ROBOT_HEALTH_CHECK",
                 "LOCATE_TUBE",
                 "GRASP_AND_HANDOVER",
                 "LOCATE_RACK_HOLE_INSERT_RELEASE_RETRACT",
             ])
-            self.assertTrue(all(item["executed"] for item in plans))
+            self.assertTrue(all(item["executed"] for item in plans[1:]))
 
 
 if __name__ == "__main__":

@@ -12,7 +12,7 @@ MULTI_TUBE_LOCATOR="$SCRIPT_DIR/locate_all_tubes_once.py"
 SAM_CACHE_SERVICE="$SCRIPT_DIR/sam_cache_service.py"
 WRIST_CAMERA_SERVICE="$SCRIPT_DIR/wrist_camera_service.py"
 RACK_GRID_STATE="$SCRIPT_DIR/rack_grid_state.py"
-ROBOT_RESET_SCRIPT="${ROBOT_RESET_SCRIPT:-$REPO_ROOT/procedure_skills/robot_reset_home/skills/procedure-robot-reset-home/scripts/run_robot_reset.sh}"
+ROBOT_RESET_SCRIPT="$REPO_ROOT/procedure_skills/robot_reset_home/skills/procedure-robot-reset-home/scripts/run_robot_reset.sh"
 ROBOT_RESET_CONFIG="${ROBOT_RESET_CONFIG:-/home/deepcybo/Le-nero/dual_arm_teleop/scripts/config/record_cfg.yaml}"
 
 ANY_POSE_ROOT="${ANY_POSE_ROOT:-$REPO_ROOT/atomic_skills/object_locator}"
@@ -23,6 +23,7 @@ RACK_CONFIG="${RACK_CONFIG:-$ANY_POSE_ROOT/config_rack_center_vlm.yaml}"
 
 MODE="dry_run"
 EXECUTE=0
+HARDWARE_ALLOWED=0
 STOP_AFTER_INVENTORY=0
 WAIT_BEFORE_MOTION=1
 RESET_AFTER_TUBE_ERROR=1
@@ -37,13 +38,12 @@ LOCATOR_ARGS=()
 GRASP_ARGS=()
 INSERTION_ARGS=()
 RUNNER_ARGS=()
-RESET_ARGS=()
 
 usage() {
     cat <<'EOF'
 Usage:
   run_full_pick_tube_insert_rack.sh [safe-mode options]
-  run_full_pick_tube_insert_rack.sh --mode live --execute [options]
+  run_full_pick_tube_insert_rack.sh --mode live --hardware-allowed --execute [options]
 
 Modes (default: dry_run):
   --mock                  Run the task harness with mock fixtures.
@@ -56,6 +56,7 @@ Common options:
   --runner-arg ARG        Pass one argument to the non-live task harness; repeat as needed.
 
 Live-only execution gate:
+  --hardware-allowed    Explicitly allow access to real cameras/RPC/hardware.
   --execute
   --stop-after-inventory  Capture/write the inventory, then stop before any robot motion.
   --no-wait-before-motion Skip the default Enter confirmation after inventory (automation only).
@@ -70,9 +71,7 @@ Live flow options:
   --wrist-perception-mode MODE  legacy-vlm (live default) or experimental cached-grid.
   --full-log-file PATH
   --insert-log-file PATH
-  --reset-script PATH      Full robot-reset wrapper used after a tube-stage error.
   --reset-config PATH      Robot reset config.
-  --reset-arg ARG          Pass one extra argument to robot-reset; repeat as needed.
   --no-reset-after-error   Do not reset after grasp/handover or insertion failure.
   --locator-arg ARG       Pass one argument to the one-frame multi-tube locator; repeat as needed.
   --grasp-arg ARG         Pass one argument through to grasp_right_arm_xyz.sh; repeat as needed.
@@ -103,6 +102,7 @@ while [[ $# -gt 0 ]]; do
         --dry-run) MODE="dry_run"; shift ;;
         --from-artifacts) MODE="from_artifacts"; shift ;;
         --execute) EXECUTE=1; shift ;;
+        --hardware-allowed) HARDWARE_ALLOWED=1; shift ;;
         --stop-after-inventory) STOP_AFTER_INVENTORY=1; shift ;;
         --wait-before-motion) WAIT_BEFORE_MOTION=1; shift ;;
         --no-wait-before-motion) WAIT_BEFORE_MOTION=0; shift ;;
@@ -121,9 +121,7 @@ while [[ $# -gt 0 ]]; do
         --wrist-perception-mode) require_value "$@"; WRIST_PERCEPTION_MODE="$2"; shift 2 ;;
         --full-log-file) require_value "$@"; FULL_LOG_FILE="$2"; shift 2 ;;
         --insert-log-file) require_value "$@"; INSERT_LOG_FILE="$2"; shift 2 ;;
-        --reset-script) require_value "$@"; ROBOT_RESET_SCRIPT="$2"; shift 2 ;;
         --reset-config) require_value "$@"; ROBOT_RESET_CONFIG="$2"; shift 2 ;;
-        --reset-arg) require_value "$@"; RESET_ARGS+=("$2"); shift 2 ;;
         --no-reset-after-error) RESET_AFTER_TUBE_ERROR=0; shift ;;
         --locator-arg) require_value "$@"; LOCATOR_ARGS+=("$2"); shift 2 ;;
         --grasp-arg) require_value "$@"; GRASP_ARGS+=("$2"); shift 2 ;;
@@ -151,6 +149,7 @@ if [[ "$MODE" != "live" ]]; then
     if [[ -n "$ARTIFACT_DIR" ]]; then
         CMD+=(--artifact-dir "$ARTIFACT_DIR")
     fi
+    if [[ "$HARDWARE_ALLOWED" == "1" ]]; then CMD+=(--hardware-allowed); fi
     CMD+=("${RUNNER_ARGS[@]}")
     printf '[full-flow] safe harness command:'
     printf ' %q' "${CMD[@]}"
@@ -158,10 +157,10 @@ if [[ "$MODE" != "live" ]]; then
     exec "${CMD[@]}"
 fi
 
-if [[ "$EXECUTE" != "1" ]]; then
-    printf 'ERROR: live mode requires --execute\n' >&2
-    exit 2
-fi
+PREFLIGHT_CMD=(python3 "$REPO_ROOT/scripts/hardware_preflight.py" --operation full --mode live)
+if [[ "$HARDWARE_ALLOWED" == "1" ]]; then PREFLIGHT_CMD+=(--hardware-allowed); fi
+if [[ "$EXECUTE" == "1" ]]; then PREFLIGHT_CMD+=(--execute); fi
+"${PREFLIGHT_CMD[@]}"
 STAMP="$(date +%Y%m%d_%H%M%S)"
 if [[ -z "$ARTIFACT_DIR" ]]; then
     ARTIFACT_DIR="/tmp/agentic_skills_runs/full_pick_tube_insert_rack_$STAMP"
@@ -401,8 +400,11 @@ reset_after_tube_error() {
         "$tube_number" "$failed_stage" >&2
     printf '[full-flow] reset opens grippers and returns both arms home; log=%s\n' "$reset_log" >&2
     if "$ROBOT_RESET_SCRIPT" \
+            --mode live \
+            --hardware-allowed \
+            --execute \
             --config "$ROBOT_RESET_CONFIG" \
-            "${RESET_ARGS[@]}" 2>&1 | tee -a "$reset_log"; then
+            2>&1 | tee -a "$reset_log"; then
         RESET_AFTER_ERROR_COUNT=$((RESET_AFTER_ERROR_COUNT + 1))
         "$LOCATOR_PYTHON" - "$WRIST_CAMERA_SOCKET" "$SCRIPT_DIR" <<'PY'
 import sys
@@ -434,6 +436,8 @@ for tube_array_index in "${!TUBE_RESULTS[@]}"; do
     GRASP_CMD=(
         python3 "$SELECT_AND_GRASP"
         --result-json "$tube_result"
+        --mode live
+        --hardware-allowed
         --execute
         --grasp-arg=--go-home-before-transition
     )
@@ -472,6 +476,8 @@ for tube_array_index in "${!TUBE_RESULTS[@]}"; do
         "$tube_number" "${#TUBE_RESULTS[@]}"
     INSERT_CMD=(
         python3 "$INSERT_FLOW"
+        --mode live
+        --hardware-allowed
         --execute
         --holder-side auto
         --rack-result-json "$RACK_RESULT_JSON"

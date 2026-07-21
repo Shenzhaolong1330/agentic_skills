@@ -11,6 +11,9 @@ RPC_TIMEOUT_SEC="${FRANKA_RPC_TIMEOUT_SEC:-30}"
 SIDE="both"
 DURATION_SEC="5"
 RATE_HZ="50"
+MODE="live"
+HARDWARE_ALLOWED=0
+EXECUTE=0
 
 usage() {
     cat <<'EOF'
@@ -26,7 +29,6 @@ Options:
   --server-host HOST      RPC host (default: FRANKA_RPC_HOST or 172.16.0.1)
   --server-port PORT      RPC port (default: FRANKA_RPC_PORT or 4242)
   --rpc-timeout-sec SEC   RPC timeout (default: 30)
-  --client-path PATH      RPC client script
   --repo-root PATH        dual_arm_teleop repository root
   --conda-sh PATH         conda.sh path
   --conda-env NAME        Conda environment (default: le_nero)
@@ -43,13 +45,15 @@ require_value() {
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --mode) require_value "$@"; MODE="$2"; shift 2 ;;
+        --hardware-allowed) HARDWARE_ALLOWED=1; shift ;;
+        --execute) EXECUTE=1; shift ;;
         --side) require_value "$@"; SIDE="$2"; shift 2 ;;
         --duration-sec|--duration) require_value "$@"; DURATION_SEC="$2"; shift 2 ;;
         --rate-hz|--rate) require_value "$@"; RATE_HZ="$2"; shift 2 ;;
         --server-host) require_value "$@"; SERVER_HOST="$2"; shift 2 ;;
         --server-port) require_value "$@"; SERVER_PORT="$2"; shift 2 ;;
         --rpc-timeout-sec|--timeout) require_value "$@"; RPC_TIMEOUT_SEC="$2"; shift 2 ;;
-        --client-path) require_value "$@"; CLIENT_PATH="$2"; shift 2 ;;
         --repo-root)
             require_value "$@"
             REPO_ROOT="$2"
@@ -62,6 +66,16 @@ while [[ $# -gt 0 ]]; do
         *) printf 'ERROR: unknown argument: %s\n' "$1" >&2; usage >&2; exit 2 ;;
     esac
 done
+
+REPO_ROOT_LOCAL="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../../.." && pwd)"
+PREFLIGHT_CMD=(python3 "$REPO_ROOT_LOCAL/scripts/hardware_preflight.py" --operation home --mode "$MODE")
+if [[ "$HARDWARE_ALLOWED" == "1" ]]; then PREFLIGHT_CMD+=(--hardware-allowed); fi
+if [[ "$EXECUTE" == "1" ]]; then PREFLIGHT_CMD+=(--execute); fi
+"${PREFLIGHT_CMD[@]}"
+if [[ "$MODE" != "live" ]]; then
+    printf 'home plan recorded; no motion was executed for mode=%s\n' "$MODE"
+    exit 0
+fi
 
 if [[ ! -f "$CONDA_SH" ]]; then
     printf 'ERROR: conda.sh not found: %s\n' "$CONDA_SH" >&2

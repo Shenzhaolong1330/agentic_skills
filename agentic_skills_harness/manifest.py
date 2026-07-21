@@ -25,6 +25,15 @@ def validate_minimal_manifest(manifest: dict[str, Any]) -> None:
     missing = sorted(required - names)
     if missing:
         raise ValueError(f"manifest missing required skills: {missing}")
+    gate = manifest.get("hardware_gate")
+    if not isinstance(gate, dict):
+        raise ValueError("manifest.hardware_gate must be an object")
+    if gate.get("default_hardware_allowed") is not False:
+        raise ValueError("manifest.hardware_gate.default_hardware_allowed must be false")
+    if gate.get("requires_hardware_allowed") is not True:
+        raise ValueError("manifest.hardware_gate.requires_hardware_allowed must be true")
+    if gate.get("requires_execute_for_side_effects") is not True:
+        raise ValueError("manifest.hardware_gate.requires_execute_for_side_effects must be true")
 
 
 def find_skill(manifest: dict[str, Any], name: str) -> dict[str, Any]:

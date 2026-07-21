@@ -18,4 +18,3 @@
 14. 任何未来 Planner 都不能改变这些安全不变量。
 
 E-stop 后只能进行允许的只读诊断，或明确返回需要人工处理。Agent 不自动解除 E-stop；`reset`、`home` 和控制器故障恢复不能被描述为 E-stop recovery。
-

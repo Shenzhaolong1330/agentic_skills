@@ -12,12 +12,14 @@ import sys
 from typing import Any
 
 DEFAULT_CLIENT_PATH = Path(
-    os.environ.get(
-        "DUAL_FRANKA_RPC_CLIENT_PATH",
-        "/home/deepcybo/agentic_skills/atomic_skills/dual_franka_p2p/skills/"
-        "atomic-motion-franka-move-to-pose/dual_franka_robotiq_rpc_client.py",
-    )
+    "/home/deepcybo/agentic_skills/atomic_skills/dual_franka_p2p/skills/"
+    "atomic-motion-franka-move-to-pose/dual_franka_robotiq_rpc_client.py"
 )
+REPO_ROOT = Path(__file__).resolve().parents[5]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from scripts.hardware_preflight import evaluate_operation
 
 
 def _load_rpc_client(client_path: Path):
@@ -51,8 +53,9 @@ def gripper_state(side_obs: Any) -> dict[str, Any]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("open", "close", "initialize", "status"))
+    parser.add_argument("--mode", choices=("mock", "dry_run", "from_artifacts", "live"), default="dry_run")
+    parser.add_argument("--hardware-allowed", action="store_true", help="Allow access to the real robot in live mode.")
     parser.add_argument("--side", choices=("left", "right", "both"), default="both")
-    parser.add_argument("--client-path", type=Path, default=DEFAULT_CLIENT_PATH)
     parser.add_argument("--server-host", default=os.environ.get("FRANKA_RPC_HOST", "172.16.0.1"))
     parser.add_argument("--server-port", type=int, default=int(os.environ.get("FRANKA_RPC_PORT", "4242")))
     parser.add_argument("--rpc-timeout-sec", type=float, default=float(os.environ.get("FRANKA_RPC_TIMEOUT_SEC", "30")))
@@ -64,7 +67,28 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     sides = ["left", "right"] if args.side == "both" else [args.side]
-    rpc = _load_rpc_client(args.client_path.expanduser())
+    operation = "gripper-status" if args.command == "status" else "gripper"
+    if args.mode != "live":
+        report = {
+            "mode": args.mode,
+            "command": args.command,
+            "side": args.side,
+            "execute": False,
+            "planned": [f"{args.command}_{side}" for side in sides],
+        }
+        print(json.dumps(report, indent=None if args.compact else 2, ensure_ascii=False, default=str))
+        return 0
+    _, _, decision = evaluate_operation(
+        operation,
+        mode=args.mode,
+        hardware_allowed=args.hardware_allowed,
+        execute=args.execute,
+        manifest_path=REPO_ROOT / "skill_manifest.json",
+    )
+    if not decision.allowed:
+        print(json.dumps({"mode": args.mode, "gate_decision": decision.to_dict()}, indent=None if args.compact else 2))
+        return 1
+    rpc = _load_rpc_client(DEFAULT_CLIENT_PATH)
     client = rpc.DualFrankaRobotiqRpcClient(
         ip=args.server_host,
         port=args.server_port,
@@ -74,6 +98,7 @@ def main(argv: list[str] | None = None) -> int:
         report: dict[str, Any] = {
             "server": f"{args.server_host}:{args.server_port}",
             "command": args.command,
+            "mode": args.mode,
             "side": args.side,
             "execute": bool(args.execute),
             "results": {},

@@ -1,12 +1,11 @@
 {
-  "version": "0.1.0",
+  "version": "0.1.1",
   "default_mode": "mock",
   "artifact_root_default": "/tmp/agentic_skills_runs",
   "hardware_gate": {
-    "requires_execute": true,
     "requires_hardware_allowed": true,
-    "requires_operator_token": true,
-    "env_token_name": "AGENTIC_SKILLS_HARDWARE_TOKEN"
+    "requires_execute_for_side_effects": true,
+    "default_hardware_allowed": false
   },
   "recovery_policy": {
     "auto_reset_on_abnormal": true,
@@ -93,6 +92,20 @@
       "description": "Robotiq gripper open/close/initialize/status.",
       "entrypoints": [
         {
+          "name": "gripper_status",
+          "path": "atomic_skills/dual_franka_gripper/skills/atomic-gripper-franka-open-close/scripts/gripper_control.py",
+          "type": "python",
+          "requires_hardware": true,
+          "opens_camera": false,
+          "connects_robot_rpc": true,
+          "moves_robot": false,
+          "controls_gripper": false,
+          "default_safe_to_run": false,
+          "allowed_as_recovery": false,
+          "execute_flag": null,
+          "notes": "Status is read-only but still requires hardware authorization before RPC connection."
+        },
+        {
           "name": "gripper_control",
           "path": "atomic_skills/dual_franka_gripper/skills/atomic-gripper-franka-open-close/scripts/gripper_control.py",
           "type": "python",
@@ -150,6 +163,7 @@
           "connects_robot_rpc": true,
           "moves_robot": true,
           "controls_gripper": true,
+          "changes_robot_state": true,
           "default_safe_to_run": false,
           "allowed_as_recovery": true,
           "execute_flag": "--execute",
@@ -194,6 +208,21 @@
           "allowed_as_recovery": false,
           "execute_flag": null,
           "notes": "Supervision only; not a default task stage."
+        },
+        {
+          "name": "view_state_realsense_reset",
+          "path": "atomic_skills/state_realsense_viewer/skills/atomic-state-realsense-viewer/scripts/view_state_realsense.py",
+          "type": "python",
+          "requires_hardware": true,
+          "opens_camera": true,
+          "connects_robot_rpc": true,
+          "moves_robot": false,
+          "controls_gripper": false,
+          "physical_side_effects": true,
+          "default_safe_to_run": false,
+          "allowed_as_recovery": false,
+          "execute_flag": "--execute",
+          "notes": "Camera reset is a physical device state change and is not robot E-stop recovery."
         }
       ],
       "inputs_schema_ref": "schemas/common.schema.json",
@@ -265,8 +294,37 @@
           "controls_gripper": true,
           "default_safe_to_run": false,
           "allowed_as_recovery": true,
-          "execute_flag": null,
-          "notes": "Script has no own --execute flag; call only through reset guard or HardwareGate fallback. It may move arms and open grippers."
+          "execute_flag": "--execute",
+          "notes": "Recovery-only wrapper; it may move arms and open grippers. Gate before conda activation and robot-reset."
+        },
+        {
+          "name": "run_robot_recover",
+          "path": "procedure_skills/robot_reset_home/skills/procedure-robot-reset-home/scripts/run_robot_recover.sh",
+          "type": "shell",
+          "requires_hardware": true,
+          "opens_camera": false,
+          "connects_robot_rpc": true,
+          "moves_robot": false,
+          "controls_gripper": false,
+          "changes_robot_state": true,
+          "default_safe_to_run": false,
+          "allowed_as_recovery": true,
+          "execute_flag": "--execute",
+          "notes": "Controller recovery can change physical robot state and is recovery-only."
+        },
+        {
+          "name": "run_robot_go_home",
+          "path": "procedure_skills/robot_reset_home/skills/procedure-robot-reset-home/scripts/run_robot_go_home.sh",
+          "type": "shell",
+          "requires_hardware": true,
+          "opens_camera": false,
+          "connects_robot_rpc": true,
+          "moves_robot": true,
+          "controls_gripper": false,
+          "default_safe_to_run": false,
+          "allowed_as_recovery": false,
+          "execute_flag": "--execute",
+          "notes": "Home is a physical motion and is not E-stop recovery."
         }
       ],
       "inputs_schema_ref": "schemas/common.schema.json#/definitions/ResetRecoveryResult",
@@ -299,7 +357,7 @@
           "connects_robot_rpc": true,
           "moves_robot": true,
           "controls_gripper": true,
-          "default_safe_to_run": true,
+          "default_safe_to_run": false,
           "allowed_as_recovery": false,
           "execute_flag": "--execute",
           "notes": "Default mode is mock/dry_run. Live uses HardwareGate and AUTO_RESET_RECOVERY."
@@ -345,6 +403,34 @@
           "allowed_as_recovery": false,
           "execute_flag": "--execute",
           "notes": "Task-owned rack/hole localization, insertion, release, and retract; callable only by the gated task runner."
+        },
+        {
+          "name": "single_flow",
+          "path": "task_skills/pick_tube_insert_rack/skills/task-pick-tube-insert-rack/scripts/run_single_pick_tube_insert_rack.sh",
+          "type": "shell",
+          "requires_hardware": true,
+          "opens_camera": true,
+          "connects_robot_rpc": true,
+          "moves_robot": true,
+          "controls_gripper": true,
+          "default_safe_to_run": false,
+          "allowed_as_recovery": false,
+          "execute_flag": "--execute",
+          "notes": "Fixed public wrapper; authorization preflight runs before SAM, RealSense, RPC, or motion."
+        },
+        {
+          "name": "full_flow",
+          "path": "task_skills/pick_tube_insert_rack/skills/task-pick-tube-insert-rack/scripts/run_full_pick_tube_insert_rack.sh",
+          "type": "shell",
+          "requires_hardware": true,
+          "opens_camera": true,
+          "connects_robot_rpc": true,
+          "moves_robot": true,
+          "controls_gripper": true,
+          "default_safe_to_run": false,
+          "allowed_as_recovery": false,
+          "execute_flag": "--execute",
+          "notes": "Fixed public wrapper; authorization preflight runs before SAM, RealSense, RPC, or motion."
         }
       ],
       "inputs_schema_ref": "schemas/task_pick_tube_insert_rack.schema.json#/definitions/TaskInputs",

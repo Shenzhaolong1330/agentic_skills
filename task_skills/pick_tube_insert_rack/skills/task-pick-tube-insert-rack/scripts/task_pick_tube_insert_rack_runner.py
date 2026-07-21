@@ -57,8 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reset-recovery-json", type=Path, default=None)
     parser.add_argument("--mock-robot-health", choices=("ready", "abnormal", "fault", "unreachable", "estop"), default="ready")
     parser.add_argument("--execute", action="store_true")
-    parser.add_argument("--hardware-allowed", action="store_true")
-    parser.add_argument("--operator-token", default=None)
+    parser.add_argument("--hardware-allowed", action="store_true", help="Allow access to real hardware in live mode.")
     parser.add_argument("--auto-reset-on-abnormal", action="store_true", default=True)
     parser.add_argument("--disable-auto-reset", action="store_false", dest="auto_reset_on_abnormal")
     parser.add_argument("--max-auto-reset-attempts", type=int, default=1)
@@ -281,6 +280,34 @@ def _run_live(
     grasp_entrypoint = find_entrypoint(manifest, "task-pick-tube-insert-rack", "task_live_grasp_handover")
     insertion_entrypoint = find_entrypoint(manifest, "task-pick-tube-insert-rack", "task_live_insert_flow")
     health_entrypoint = find_entrypoint(manifest, "atomic-state-dual-franka-reset", "check_and_reset_status")
+    task_entrypoint = find_entrypoint(manifest, "task-pick-tube-insert-rack", "task_runner")
+
+    task_decision = command_runner.gate.evaluate(context, task_entrypoint)
+    trace.append_command_plan(
+        CommandPlan(
+            argv=["hardware_preflight", "task"],
+            entrypoint_ref="LIVE_TASK_PREFLIGHT",
+            requires_hardware=True,
+            opens_camera=True,
+            connects_robot_rpc=True,
+            moves_robot=True,
+            controls_gripper=True,
+            would_execute=bool(context.execute),
+            reason=task_decision.reason,
+            gate_decision=task_decision.to_dict(),
+        )
+    )
+    if not task_decision.allowed:
+        return _abort(
+            trace,
+            output_json,
+            context,
+            stages,
+            outputs,
+            reset_results,
+            "hardware_gate_denied",
+            errors=[task_decision.reason],
+        )
 
     health_command = health_monitor.build_status_command(context)
     if args.allow_telemetry_only_health:
@@ -508,8 +535,6 @@ def run(args: argparse.Namespace) -> TaskResult:
         mode=mode,
         hardware_allowed=bool(args.hardware_allowed),
         execute=bool(args.execute),
-        operator_token_present=bool(args.operator_token),
-        operator_token=args.operator_token,
         artifact_dir=str(artifact_dir),
         manifest_path=str(args.manifest),
         robot_server=args.robot_server,

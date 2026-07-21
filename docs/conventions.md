@@ -83,7 +83,7 @@ Codex skill 文件夹指 `*/skills/<skill-name>/`，目录名必须和 `SKILL.md
 真实机器人执行必须默认保守：
 
 - 默认 dry-run，不默认真实运动。
-- 真实执行必须显式参数，例如 `--execute` 或 `execution.mode: real`。
+- live 硬件访问必须显式给出 `--hardware-allowed`；运动、夹爪、reset、home 和 recovery 还必须给出 `--execute`。只读硬件观测只需前者。
 - 轨迹发送前必须检查 workspace、速度、加速度、夹爪状态和碰撞风险。
 - 坐标必须写清坐标系和单位，默认米和弧度。
 - 使用视觉定位结果前，必须确认 base 坐标可用且标定匹配当前相机和机器人。

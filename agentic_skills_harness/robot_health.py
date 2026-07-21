@@ -19,7 +19,9 @@ class RobotHealthMonitor:
     def build_status_command(self, context: SkillContext) -> list[str]:
         entrypoint = find_entrypoint(self.manifest, RESET_SKILL, STATUS_ENTRYPOINT)
         script = self.repo_root / entrypoint["path"]
-        command = ["python3", str(script), "status", "--compact"]
+        command = ["python3", str(script), "status", "--mode", "live", "--compact"]
+        if context.hardware_allowed:
+            command.append("--hardware-allowed")
         if context.robot_server and ":" in context.robot_server:
             host, port = context.robot_server.rsplit(":", 1)
             command.extend(["--server-host", host, "--server-port", port])

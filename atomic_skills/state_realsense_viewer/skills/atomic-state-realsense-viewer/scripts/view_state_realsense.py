@@ -16,13 +16,13 @@ import numpy as np
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = SKILL_ROOT.parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[5]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "state_realsense_viewer" / "runs" / "latest"
 DEFAULT_CLIENT_PATH = Path(
-    os.environ.get(
-        "DUAL_FRANKA_RPC_CLIENT_PATH",
-        "/home/deepcybo/agentic_skills/atomic_skills/dual_franka_p2p/skills/"
-        "atomic-motion-franka-move-to-pose/dual_franka_robotiq_rpc_client.py",
-    )
+    "/home/deepcybo/agentic_skills/atomic_skills/dual_franka_p2p/skills/"
+    "atomic-motion-franka-move-to-pose/dual_franka_robotiq_rpc_client.py"
 )
 DEFAULT_OBJECT_LOCATOR_SRC = Path(
     os.environ.get(
@@ -31,6 +31,8 @@ DEFAULT_OBJECT_LOCATOR_SRC = Path(
     )
 )
 FALLBACK_PYTHON = Path(os.environ.get("STATE_REALSENSE_PYTHON", "/home/deepcybo/miniconda3/bin/python"))
+
+from scripts.hardware_preflight import evaluate_operation
 
 CAMERAS: dict[str, dict[str, Any]] = {
     "head": {"serial_number": "348522072761", "width": 640, "height": 480, "fps": 30},
@@ -200,6 +202,9 @@ def _capture_camera(name: str, camera_cfg: dict[str, Any], args: argparse.Namesp
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--mode", choices=("mock", "dry_run", "from_artifacts", "live"), default="dry_run")
+    parser.add_argument("--hardware-allowed", action="store_true", help="Allow access to real cameras/RPC in live mode.")
+    parser.add_argument("--execute", action="store_true", help="Allow camera reset when --reset-realsense is selected.")
     parser.add_argument("--camera", action="append", help="all, head, left_wrist, right_wrist; may be repeated or comma-separated.")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--timestamp-dir", action="store_true", help="Create a timestamped subdirectory under --output-dir.")
@@ -207,7 +212,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-images", action="store_true")
     parser.add_argument("--print-state", action="store_true")
     parser.add_argument("--list-devices", action="store_true")
-    parser.add_argument("--client-path", type=Path, default=DEFAULT_CLIENT_PATH)
     parser.add_argument("--object-locator-src", type=Path, default=DEFAULT_OBJECT_LOCATOR_SRC)
     parser.add_argument("--server-host", default=os.environ.get("FRANKA_RPC_HOST", "172.16.0.1"))
     parser.add_argument("--server-port", type=int, default=int(os.environ.get("FRANKA_RPC_PORT", "4242")))
@@ -224,6 +228,20 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    operation = "viewer-reset" if args.reset_realsense else "viewer"
+    if args.mode != "live":
+        print(json.dumps({"mode": args.mode, "planned_only": True, "operation": operation}))
+        return 0
+    _, _, decision = evaluate_operation(
+        operation,
+        mode=args.mode,
+        hardware_allowed=args.hardware_allowed,
+        execute=args.execute,
+        manifest_path=REPO_ROOT / "skill_manifest.json",
+    )
+    if not decision.allowed:
+        print(json.dumps({"mode": args.mode, "gate_decision": decision.to_dict()}))
+        return 1
     output_dir = args.output_dir.expanduser()
     if args.timestamp_dir:
         output_dir = output_dir / datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -244,7 +262,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.no_state:
         try:
-            rpc = _load_rpc_client(args.client_path.expanduser())
+            rpc = _load_rpc_client(DEFAULT_CLIENT_PATH)
             client = rpc.DualFrankaRobotiqRpcClient(
                 ip=args.server_host,
                 port=args.server_port,

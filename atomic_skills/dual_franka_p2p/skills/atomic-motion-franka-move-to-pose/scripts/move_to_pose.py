@@ -14,7 +14,12 @@ from typing import Any
 import numpy as np
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[5]
 DEFAULT_CLIENT_PATH = SKILL_ROOT / "dual_franka_robotiq_rpc_client.py"
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from scripts.hardware_preflight import evaluate_operation
 
 
 def _load_rpc_client(client_path: Path):
@@ -39,7 +44,8 @@ def parse_pose(value: str) -> list[float]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--client-path", type=Path, default=DEFAULT_CLIENT_PATH)
+    parser.add_argument("--mode", choices=("mock", "dry_run", "from_artifacts", "live"), default="dry_run")
+    parser.add_argument("--hardware-allowed", action="store_true", help="Allow access to the real robot in live mode.")
     parser.add_argument("--server-host", default=os.environ.get("FRANKA_RPC_HOST", "172.16.0.1"))
     parser.add_argument("--server-port", type=int, default=int(os.environ.get("FRANKA_RPC_PORT", "4242")))
     parser.add_argument("--rpc-timeout-sec", type=float, default=float(os.environ.get("FRANKA_RPC_TIMEOUT_SEC", "30")))
@@ -69,9 +75,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.left_pose is None and args.right_pose is None:
         raise ValueError("pass --left-pose and/or --right-pose")
 
-    if not args.execute and args.left_pose is not None and args.right_pose is not None:
+    if args.mode != "live":
         report: dict[str, Any] = {
             "server": f"{args.server_host}:{args.server_port}",
+            "mode": args.mode,
             "execute": False,
             "left_target": args.left_pose,
             "right_target": args.right_pose,
@@ -79,7 +86,18 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(report, indent=None if args.compact else 2, ensure_ascii=False, default=str))
         return 0
 
-    rpc = _load_rpc_client(args.client_path.expanduser())
+    _, entrypoint, decision = evaluate_operation(
+        "motion",
+        mode=args.mode,
+        hardware_allowed=args.hardware_allowed,
+        execute=args.execute,
+        manifest_path=REPO_ROOT / "skill_manifest.json",
+    )
+    if not decision.allowed:
+        print(json.dumps({"mode": args.mode, "gate_decision": decision.to_dict()}, indent=None if args.compact else 2))
+        return 1
+
+    rpc = _load_rpc_client(DEFAULT_CLIENT_PATH)
     client = rpc.DualFrankaRobotiqRpcClient(
         ip=args.server_host,
         port=args.server_port,

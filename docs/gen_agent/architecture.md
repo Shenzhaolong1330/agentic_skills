@@ -18,4 +18,3 @@
 ## 后续方向（非 S0/S1 实现内容）
 
 后续阶段可在不破坏本基线的前提下引入 capability registry、固定 dispatcher、world state、task graph 和 memory。它们必须复用当前 Gate 与 manifest 契约，不能让 Planner 改写安全不变量或获得任意命令执行能力。
-
