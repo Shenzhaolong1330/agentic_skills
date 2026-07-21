@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentic-skills.local/schemas/observation_result.schema.json",
+  "title": "ObservationResult",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["capability_id", "ok", "observations", "captured_at", "freshness_ttl_s", "source", "errors", "warnings", "artifacts"],
+  "properties": {
+    "capability_id": {"type": "string", "minLength": 1},
+    "ok": {"type": "boolean"},
+    "observations": {"type": "object"},
+    "captured_at": {"type": "string", "format": "date-time", "pattern": "(?:Z|\\+00:00)$"},
+    "freshness_ttl_s": {"type": ["number", "null"], "exclusiveMinimum": 0},
+    "source": {"type": "string", "minLength": 1},
+    "errors": {"type": "array", "items": {"$ref": "#/$defs/error"}},
+    "warnings": {"type": "array", "items": {"$ref": "#/$defs/error"}},
+    "artifacts": {"type": "object"}
+  },
+  "$defs": {"error": {"$ref": "error_info.schema.json"}}
+}

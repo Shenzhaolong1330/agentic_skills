@@ -1,0 +1,8 @@
+{
+  "keys": [
+    "robot.health"
+  ],
+  "reason": "fixture reset",
+  "scope": "robot",
+  "requires_reobserve": "yes"
+}

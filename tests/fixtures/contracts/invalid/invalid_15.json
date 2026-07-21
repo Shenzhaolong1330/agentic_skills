@@ -1,0 +1,10 @@
+{
+  "verified": true,
+  "predicate_id": "goal.reached",
+  "method": "fixture_observation",
+  "evidence": [],
+  "confidence": 0.9,
+  "checked_at": "2026-01-01T00:00:00+00:00",
+  "errors": [],
+  "warnings": []
+}

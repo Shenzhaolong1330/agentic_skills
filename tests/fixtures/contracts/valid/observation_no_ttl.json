@@ -1,0 +1,11 @@
+{
+  "capability_id": "robot.observe_health",
+  "ok": true,
+  "observations": {},
+  "captured_at": "2026-01-01T00:00:00+00:00",
+  "freshness_ttl_s": null,
+  "source": "fixture",
+  "errors": [],
+  "warnings": [],
+  "artifacts": {}
+}

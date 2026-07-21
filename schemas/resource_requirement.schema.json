@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentic-skills.local/schemas/resource_requirement.schema.json",
+  "title": "ResourceRequirement",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["resource_id", "mode", "description"],
+  "properties": {
+    "resource_id": {"type": "string", "minLength": 1},
+    "mode": {"type": "string", "enum": ["shared", "exclusive"]},
+    "description": {"type": "string", "minLength": 1}
+  }
+}

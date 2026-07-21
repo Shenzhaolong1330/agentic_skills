@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentic-skills.local/schemas/error_info.schema.json",
+  "title": "ErrorInfo",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["code", "category", "severity", "message", "retryable", "safe_to_replan", "requires_human", "state_invalidated", "details", "source"],
+  "properties": {
+    "code": {"type": "string", "enum": ["UNKNOWN_ERROR", "INVALID_INPUT", "SCHEMA_VALIDATION_FAILED", "CAPABILITY_NOT_FOUND", "CAPABILITY_UNSUPPORTED", "CAPABILITY_EXECUTION_FAILED", "AUTHORIZATION_DENIED", "PERCEPTION_NOT_FOUND", "PERCEPTION_LOW_CONFIDENCE", "PERCEPTION_STALE", "FRAME_OR_CALIBRATION_INVALID", "PRECONDITION_FALSE", "MOTION_IK_INFEASIBLE", "MOTION_COLLISION_RISK", "MOTION_TARGET_NOT_REACHED", "MOTION_TIMEOUT", "CONTACT_FORCE_EXCEEDED", "GRASP_NOT_CONFIRMED", "OBJECT_DROPPED", "RELEASE_NOT_CONFIRMED", "ROBOT_WARNING", "ROBOT_FAULT", "ROBOT_UNREACHABLE", "ROBOT_ESTOP_OR_UNSAFE", "VERIFICATION_FAILED", "RECOVERY_FAILED", "RESOURCE_CONFLICT", "BUDGET_EXCEEDED", "NO_PROGRESS"]},
+    "category": {"type": "string", "enum": ["INPUT", "PERCEPTION", "FRAME", "PRECONDITION", "MOTION", "GRIPPER", "ROBOT_STATE", "VERIFICATION", "RECOVERY", "AUTHORIZATION", "TIMEOUT", "RESOURCE", "INTERNAL", "UNKNOWN"]},
+    "severity": {"type": "string", "enum": ["INFO", "WARNING", "RECOVERABLE", "FATAL", "UNSAFE"]},
+    "message": {"type": "string", "minLength": 1},
+    "retryable": {"type": "boolean"},
+    "safe_to_replan": {"type": "boolean"},
+    "requires_human": {"type": "boolean"},
+    "state_invalidated": {"type": "boolean"},
+    "details": {"type": "object"},
+    "source": {"type": "string", "minLength": 1}
+  }
+}

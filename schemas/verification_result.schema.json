@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentic-skills.local/schemas/verification_result.schema.json",
+  "title": "VerificationResult",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verified", "predicate_id", "method", "evidence", "confidence", "checked_at", "errors", "warnings"],
+  "properties": {
+    "verified": {"type": "boolean"},
+    "predicate_id": {"type": "string", "minLength": 1},
+    "method": {"type": "string"},
+    "evidence": {"type": "array", "minItems": 0},
+    "confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+    "checked_at": {"type": "string", "format": "date-time", "pattern": "(?:Z|\\+00:00)$"},
+    "errors": {"type": "array", "items": {"$ref": "#/$defs/error"}},
+    "warnings": {"type": "array", "items": {"$ref": "#/$defs/error"}}
+  },
+  "allOf": [
+    {"if": {"properties": {"verified": {"const": true}}}, "then": {"required": ["method", "evidence"], "properties": {"method": {"minLength": 1}, "evidence": {"minItems": 1}, "errors": {"maxItems": 0}}}}
+  ],
+  "$defs": {"error": {"$ref": "error_info.schema.json"}}
+}
