@@ -27,6 +27,7 @@ def locate_hole_with_vlm_sam_frame(
     config: Any,
     sam_detector: Any,
     camera_timestamp_ms: float,
+    raw_response_path: str | Path | None = None,
 ) -> tuple[dict[str, Any], dict[str, float]]:
     """Run the legacy empty-hole VLM+SAM logic on an already captured frame."""
     from object_locator.geometry import DepthEstimatorConfig, estimate_position_from_depth
@@ -45,6 +46,7 @@ def locate_hole_with_vlm_sam_frame(
         temperature=config.openrouter.temperature,
         max_tokens=config.openrouter.max_tokens,
         retry_without_json_schema=config.openrouter.retry_without_json_schema,
+        raw_response_path=None if raw_response_path is None else str(raw_response_path),
     )
     timings["vlm"] = time.monotonic() - started
     if not detection.found:
@@ -146,7 +148,13 @@ def _depth_quality(depth_m: np.ndarray, center_px: np.ndarray, radius_px: int = 
     return {"ok": len(valid) >= 8 and fraction >= 0.15, "valid_fraction": fraction, "sample_count": int(len(valid))}
 
 
-def _same_frame_vlm_fallback(image_bgr: np.ndarray, hole_config: Any, detector: Any) -> tuple[dict[str, Any], dict[str, float]]:
+def _same_frame_vlm_fallback(
+    image_bgr: np.ndarray,
+    hole_config: Any,
+    detector: Any,
+    *,
+    raw_response_path: str | Path | None = None,
+) -> tuple[dict[str, Any], dict[str, float]]:
     from object_locator.openrouter_vlm import OpenRouterVLMClient
 
     timings: dict[str, float] = {}
@@ -161,6 +169,7 @@ def _same_frame_vlm_fallback(image_bgr: np.ndarray, hole_config: Any, detector: 
         temperature=hole_config.openrouter.temperature,
         max_tokens=hole_config.openrouter.max_tokens,
         retry_without_json_schema=hole_config.openrouter.retry_without_json_schema,
+        raw_response_path=None if raw_response_path is None else str(raw_response_path),
     )
     timings["vlm"] = time.monotonic() - started
     if not detection.found:
@@ -187,6 +196,7 @@ def resolve_cached_slot_from_frame(
     hole_config: Any,
     sam_detector: Any,
     max_correction_m: float = 0.015,
+    raw_response_path: str | Path | None = None,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     started_total = time.monotonic()
     predicted_base = np.asarray(cached_position_base_m, dtype=float).reshape(3)
@@ -243,7 +253,12 @@ def resolve_cached_slot_from_frame(
     except Exception as local_error:
         report["fallback_used"] = True
         report["fallback_reason"] = str(local_error)
-        candidate, fallback_timings = _same_frame_vlm_fallback(image_bgr, hole_config, sam_detector)
+        candidate, fallback_timings = _same_frame_vlm_fallback(
+            image_bgr,
+            hole_config,
+            sam_detector,
+            raw_response_path=raw_response_path,
+        )
         report["timings_sec"].update(fallback_timings)
         report["fallback"] = {key: (value.tolist() if isinstance(value, np.ndarray) else value) for key, value in candidate.items()}
         source = "same-frame-vlm+sam"

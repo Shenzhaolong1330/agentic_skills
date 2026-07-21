@@ -103,6 +103,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--server-port", type=int, default=int(os.environ.get("FRANKA_RPC_PORT", "4242")))
     parser.add_argument("--rpc-timeout-sec", type=float, default=float(os.environ.get("FRANKA_RPC_TIMEOUT_SEC", "30")))
     parser.add_argument("--any-pose-dir", type=Path, default=ANY_POSE_DIR)
+    parser.add_argument(
+        "--artifact-dir",
+        type=Path,
+        default=None,
+        help="Directory for per-insertion artifacts such as raw wrist VLM responses.",
+    )
     parser.add_argument("--execute", action="store_true", help="Actually send robot and gripper commands.")
     parser.add_argument("--compact", action="store_true")
     parser.add_argument(
@@ -311,6 +317,8 @@ def _maybe_execute(args: argparse.Namespace) -> list[str]:
 def build_stage_commands(args: argparse.Namespace, *, holder_side: str) -> list[StageCommand]:
     hole_config = args.left_hole_config if holder_side == "left" else args.right_hole_config
     rack_plane_z_base_m = resolve_rack_plane_z_base_m(args, holder_side=holder_side)
+    artifact_dir = args.artifact_dir
+    wrist_vlm_response = None if artifact_dir is None else artifact_dir / "wrist_empty_hole_vlm_response.json"
     rack_plane_args = (
         []
         if rack_plane_z_base_m is None
@@ -329,6 +337,7 @@ def build_stage_commands(args: argparse.Namespace, *, holder_side: str) -> list[
             *_common_rpc_args(args),
             "--any-pose-dir",
             _str(args.any_pose_dir),
+            *([] if artifact_dir is None else ["--artifact-dir", _str(artifact_dir / "observe_rack")]),
             "--holder-side",
             holder_side,
             *_maybe_execute(args),
@@ -385,6 +394,7 @@ def build_stage_commands(args: argparse.Namespace, *, holder_side: str) -> list[
             *_common_rpc_args(args),
             "--any-pose-dir",
             _str(args.any_pose_dir),
+            *([] if artifact_dir is None else ["--artifact-dir", _str(artifact_dir / "move_above_hole")]),
             "--side",
             holder_side,
             *_maybe_execute(args),
@@ -417,6 +427,7 @@ def build_stage_commands(args: argparse.Namespace, *, holder_side: str) -> list[
             *([] if args.target_slot_id is None else ["--target-slot-id", args.target_slot_id]),
             *([] if args.wrist_camera_socket is None else ["--wrist-camera-socket", _str(args.wrist_camera_socket)]),
             *([] if args.wrist_perception_report is None else ["--wrist-perception-report", _str(args.wrist_perception_report)]),
+            *([] if wrist_vlm_response is None else ["--wrist-vlm-response", _str(wrist_vlm_response)]),
         ],
     )
     insert_argv = [

@@ -459,6 +459,7 @@ for tube_array_index in "${!TUBE_RESULTS[@]}"; do
     else
         tube_insert_log="${INSERT_LOG_FILE}_tube_$(printf '%02d' "$tube_number").log"
     fi
+    tube_insert_artifact_dir="$ARTIFACT_DIR/insertion_tube_$(printf '%02d' "$tube_number")"
     target_slot_id=""
     if [[ "$WRIST_PERCEPTION_MODE" == "cached-grid" ]]; then
         if ! target_slot_id=$("$LOCATOR_PYTHON" "$RACK_GRID_STATE" --grid "$ARTIFACT_DIR/rack_grid.json" --reserve-next); then
@@ -477,6 +478,7 @@ for tube_array_index in "${!TUBE_RESULTS[@]}"; do
         --wrist-perception-mode "$WRIST_PERCEPTION_MODE"
         --wrist-camera-socket "$WRIST_CAMERA_SOCKET"
         --log-file "$tube_insert_log"
+        --artifact-dir "$tube_insert_artifact_dir"
     )
     if [[ -n "$target_slot_id" ]]; then
         INSERT_CMD+=(

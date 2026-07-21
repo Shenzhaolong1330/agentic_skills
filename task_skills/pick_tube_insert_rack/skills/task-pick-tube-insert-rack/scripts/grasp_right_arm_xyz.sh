@@ -65,7 +65,7 @@ python3 -u "$SCRIPT_DIR/grasp_right_arm_xyz.py" \
     --approach-max-translation-step 0.002 \
     --approach-max-rotation-step 0.02 \
     --approach-settle-time-sec 1.0 \
-    --grasp-target-z-offset-m 0 \
+    --grasp-target-z-offset-m 0.01 \
     --grasp-arrival-observed-z-offset-m 0 \
     --rate-hz 80 \
     --position-tolerance-m 0.015 \

@@ -5,7 +5,8 @@
 ## 全局安全原则
 
 - 默认模式是 `mock` 或 `dry_run`，不会控制真实机器人、夹爪、相机或 ROS。
-- live 真机执行必须经过 `HardwareGate`：`mode=live`、`--execute`、`--hardware-allowed`、operator token 与 `AGENTIC_SKILLS_HARDWARE_TOKEN` 匹配，并且 manifest 允许该 entrypoint。
+- 统一 task runner 的 live 真机执行必须经过 `HardwareGate`：`mode=live`、`--execute`、`--hardware-allowed`、operator token 与 `AGENTIC_SKILLS_HARDWARE_TOKEN` 匹配，并且 manifest 允许该 entrypoint。
+- `task-pick-tube-insert-rack` 的 single-flow shell wrapper 是例外：`run_single_pick_tube_insert_rack.sh --mode live --execute` 直接编排单根试管流程，不读取 operator token，也不要求 `--hardware-allowed`。它仍会真实打开相机、移动机械臂、控制夹爪，并在错误后按脚本策略 reset。
 - reset 没有被禁用。live 模式下 abnormal robot state 会进入 `AUTO_RESET_RECOVERY`，由 reset guard 或 reset procedure 受控执行。
 - reset 可能移动双臂、打开夹爪或改变持物状态，因此每次 reset 必须写 trace。持管阶段 reset 成功后默认 `ABORT`，要求重新验证对象状态。
 - Codex 实现、审查、测试阶段不得直接运行 reset、P2P、gripper、object-locator live camera、launch/server 或任何带 `--execute` 的命令。
@@ -21,11 +22,12 @@
 | `atomic-state-realsense-viewer` | atomic | `atomic_skills/state_realsense_viewer/skills/atomic-state-realsense-viewer/` | 保存当前状态和 RealSense 图像供监督诊断 | 不作为默认 task stage | live 会读取 RPC 和打开相机 | `scripts/view_state_realsense.py` | object_locator camera utilities | 只做诊断，不自动 reset |
 | `procedure-franka-handover-transition` | procedure | `procedure_skills/dual_franka_handover_transition/skills/procedure-franka-handover-transition/` | 固定 transition pose 双臂交接 | dry-run plan；真实交接必须 `--execute` | live 会移动双臂并控制夹爪 | `scripts/handover_transition.py` | P2P、gripper | abnormal 交给 task reset recovery；交接成功仍需物理验证增强 |
 | `procedure-robot-reset-home` | procedure | `procedure_skills/robot_reset_home/skills/procedure-robot-reset-home/` | le_nero `robot-reset` 回 home | 不是默认入口；只能由 recovery/fallback 明确调用 | 会移动双臂，可能打开夹爪 | `scripts/run_robot_reset.sh` | le_nero/dual_arm_teleop | `allowed_as_recovery=true` fallback；不绕过 HardwareGate |
-| `task-pick-tube-insert-rack` | task | `task_skills/pick_tube_insert_rack/skills/task-pick-tube-insert-rack/` | 试管抓取、交接、识别试管架和空孔、插入 | 推荐 `python scripts/task_pick_tube_insert_rack_runner.py --mode mock` | live 会组合感知、运动、夹爪、reset recovery | `scripts/task_pick_tube_insert_rack_runner.py` | 上述 atomic/procedure skills | 内置 `AUTO_RESET_RECOVERY`，abnormal state 自动受控 reset |
+| `task-pick-tube-insert-rack` | task | `task_skills/pick_tube_insert_rack/skills/task-pick-tube-insert-rack/` | 试管抓取、交接、识别试管架和空孔、插入 | 推荐 `python scripts/task_pick_tube_insert_rack_runner.py --mode mock`；单根试管 dry-run 用 `scripts/run_single_pick_tube_insert_rack.sh --dry-run` | live 会组合感知、运动、夹爪、reset recovery | `scripts/task_pick_tube_insert_rack_runner.py`；单根试管真实执行入口是 `scripts/run_single_pick_tube_insert_rack.sh --mode live --execute`，不使用 operator token | 上述 atomic/procedure skills | runner 内置 `AUTO_RESET_RECOVERY`；single-flow 错误后按 wrapper reset policy 执行 |
 
 ## Codex 路由建议
 
-1. 完整试管插入任务只调用 `task-pick-tube-insert-rack` runner。
-2. 低层脚本只作为 manifest entrypoint，不从 Codex 直接拼接执行真机。
-3. 先审查 `command_plan.json` 和 trace，再考虑 live。
-4. reset 是 task runtime recovery state，不是 shell 脚本里的无条件前置动作。
+1. 完整多根试管插入任务优先调用 `task-pick-tube-insert-rack` runner。
+2. 单根试管“识别 -> 抓取 -> 插入”优先调用 `run_single_pick_tube_insert_rack.sh`；live 真机只需要 `--mode live --execute`，不要额外要求 operator token。
+3. 低层脚本只作为 manifest entrypoint，不从 Codex 直接拼接执行真机。
+4. 先审查 `command_plan.json` 和 trace，再考虑 live。
+5. reset 是 task runtime recovery state，不是 shell 脚本里的无条件前置动作。

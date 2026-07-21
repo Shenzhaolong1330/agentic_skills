@@ -97,6 +97,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-cached-slot-correction-m", type=float, default=0.015)
     parser.add_argument("--wrist-perception-report", type=Path, default=None)
     parser.add_argument(
+        "--wrist-vlm-response",
+        type=Path,
+        default=None,
+        help="Save raw wrist VLM attempts for the empty-hole detector.",
+    )
+    parser.add_argument(
         "--standoff-m",
         type=float,
         default=0.12,
@@ -1124,6 +1130,7 @@ def main(argv: list[str] | None = None) -> int:
             "descent_segment_m": float(args.descent_segment_m),
             "server": f"{args.server_host}:{args.server_port}",
             "hole_config": str(hole_config),
+            "wrist_vlm_response": None if args.wrist_vlm_response is None else str(args.wrist_vlm_response),
             "timings_sec": {},
         }
         report["ping"] = client.ping()
@@ -1198,6 +1205,7 @@ def main(argv: list[str] | None = None) -> int:
                     hole_config=config,
                     sam_detector=sam_detector,
                     max_correction_m=args.max_cached_slot_correction_m,
+                    raw_response_path=args.wrist_vlm_response,
                 )
                 hole_plane_report = {
                     "source": "cached-grid-wrist-local-correction",
@@ -1250,6 +1258,7 @@ def main(argv: list[str] | None = None) -> int:
                         config=config,
                         sam_detector=sam_detector,
                         camera_timestamp_ms=frame["camera_timestamp_ms"],
+                        raw_response_path=args.wrist_vlm_response,
                     )
                     report["timings_sec"]["legacy_supplied_frame"] = supplied_frame_timings
                     report["wrist_camera_frame"] = {

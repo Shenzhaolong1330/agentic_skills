@@ -309,7 +309,7 @@ def detect_all_with_vlm(
     max_tubes: int,
     raw_response_path: Path | None,
 ) -> list[DetectionResult]:
-    """Ask once for every loose tabletop tube, returning one box per instance."""
+    """Ask once for loose tabletop tube boxes, capped by max_tubes."""
     height, width = image_bgr.shape[:2]
     client = OpenRouterVLMClient.from_env(
         model=config.openrouter.model,
@@ -363,15 +363,26 @@ def detect_all_with_vlm(
         "required": ["tubes"],
         "additionalProperties": False,
     }
+    target_instruction = (
+        "Find only the leftmost complete loose test tube lying on the bare tabletop. "
+        "Return exactly one tube if a valid loose tube is visible; do not inventory the remaining tubes. "
+        if max_tubes == 1
+        else "Inventory every loose test tube lying on the bare tabletop. "
+    )
+    ordering_instruction = (
+        "Return the selected tube as the only item. "
+        if max_tubes == 1
+        else "Return tubes in left-to-right order by box center. "
+    )
     prompt = (
-        f"Inventory every loose test tube lying on the bare tabletop in this {width}x{height} image. "
+        f"{target_instruction}The image size is {width}x{height}. "
         "Return one tight box per complete loose tube, including partially transparent body pixels. "
         "Exclude the black test-tube rack, every rack hole, tubes already inserted in the rack, "
         "isolated caps, robot parts, shadows, labels/overlays, and white equipment. "
         "Do not merge nearby tubes. box_2d uses normalized 0-1000 coordinates ordered "
         "y1(top), x1(left), y2(bottom), x2(right). orientation points use original image pixels; "
         "head_px is the black cap/open rim center and tail_px is the opposite closed end. "
-        "Return tubes in left-to-right order by box center. If none are visible, return an empty array."
+        f"{ordering_instruction}If none are visible, return an empty array."
     )
     payload: dict[str, Any] = {
         "model": client.model,
