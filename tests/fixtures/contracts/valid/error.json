@@ -1,0 +1,12 @@
+{
+  "code": "INVALID_INPUT",
+  "category": "INPUT",
+  "severity": "FATAL",
+  "message": "fixture error",
+  "retryable": false,
+  "safe_to_replan": true,
+  "requires_human": false,
+  "state_invalidated": false,
+  "details": {},
+  "source": "fixture"
+}

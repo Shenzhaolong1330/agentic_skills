@@ -1,0 +1,18 @@
+{
+  "capability_id": "motion.move_to_pose",
+  "status": "PLANNED_ONLY",
+  "command_accepted": true,
+  "command_executed": false,
+  "planned_only": true,
+  "controller_target_reached": null,
+  "effect_observed": null,
+  "goal_verified": false,
+  "verification": null,
+  "outputs": {},
+  "errors": [],
+  "warnings": [],
+  "metrics": {},
+  "artifacts": {},
+  "started_at": "2026-01-01T00:00:00+00:00",
+  "ended_at": null
+}

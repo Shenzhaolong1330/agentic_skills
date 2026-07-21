@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentic-skills.local/schemas/action_result.schema.json",
+  "title": "ActionResult",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["capability_id", "status", "command_accepted", "command_executed", "planned_only", "controller_target_reached", "effect_observed", "goal_verified", "verification", "outputs", "errors", "warnings", "metrics", "artifacts", "started_at", "ended_at"],
+  "properties": {
+    "capability_id": {"type": "string", "minLength": 1},
+    "status": {"type": "string", "enum": ["SUCCEEDED", "FAILED", "PLANNED_ONLY", "DENIED", "CANCELLED", "TIMEOUT"]},
+    "command_accepted": {"type": "boolean"},
+    "command_executed": {"type": "boolean"},
+    "planned_only": {"type": "boolean"},
+    "controller_target_reached": {"type": ["boolean", "null"]},
+    "effect_observed": {"type": ["boolean", "null"]},
+    "goal_verified": {"type": ["boolean", "null"]},
+    "verification": {"anyOf": [{"$ref": "#/$defs/verification"}, {"type": "null"}]},
+    "outputs": {"type": "object"},
+    "errors": {"type": "array", "items": {"$ref": "#/$defs/error"}},
+    "warnings": {"type": "array", "items": {"$ref": "#/$defs/error"}},
+    "metrics": {"type": "object"},
+    "artifacts": {"type": "object"},
+    "started_at": {"type": "string", "format": "date-time", "pattern": "(?:Z|\\+00:00)$"},
+    "ended_at": {"type": ["string", "null"], "format": "date-time", "pattern": "(?:Z|\\+00:00)$"}
+  },
+  "allOf": [
+    {"if": {"properties": {"planned_only": {"const": true}}}, "then": {"properties": {"command_executed": {"const": false}}}},
+    {"if": {"properties": {"status": {"const": "PLANNED_ONLY"}}}, "then": {"properties": {"planned_only": {"const": true}}}},
+    {"if": {"properties": {"status": {"const": "DENIED"}}}, "then": {"properties": {"command_executed": {"const": false}}}},
+    {"if": {"properties": {"status": {"const": "TIMEOUT"}}}, "then": {"properties": {"effect_observed": {"not": {"const": true}}}}},
+    {"if": {"properties": {"goal_verified": {"const": true}}}, "then": {"properties": {"verification": {"type": "object"}}}}
+  ],
+  "$defs": {
+    "error": {"$ref": "error_info.schema.json"},
+    "verification": {"$ref": "verification_result.schema.json"}
+  }
+}

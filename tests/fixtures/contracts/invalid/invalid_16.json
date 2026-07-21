@@ -1,0 +1,15 @@
+{
+  "verified": true,
+  "predicate_id": "goal.reached",
+  "method": "",
+  "evidence": [
+    {
+      "source": "fixture",
+      "value": true
+    }
+  ],
+  "confidence": 0.9,
+  "checked_at": "2026-01-01T00:00:00+00:00",
+  "errors": [],
+  "warnings": []
+}

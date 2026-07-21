@@ -1,0 +1,10 @@
+{
+  "max_nodes": 64,
+  "max_depth": -1,
+  "max_elapsed_s": 300,
+  "max_tool_calls": 64,
+  "max_replans": 4,
+  "max_recovery_actions": 2,
+  "max_same_error_retries": 2,
+  "no_progress_limit": 3
+}

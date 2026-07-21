@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentic-skills.local/schemas/execution_budget.schema.json",
+  "title": "ExecutionBudget",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["max_nodes", "max_depth", "max_elapsed_s", "max_tool_calls", "max_replans", "max_recovery_actions", "max_same_error_retries", "no_progress_limit"],
+  "properties": {
+    "max_nodes": {"type": "integer", "exclusiveMinimum": 0},
+    "max_depth": {"type": "integer", "exclusiveMinimum": 0},
+    "max_elapsed_s": {"type": "number", "exclusiveMinimum": 0},
+    "max_tool_calls": {"type": "integer", "exclusiveMinimum": 0},
+    "max_replans": {"type": "integer", "minimum": 0},
+    "max_recovery_actions": {"type": "integer", "minimum": 0},
+    "max_same_error_retries": {"type": "integer", "minimum": 0},
+    "no_progress_limit": {"type": "integer", "minimum": 0}
+  }
+}
