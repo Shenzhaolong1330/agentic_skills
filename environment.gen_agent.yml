@@ -1,0 +1,18 @@
+name: agentic-gen-agent
+
+channels:
+  - conda-forge
+
+dependencies:
+  - python=3.11
+  - "pip>=24,<26"
+  - "numpy>=1.26,<3"
+  - "scipy>=1.11,<2"
+  - "pyyaml>=6,<7"
+  - "jsonschema>=4.22,<5"
+  - "pytest>=8,<9"
+  - "pytest-cov>=5,<7"
+  - "pytest-timeout>=2.3,<3"
+  - "packaging>=23,<26"
+  - pip:
+      - "opencv-python-headless>=4.8,<5"
