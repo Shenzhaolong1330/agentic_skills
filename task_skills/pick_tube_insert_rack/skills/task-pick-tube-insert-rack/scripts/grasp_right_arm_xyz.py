@@ -258,6 +258,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--skip-z", action="store_true", help="Do not move to target z before closing.")
     parser.add_argument("--no-close", action="store_true", help="Run all motion stages but do not close the gripper.")
+    parser.add_argument(
+        "--gripper-close-timeout-sec",
+        type=float,
+        default=3.0,
+        help="Wait this long for gripper position feedback after each close command.",
+    )
+    parser.add_argument(
+        "--gripper-close-poll-sec",
+        type=float,
+        default=0.1,
+        help="Polling period while confirming that a close command physically moved the gripper.",
+    )
+    parser.add_argument(
+        "--gripper-close-min-fraction",
+        type=float,
+        default=0.35,
+        help="Minimum normalized closed position required before continuing (0=open, 1=fully closed).",
+    )
+    parser.add_argument(
+        "--gripper-close-retries",
+        type=parse_nonnegative_int,
+        default=1,
+        help="Close-command retries after feedback does not reach --gripper-close-min-fraction.",
+    )
     parser.add_argument("--after-close-sleep-sec", type=float, default=0.5)
     parser.add_argument(
         "--after-partner-close-sleep-sec",
@@ -311,6 +335,107 @@ def read_ee_poses(client: DualFrankaRobotiqRpcClient) -> tuple[np.ndarray, np.nd
     left = np.asarray(_pose_from_side_observation(obs, "left_arm"), dtype=float)
     right = np.asarray(_pose_from_side_observation(obs, "right_arm"), dtype=float)
     return left, right
+
+
+def gripper_state_from_observation(observation: Any, side: str) -> dict[str, Any]:
+    if not isinstance(observation, dict):
+        return {}
+    side_observation = observation.get(side)
+    if not isinstance(side_observation, dict):
+        return {}
+    gripper = side_observation.get("gripper")
+    if isinstance(gripper, dict):
+        return dict(gripper)
+    sensors = side_observation.get("sensors")
+    if isinstance(sensors, dict) and isinstance(sensors.get("robotiq"), dict):
+        return dict(sensors["robotiq"])
+    return {}
+
+
+def gripper_closed_fraction(state: dict[str, Any]) -> float | None:
+    try:
+        position = float(state["position"])
+        open_position = float(state.get("open_position", 0.0))
+        closed_position = float(state.get("closed_position", 0.7929))
+    except (KeyError, TypeError, ValueError):
+        return None
+    values = (position, open_position, closed_position)
+    if not all(math.isfinite(value) for value in values):
+        return None
+    span = closed_position - open_position
+    if abs(span) <= 1e-9:
+        return None
+    return float(np.clip((position - open_position) / span, 0.0, 1.0))
+
+
+def gripper_state_summary(state: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "position",
+        "velocity",
+        "enabled",
+        "last_command_position",
+        "last_command_source",
+        "open_position",
+        "closed_position",
+        "stamp",
+    )
+    return {key: state[key] for key in keys if key in state}
+
+
+def close_gripper_and_confirm(
+    client: DualFrankaRobotiqRpcClient,
+    side: str,
+    *,
+    timeout_sec: float,
+    poll_sec: float,
+    min_closed_fraction: float,
+    retries: int,
+) -> tuple[Any, dict[str, Any]]:
+    """Send close and wait for physical position feedback before allowing later actions."""
+    initial_state = gripper_state_from_observation(client.get_observation(), side)
+    initial_fraction = gripper_closed_fraction(initial_state)
+    final_state = initial_state
+    final_fraction = initial_fraction
+    last_result: Any = None
+
+    for attempt in range(1, retries + 2):
+        last_result = client.close_gripper(side)
+        deadline = time.monotonic() + timeout_sec
+        while True:
+            final_state = gripper_state_from_observation(client.get_observation(), side)
+            final_fraction = gripper_closed_fraction(final_state)
+            enabled = final_state.get("enabled")
+            if (
+                enabled is not False
+                and final_fraction is not None
+                and final_fraction >= min_closed_fraction
+            ):
+                return last_result, {
+                    "ok": True,
+                    "side": side,
+                    "attempts": attempt,
+                    "min_closed_fraction": min_closed_fraction,
+                    "initial_closed_fraction": initial_fraction,
+                    "final_closed_fraction": final_fraction,
+                    "initial_state": gripper_state_summary(initial_state),
+                    "final_state": gripper_state_summary(final_state),
+                }
+            now = time.monotonic()
+            if now >= deadline:
+                break
+            time.sleep(min(poll_sec, deadline - now))
+
+    return last_result, {
+        "ok": False,
+        "side": side,
+        "attempts": retries + 1,
+        "min_closed_fraction": min_closed_fraction,
+        "initial_closed_fraction": initial_fraction,
+        "final_closed_fraction": final_fraction,
+        "initial_state": gripper_state_summary(initial_state),
+        "final_state": gripper_state_summary(final_state),
+        "reason": "gripper feedback did not reach the minimum closed fraction",
+    }
 
 
 def print_pose(name: str, pose: np.ndarray) -> None:
@@ -765,10 +890,16 @@ def main(argv: list[str] | None = None) -> int:
         "controller_stall_translation_epsilon_m",
         "controller_stall_rotation_epsilon_rad",
         "controller_recovery_settle_time_sec",
+        "gripper_close_timeout_sec",
+        "gripper_close_poll_sec",
     ):
         value = float(getattr(args, name))
         if not math.isfinite(value) or value < 0.0:
             raise ValueError(f"--{name.replace('_', '-')} must be a non-negative finite value")
+    if args.gripper_close_poll_sec <= 0.0:
+        raise ValueError("--gripper-close-poll-sec must be positive")
+    if not math.isfinite(args.gripper_close_min_fraction) or not 0.0 <= args.gripper_close_min_fraction <= 1.0:
+        raise ValueError("--gripper-close-min-fraction must be a finite value in [0, 1]")
     active_side = args.arm
     partner_side = other_side(active_side)
     active_label = short_side(active_side)
@@ -945,11 +1076,27 @@ def main(argv: list[str] | None = None) -> int:
         if args.no_close:
             print("gripper close skipped by --no-close")
         else:
-            close_result = client.close_gripper(active_side)
+            close_result, close_confirmation = close_gripper_and_confirm(
+                client,
+                active_side,
+                timeout_sec=args.gripper_close_timeout_sec,
+                poll_sec=args.gripper_close_poll_sec,
+                min_closed_fraction=args.gripper_close_min_fraction,
+                retries=args.gripper_close_retries,
+            )
             print(
                 f"close_{active_label}_gripper:",
                 json.dumps(close_result, indent=None if args.compact else 2, ensure_ascii=False, default=str),
             )
+            print(
+                f"close_{active_label}_gripper_confirmation:",
+                json.dumps(close_confirmation, indent=None if args.compact else 2, ensure_ascii=False, default=str),
+            )
+            if not close_confirmation["ok"]:
+                raise RuntimeError(
+                    f"close_{active_label}_gripper did not produce confirmed physical closure; "
+                    "motion stopped before lifting the tube"
+                )
             if args.after_close_sleep_sec > 0:
                 time.sleep(args.after_close_sleep_sec)
 
@@ -999,11 +1146,32 @@ def main(argv: list[str] | None = None) -> int:
                     "by --stop-before-partner-close"
                 )
                 return 0
-            partner_close_result = client.close_gripper(partner_side)
+            partner_close_result, partner_close_confirmation = close_gripper_and_confirm(
+                client,
+                partner_side,
+                timeout_sec=args.gripper_close_timeout_sec,
+                poll_sec=args.gripper_close_poll_sec,
+                min_closed_fraction=args.gripper_close_min_fraction,
+                retries=args.gripper_close_retries,
+            )
             print(
                 f"close_{partner_label}_gripper:",
                 json.dumps(partner_close_result, indent=None if args.compact else 2, ensure_ascii=False, default=str),
             )
+            print(
+                f"close_{partner_label}_gripper_confirmation:",
+                json.dumps(
+                    partner_close_confirmation,
+                    indent=None if args.compact else 2,
+                    ensure_ascii=False,
+                    default=str,
+                ),
+            )
+            if not partner_close_confirmation["ok"]:
+                raise RuntimeError(
+                    f"close_{partner_label}_gripper did not produce confirmed physical closure; "
+                    f"retaining the tube in {active_label}_gripper"
+                )
             if args.after_partner_close_sleep_sec > 0:
                 time.sleep(args.after_partner_close_sleep_sec)
 
