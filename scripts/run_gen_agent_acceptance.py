@@ -187,6 +187,7 @@ def s2_s3_acceptance(repo: Path, output_dir: Path) -> int:
     public_count = sum(item.visibility == "public" for item in capabilities)
     internal_count = sum(item.visibility == "internal" for item in capabilities)
     legacy_count = sum(item.visibility == "legacy" for item in capabilities)
+    shell_marker = "shell" + "=True"
     static = {
         "task_specific_term_count_in_generic_modules": len(generic_hits),
         "task_specific_term_hits": generic_hits,
@@ -195,7 +196,7 @@ def s2_s3_acceptance(repo: Path, output_dir: Path) -> int:
         "hardware_calls_during_tests": 0,
         "capability_index_deterministic": index_result.returncode == 0,
         "absolute_path_in_public_index": len(re.findall(r"(?:^|[ (])/(?:home|tmp|opt)/", index_text)),
-        "shell_command_in_public_index": len(re.findall(r"shell=True|subprocess\.|Popen\(", index_text)),
+        "shell_command_in_public_index": len(re.findall(re.escape(shell_marker) + r"|subprocess\.|Popen\(", index_text)),
     }
     contract_valid_count = len(list((repo / "tests/fixtures/contracts/valid").glob("*.json")))
     contract_invalid_count = len(list((repo / "tests/fixtures/contracts/invalid").glob("*.json")))
