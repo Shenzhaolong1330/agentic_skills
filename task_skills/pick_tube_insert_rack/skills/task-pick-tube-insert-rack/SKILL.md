@@ -30,7 +30,16 @@ Safe shell wrapper for the complete task defaults to `dry_run`:
   --artifact-dir /tmp/agentic_skills_pick_tube_insert_rack_full
 ```
 
-In explicitly gated live mode, this wrapper captures the head-camera RGB-D frame
+Single-tube shell wrapper for one recognize -> grasp -> insert attempt also
+defaults to `dry_run`:
+
+```bash
+/home/deepcybo/agentic_skills/task_skills/pick_tube_insert_rack/skills/task-pick-tube-insert-rack/scripts/run_single_pick_tube_insert_rack.sh \
+  --dry-run \
+  --artifact-dir /tmp/agentic_skills_pick_tube_insert_rack_single
+```
+
+In explicitly gated live mode, the full wrapper captures the head-camera RGB-D frame
 once, inventories all safely localized loose tubes plus the fixed rack, sorts
 tubes by initial image x from left to right, and then repeats tail-side arm
 selection, grasp, transition handover, cached-slot local correction,
@@ -48,6 +57,28 @@ the first robot motion and require the operator to press Enter. Print the RGB
 and inventory artifact paths for inspection. Ctrl-C or closed stdin aborts with
 no grasp motion. Require an interactive terminal by default; use
 `--no-wait-before-motion` only for explicitly intended automation.
+
+For exactly one physical tube insertion attempt, prefer
+`run_single_pick_tube_insert_rack.sh`. Its live gate is script-level:
+`--mode live --execute`. It does not read `AGENTIC_SKILLS_HARDWARE_TOKEN`, does
+not require `--hardware-allowed`, and does not call the task runner
+`HardwareGate`. It still opens live cameras, moves the robot, controls grippers,
+and may run the configured reset script after a failed grasp/handover or
+insertion stage. It uses the same persistent SAM service, persistent RealSense
+service, rack cache, wrist-hole perception, reset policy, and per-stage
+passthrough arguments as the full wrapper. It passes `--max-tubes 1` to the
+initial inventory; in that mode the VLM prompt asks for only the leftmost
+complete loose tabletop tube and does not request a full tube inventory. The
+live perception stage emits only one executable tube result before grasping and
+inserting it. Unlike the full wrapper, single-flow does not pause for Enter
+before motion by default; add `--wait-before-motion` when an operator inspection
+gate is needed. Default artifacts are
+written under `/tmp/agentic_skills_runs/single_pick_tube_insert_rack_<stamp>/`,
+with `single_flow.log`, `tube_detection.json`, `rack_detection.json`, and
+`insertion_tube_01/wrist_empty_hole_vlm_response.json` when wrist VLM is used.
+A failed grasp/handover or insertion triggers the configured full robot reset
+before the wrapper exits with failure accounting; there is no "next tube" to
+continue to.
 
 During a multi-tube live run, a nonzero insertion subprocess is recorded in its
 per-tube log and does not terminate the left-to-right loop; the wrapper processes
@@ -137,7 +168,8 @@ scripts/run_full_pick_tube_insert_rack.sh --mode live --execute \
 
 ## Live Entry
 
-Live mode may open cameras, move robot arms, control grippers, and run reset recovery. It must pass `HardwareGate`:
+The Python task runner live mode may open cameras, move robot arms, control
+grippers, and run reset recovery. It must pass `HardwareGate`:
 
 ```bash
 python3 /home/deepcybo/agentic_skills/task_skills/pick_tube_insert_rack/skills/task-pick-tube-insert-rack/scripts/task_pick_tube_insert_rack_runner.py \
@@ -147,6 +179,14 @@ python3 /home/deepcybo/agentic_skills/task_skills/pick_tube_insert_rack/skills/t
 ```
 
 Do not run live mode during implementation or review.
+
+Single-tube live shell wrapper entry, without operator-token `HardwareGate`:
+
+```bash
+/home/deepcybo/agentic_skills/task_skills/pick_tube_insert_rack/skills/task-pick-tube-insert-rack/scripts/run_single_pick_tube_insert_rack.sh \
+  --mode live \
+  --execute
+```
 
 ## Auto Reset Recovery Policy
 
@@ -234,5 +274,5 @@ Artifacts are written under `artifact_dir`, default `/tmp/agentic_skills_runs/<r
 - Real insertion still needs visual/force closed-loop confirmation.
 - Existing low-level grasp orientation aligns a gripper axis parallel to tube axis; exact yaw-perpendicular-to-body-normal semantics require further calibration.
 - Multi-candidate empty-hole support is wrapped in task logic; native object_locator candidate output should be added later for live perception.
-- Live health, reset recovery, tube localization, grasp/handover, and insertion subprocesses are dispatched by `CommandRunner` only after their manifest entrypoint passes `HardwareGate`.
+- In the Python task runner, live health, reset recovery, tube localization, grasp/handover, and insertion subprocesses are dispatched by `CommandRunner` only after their manifest entrypoint passes `HardwareGate`. The single-flow shell wrapper is documented separately above and does not use the operator-token `HardwareGate`.
 - A successful live return still reports warnings for the current contact/force verification and retract-versus-full-home limitations.
