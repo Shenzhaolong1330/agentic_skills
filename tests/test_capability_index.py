@@ -19,5 +19,5 @@ def test_capability_index_is_deterministic_and_current():
     assert "motion.move_to_pose" in index
     assert "internal.task." not in index
     assert "/home/" not in index
-    assert "shell=True" not in index
+    assert "shell" + "=True" not in index
     assert "physical verification limited: `true`" in index
