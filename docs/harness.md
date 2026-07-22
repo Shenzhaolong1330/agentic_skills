@@ -66,3 +66,6 @@ reset 没有被禁用，但只能作为 manifest 允许的 recovery entrypoint�
 ## S4.5/S6 scope
 
 The harness now includes fixed Adapter coverage and static GoalSpec/ExecutionEnvelope/TaskGraph compilation. Compiled plans contain no commands and do not authorize hardware. Live Adapter validation, Graph Executor, Recovery Engine, natural-language Planner, and Memory are not implemented.
+# S7 execution
+
+The harness includes an offline bounded Graph Executor with mock, dry-run, and artifact-replay modes. It writes artifacts outside the repository by default and never runs a live manifest entrypoint in S7.

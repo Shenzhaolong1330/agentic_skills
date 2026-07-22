@@ -17,3 +17,6 @@ Draft 2020-12，并由 `agentic_skills_harness.schema_validation` 通过仓库�
 ## Planning schemas
 
 schemas/planning contains Draft 2020-12 GoalSpec, ExecutionEnvelope, InputBinding, TaskGraph, diagnostics, and compiled-plan contracts. They are local-only schemas with closed object roots; execution-control fields are rejected by the typed models and compiler. A compiled graph is descriptive and contains no executable command.
+# S7 schemas
+
+Runtime records, attempts, budgets, events, checkpoints, task results, cancellation requests, and human action requests are defined under `schemas/execution/`. Runtime artifacts are canonical JSON and relative to an artifact directory.

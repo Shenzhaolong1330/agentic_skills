@@ -20,3 +20,6 @@ arbitrary adapter.
 ## Fixed Adapter boundary
 
 The dispatcher uses a closed first-party adapter registry. Requests cannot select an adapter/backend or provide execution paths. Hardware entries are plan-only in this phase, and live dispatch rejects capabilities whose manifest mode support is not supported.
+# S7 integration
+
+`CapabilityDispatcher` is the only capability invocation boundary for Graph Executor. Executor code does not call adapters or backends and cannot provide executable, argv, env, cwd, hardware authorization, or execute flags.
