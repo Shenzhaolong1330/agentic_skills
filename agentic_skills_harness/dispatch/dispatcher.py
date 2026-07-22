@@ -15,6 +15,7 @@ from ..types import SkillContext, SkillMode
 from ..world.invalidation import InvalidationEngine
 from ..world.store import WorldStateStore
 from .adapter import FixedEntrypointAdapter, UnsupportedAdapter
+from .adapters.fixed import build_fixed_adapter_registry
 from .adapter_registry import AdapterNotFoundError, AdapterRegistry
 from .backends import BackendResult, ExecutionBackend, FakeBackend, NoExecutionBackend, SubprocessBackend
 from .error_mapping import make_error, map_legacy_text, map_structured_errors
@@ -32,12 +33,7 @@ class CapabilityDispatcher:
     def __init__(self, capability_registry: Any, *, adapter_registry: AdapterRegistry | None = None, backend: ExecutionBackend | None = None, gate: HardwareGate | None = None, trace_writer: DispatchTraceWriter | None = None, world_state: WorldStateStore | None = None, invalidation_engine: InvalidationEngine | None = None) -> None:
         self.registry = capability_registry
         if adapter_registry is None:
-            adapters = {}
-            for capability in capability_registry.list(include_internal=True, include_legacy=True):
-                if capability.dispatch_support != "unsupported":
-                    adapters[capability.capability_id] = FixedEntrypointAdapter(capability_registry.repo_root)
-                else:
-                    adapters[capability.capability_id] = UnsupportedAdapter()
+            adapters = build_fixed_adapter_registry(capability_registry)
             adapter_registry = AdapterRegistry(capability_registry, adapters)
         self.adapters = adapter_registry
         self.backend = backend or SubprocessBackend()
@@ -81,6 +77,10 @@ class CapabilityDispatcher:
         if capability is None:
             result = self._generic_result(request.capability_id, make_error(ErrorCode.CAPABILITY_NOT_FOUND, "unknown capability", details={"capability_id": request.capability_id}))
             self._trace(request, None, context_value, None, False, result, started_at, utc_now_iso())
+            return result
+        if context_value.mode.value == "live" and capability.requires_hardware and capability.dispatch_support == "plan_only":
+            result = self._generic_result(capability.capability_id, make_error(ErrorCode.CAPABILITY_UNSUPPORTED, "hardware live execution is disabled or not validated in this phase", details={"mode_support": capability.mode_support}), observation=capability.kind == CapabilityKind.OBSERVATION, started_at=started_at)
+            self._trace(request, capability, context_value, None, False, result, started_at, utc_now_iso())
             return result
         is_observation = capability.kind == CapabilityKind.OBSERVATION
         if capability.visibility == "legacy" or capability.visibility == "internal" and not context_value.allow_internal:

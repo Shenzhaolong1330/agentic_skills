@@ -131,8 +131,8 @@
           "allowed_as_recovery": false,
           "execute_flag": "--execute",
           "notes": "Default should be plan-only; live motion requires HardwareGate.",
-          "dispatch_support": "unsupported",
-          "adapter_id": null
+          "dispatch_support": "plan_only",
+          "adapter_id": "fixed.motion.move_to_pose.v1"
         }
       ]
     },
@@ -191,8 +191,8 @@
           "allowed_as_recovery": false,
           "execute_flag": null,
           "notes": "Status is read-only but still requires hardware authorization before RPC connection.",
-          "dispatch_support": "unsupported",
-          "adapter_id": null
+          "dispatch_support": "plan_only",
+          "adapter_id": "fixed.gripper.observe_status.v1"
         },
         {
           "name": "gripper_control",
@@ -247,8 +247,8 @@
           "allowed_as_recovery": false,
           "execute_flag": "--execute",
           "notes": "status is read-only but still connects RPC; open/close require gate.",
-          "dispatch_support": "unsupported",
-          "adapter_id": null
+          "dispatch_support": "plan_only",
+          "adapter_id": "fixed.gripper.command.v1"
         }
       ]
     },
@@ -307,8 +307,8 @@
           "allowed_as_recovery": true,
           "execute_flag": null,
           "notes": "Use status for live health check; no reset command is sent.",
-          "dispatch_support": "unsupported",
-          "adapter_id": null
+          "dispatch_support": "plan_only",
+          "adapter_id": "fixed.robot.observe_health.v1"
         },
         {
           "name": "check_and_reset_ensure",
@@ -376,8 +376,8 @@
           "allowed_as_recovery": true,
           "execute_flag": "--execute",
           "notes": "Preferred AUTO_RESET_RECOVERY entrypoint; may move arms, clear faults, home/reset robot, and alter gripper/object state depending the underlying reset script.",
-          "dispatch_support": "unsupported",
-          "adapter_id": null
+          "dispatch_support": "plan_only",
+          "adapter_id": "fixed.robot.recover_reset_home.v1"
         }
       ]
     },
@@ -441,8 +441,8 @@
           "allowed_as_recovery": false,
           "execute_flag": null,
           "notes": "Supervision only; not a default task stage.",
-          "dispatch_support": "unsupported",
-          "adapter_id": null
+          "dispatch_support": "plan_only",
+          "adapter_id": "fixed.state.capture_realsense.v1"
         },
         {
           "name": "view_state_realsense_reset",
@@ -495,8 +495,8 @@
           "allowed_as_recovery": false,
           "execute_flag": "--execute",
           "notes": "Camera reset is a physical device state change and is not robot E-stop recovery.",
-          "dispatch_support": "unsupported",
-          "adapter_id": null
+          "dispatch_support": "plan_only",
+          "adapter_id": "fixed.state.reset_realsense.v1"
         }
       ]
     },
@@ -560,8 +560,8 @@
           "allowed_as_recovery": false,
           "execute_flag": "--execute",
           "notes": "Task runner must gate partner close and active release.",
-          "dispatch_support": "unsupported",
-          "adapter_id": null
+          "dispatch_support": "plan_only",
+          "adapter_id": "fixed.procedure.handover_transition.v1"
         }
       ]
     },
@@ -637,8 +637,8 @@
           "allowed_as_recovery": true,
           "execute_flag": "--execute",
           "notes": "Recovery-only wrapper; it may move arms and open grippers. Gate before conda activation and robot-reset.",
-          "dispatch_support": "unsupported",
-          "adapter_id": null
+          "dispatch_support": "plan_only",
+          "adapter_id": "fixed.recovery.robot_reset.v1"
         },
         {
           "name": "run_robot_recover",
@@ -704,8 +704,8 @@
           "allowed_as_recovery": true,
           "execute_flag": "--execute",
           "notes": "Controller recovery can change physical robot state and is recovery-only.",
-          "dispatch_support": "unsupported",
-          "adapter_id": null
+          "dispatch_support": "plan_only",
+          "adapter_id": "fixed.recovery.robot_recover.v1"
         },
         {
           "name": "run_robot_go_home",
@@ -766,8 +766,8 @@
           "allowed_as_recovery": false,
           "execute_flag": "--execute",
           "notes": "Home is a physical motion and is not E-stop recovery.",
-          "dispatch_support": "unsupported",
-          "adapter_id": null
+          "dispatch_support": "plan_only",
+          "adapter_id": "fixed.motion.go_home.v1"
         }
       ]
     },

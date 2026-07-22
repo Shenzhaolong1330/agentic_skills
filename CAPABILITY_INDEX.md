@@ -15,7 +15,7 @@
 - physical side effects: controls gripper, changes gripper state, may change held-state
 - resources: robot.dual_franka.grippers (exclusive)
 - verifier: `task_specific`; physical verification limited: `true`
-- dispatch support: `unsupported`; adapter binding: `none`
+- dispatch support: `plan_only`; adapter binding: `fixed.gripper.command.v1`
 - allowed as recovery: `false`
 
 ## `gripper.observe_status`
@@ -30,7 +30,7 @@
 - physical side effects: none declared
 - resources: robot.dual_franka.grippers (shared)
 - verifier: `output_schema`; physical verification limited: `false`
-- dispatch support: `unsupported`; adapter binding: `none`
+- dispatch support: `plan_only`; adapter binding: `fixed.gripper.observe_status.v1`
 - allowed as recovery: `false`
 
 ## `motion.go_home`
@@ -45,7 +45,7 @@
 - physical side effects: moves robot arms, may move both arms
 - resources: robot.dual_franka.shared_workspace (exclusive)
 - verifier: `task_specific`; physical verification limited: `true`
-- dispatch support: `unsupported`; adapter binding: `none`
+- dispatch support: `plan_only`; adapter binding: `fixed.motion.go_home.v1`
 - allowed as recovery: `false`
 
 ## `motion.move_to_pose`
@@ -60,7 +60,7 @@
 - physical side effects: moves robot arms
 - resources: robot.dual_franka.shared_workspace (exclusive)
 - verifier: `task_specific`; physical verification limited: `true`
-- dispatch support: `unsupported`; adapter binding: `none`
+- dispatch support: `plan_only`; adapter binding: `fixed.motion.move_to_pose.v1`
 - allowed as recovery: `false`
 
 ## `perception.locate_object_3d`
@@ -90,7 +90,7 @@
 - physical side effects: moves robot arms, controls gripper, changes gripper state, may change held-state
 - resources: robot.dual_franka.shared_workspace (exclusive)
 - verifier: `task_specific`; physical verification limited: `true`
-- dispatch support: `unsupported`; adapter binding: `none`
+- dispatch support: `plan_only`; adapter binding: `fixed.procedure.handover_transition.v1`
 - allowed as recovery: `false`
 
 ## `recovery.robot_recover`
@@ -105,7 +105,7 @@
 - physical side effects: changes controller state, changes gripper state, may change held-state, may move both arms, may open gripper
 - resources: robot.dual_franka.shared_workspace (exclusive)
 - verifier: `task_specific`; physical verification limited: `true`
-- dispatch support: `unsupported`; adapter binding: `none`
+- dispatch support: `plan_only`; adapter binding: `fixed.recovery.robot_recover.v1`
 - allowed as recovery: `true`
 
 ## `recovery.robot_reset`
@@ -120,7 +120,7 @@
 - physical side effects: moves robot arms, controls gripper, may clear controller faults, may change held-state, changes gripper state, may move both arms, may open gripper
 - resources: robot.dual_franka.shared_workspace (exclusive)
 - verifier: `task_specific`; physical verification limited: `true`
-- dispatch support: `unsupported`; adapter binding: `none`
+- dispatch support: `plan_only`; adapter binding: `fixed.recovery.robot_reset.v1`
 - allowed as recovery: `true`
 
 ## `robot.observe_health`
@@ -135,7 +135,7 @@
 - physical side effects: none declared
 - resources: robot.dual_franka.state (shared)
 - verifier: `output_schema`; physical verification limited: `false`
-- dispatch support: `unsupported`; adapter binding: `none`
+- dispatch support: `plan_only`; adapter binding: `fixed.robot.observe_health.v1`
 - allowed as recovery: `true`
 
 ## `robot.recover_reset_home`
@@ -150,7 +150,7 @@
 - physical side effects: moves robot arms, controls gripper, may clear controller faults, may change held-state, changes gripper state, may move both arms, may open gripper
 - resources: robot.dual_franka.shared_workspace (exclusive)
 - verifier: `task_specific`; physical verification limited: `true`
-- dispatch support: `unsupported`; adapter binding: `none`
+- dispatch support: `plan_only`; adapter binding: `fixed.robot.recover_reset_home.v1`
 - allowed as recovery: `true`
 
 ## `state.capture_realsense`
@@ -165,7 +165,7 @@
 - physical side effects: none declared
 - resources: camera.realsense (shared), robot.dual_franka.state (shared)
 - verifier: `output_schema`; physical verification limited: `false`
-- dispatch support: `unsupported`; adapter binding: `none`
+- dispatch support: `plan_only`; adapter binding: `fixed.state.capture_realsense.v1`
 - allowed as recovery: `false`
 
 ## `state.reset_realsense`
@@ -180,7 +180,7 @@
 - physical side effects: changes camera device state
 - resources: camera.realsense (exclusive)
 - verifier: `task_specific`; physical verification limited: `true`
-- dispatch support: `unsupported`; adapter binding: `none`
+- dispatch support: `plan_only`; adapter binding: `fixed.state.reset_realsense.v1`
 - allowed as recovery: `false`
 
 ## `task.pick_insert.full_flow`

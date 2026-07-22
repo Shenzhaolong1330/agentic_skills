@@ -5,5 +5,5 @@
   "type": "object",
   "additionalProperties": false,
   "required": ["holder_side"],
-  "properties": {"holder_side": {"type": "string", "enum": ["left", "right"]}, "execute": {"type": "boolean"}}
+  "properties": {"holder_side": {"type": "string", "enum": ["left", "right"]}}
 }
