@@ -16,4 +16,3 @@ class CompilerSecurityTests(unittest.TestCase):
             report = TaskGraphCompiler(r).compile(goal, example("dry_run.envelope.json"), example("observe_object.graph.json"))
             accepted += int(report.ok)
         self.assertEqual(accepted, 0)
-

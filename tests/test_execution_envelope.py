@@ -16,4 +16,3 @@ class ExecutionEnvelopeTests(unittest.TestCase):
             WorkspaceConstraint("w", "base", (0, 0, 0), (0, 1, 1))
         with self.assertRaises(Exception):
             ExecutionEnvelope.from_dict({"envelope_id": "e", "target_mode": "dry_run", "risk_ceiling": "MOTION", "hardware_allowed": True})
-

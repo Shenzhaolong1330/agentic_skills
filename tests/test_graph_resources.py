@@ -13,4 +13,3 @@ class GraphResourceTests(unittest.TestCase):
         graph["nodes"][0]["resource_requirements"] = []
         report = TaskGraphCompiler(r).compile(example("observe_object.goal.json"), example("dry_run.envelope.json"), graph)
         self.assertIn("RESOURCE_REQUIREMENT_MISSING", {item.code for item in report.issues})
-

@@ -47,4 +47,3 @@ class CompilationReport:
 
     def to_dict(self) -> dict[str, Any]:
         return {"ok": self.ok, "executable": False, "issues": [item.to_dict() for item in self.issues], "compiled_graph": None if self.compiled_graph is None else self.compiled_graph.to_dict()}
-

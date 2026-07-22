@@ -38,4 +38,3 @@ class AdapterPlanDispatcherTests(unittest.TestCase):
         self.assertFalse(result.command_executed)
         self.assertFalse(result.planned_only)
         self.assertTrue(result.errors)
-

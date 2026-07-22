@@ -22,4 +22,3 @@ class GraphWorkspaceTests(unittest.TestCase):
         node["input_bindings"] = [{"binding_id": "pose", "target_argument_path": "/xyz_m", "source_type": "WORLD_FACT", "world_fact_selector": {"predicate": "object.pose"}}]
         report = TaskGraphCompiler(r).compile(example("move_to_pose.goal.json"), example("dry_run.envelope.json"), graph)
         self.assertIn("DYNAMIC_POSE_WITHOUT_WORKSPACE_GUARD", {item.code for item in report.issues})
-

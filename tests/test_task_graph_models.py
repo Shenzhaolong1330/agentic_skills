@@ -17,4 +17,3 @@ class TaskGraphModelTests(unittest.TestCase):
             RetryPolicy(65)
         graph = TaskGraph.from_dict({"graph_id": "g", "goal_id": "goal", "entry_node_id": "n", "nodes": [{"node_id": "n", "kind": "CHECK", "preconditions": [{"operator": "exists", "operands": [{"predicate": "x"}]}]}], "terminal_nodes": ["n"]})
         self.assertEqual(graph.nodes[0].retry_policy.max_attempts, 1)
-

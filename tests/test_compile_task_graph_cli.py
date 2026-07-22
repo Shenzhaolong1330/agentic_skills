@@ -19,4 +19,3 @@ class CompileTaskGraphCliTests(unittest.TestCase):
             compiled = json.loads((Path(directory) / "compiled_task_graph.json").read_text())
             self.assertNotIn("executable", str(compiled))
             self.assertNotIn("argv", str(compiled))
-

@@ -32,4 +32,3 @@ class CompilerPerformanceTests(unittest.TestCase):
             hashes.append(report.compiled_graph.plan_hash)
         self.assertEqual(len(set(hashes)), 1)
         self.assertLess(max(timings), 1.0)
-
