@@ -1,0 +1,11 @@
+{
+  "graph_id": "reject_estop",
+  "goal_id": "bounded_health_recovery_fixture",
+  "entry_node_id": "recover",
+  "nodes": [
+    {"node_id": "recover", "kind": "RECOVER", "capability_id": "robot.recover_reset_home", "arguments": {}, "verifier": {"mode": "predicate", "predicate": {"operator": "robot_health_is", "operands": [{"entity_id": "robot-1"}, "READY"]}}, "resource_requirements": [{"resource_id": "robot.dual_franka.shared_workspace", "mode": "exclusive", "description": "resource"}]},
+    {"node_id": "end", "kind": "HUMAN_ACTION"}
+  ],
+  "edges": [{"edge_id": "estop", "source_node_id": "recover", "target_node_id": "recover", "condition": "FAILURE", "error_codes": ["ROBOT_ESTOP_OR_UNSAFE"], "max_traversals": 1}],
+  "terminal_nodes": ["end"]
+}

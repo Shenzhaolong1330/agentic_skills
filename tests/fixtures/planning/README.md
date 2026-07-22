@@ -1,0 +1,1 @@
+Planning fixture inventory: 20 valid combinations and 40 invalid combinations are exercised by the S4.5/S6 acceptance runner. The valid cases use safe offline observation templates with unique IDs; invalid cases cover the named compiler rejection classes and the 40 forbidden-field payloads.

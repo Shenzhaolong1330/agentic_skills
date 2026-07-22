@@ -1,0 +1,9 @@
+{
+  "template": "examples/planning/observe_object.goal.json + dry_run.envelope.json + observe_object.graph.json",
+  "cases": [
+    "observation-01", "observation-02", "observation-03", "observation-04", "observation-05",
+    "observation-06", "observation-07", "observation-08", "observation-09", "observation-10",
+    "observation-11", "observation-12", "observation-13", "observation-14", "observation-15",
+    "observation-16", "observation-17", "observation-18", "observation-19", "observation-20"
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "goal_id": "move_fixture_pose_verified",
+  "goal_kind": "PHYSICAL_STATE_CHANGE",
+  "description": "Produce a dry-run plan for a bounded fixture pose and require independent S5 evidence.",
+  "entities": [{"entity_id": "fixture-object-1", "entity_type": "fixture_object", "constraints": {"fixture_only": true}}],
+  "initial_assumptions": [{"fixture_only": true}],
+  "success_predicate": {"operator": "pose_error_within", "operands": [{"predicate": "robot.pose_error", "entity_id": "robot-1"}, 0.01, 0.05]},
+  "failure_predicates": [{"predicate": {"operator": "robot_health_is", "operands": [{"entity_id": "robot-1"}, "FAULT"]}, "terminal_state": "UNSAFE", "reason": "Robot fault blocks physical verification."}],
+  "required_evidence": [{"evidence_id": "pose-error-evidence", "fact_selector": {"predicate": "robot.pose_error", "entity_id": "robot-1", "frame": "base"}, "required_status": "VERIFIED", "freshness_required": true, "minimum_confidence": 0.9, "frame_requirement": "base", "description": "Independent pose error observation; command return code is insufficient."}],
+  "ambiguities": [],
+  "metadata": {"fixture_only": true, "not_for_real_robot": true}
+}

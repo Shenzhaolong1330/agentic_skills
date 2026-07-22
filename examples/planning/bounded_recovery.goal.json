@@ -1,0 +1,11 @@
+{
+  "goal_id": "bounded_health_recovery_fixture",
+  "goal_kind": "OBSERVATION",
+  "description": "Observe health and allow at most two bounded recovery attempts in a dry-run graph.",
+  "entities": [{"entity_id": "robot-1", "entity_type": "robot"}],
+  "success_predicate": {"operator": "robot_health_is", "operands": [{"entity_id": "robot-1"}, "READY"]},
+  "failure_predicates": [],
+  "required_evidence": [{"evidence_id": "post-recovery-health", "fact_selector": {"predicate": "robot.health", "entity_id": "robot-1"}, "required_status": "VERIFIED", "freshness_required": true, "minimum_confidence": 0.8, "description": "Fresh post-recovery health evidence."}],
+  "ambiguities": [],
+  "metadata": {"fixture_only": true}
+}

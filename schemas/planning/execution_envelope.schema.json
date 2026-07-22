@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentic-skills.local/schemas/planning/execution_envelope.schema.json",
+  "title": "ExecutionEnvelope", "type": "object", "additionalProperties": false,
+  "required": ["envelope_id", "target_mode", "risk_ceiling"],
+  "properties": {
+    "envelope_id": {"type": "string", "minLength": 1}, "target_mode": {"type": "string", "enum": ["mock", "dry_run", "from_artifacts", "live"]}, "allowed_capabilities": {"type": "array", "items": {"type": "string", "minLength": 1}}, "forbidden_capabilities": {"type": "array", "items": {"type": "string", "minLength": 1}}, "risk_ceiling": {"type": "string", "enum": ["NONE", "READ_ONLY_HARDWARE", "MOTION", "GRIPPER", "CONTACT", "RELEASE", "RECOVERY", "HIGH_RISK"]}, "allowed_resources": {"type": "array", "items": {"type": "string", "minLength": 1}}, "workspace_constraints": {"type": "array", "items": {"$ref": "https://agentic-skills.local/schemas/planning/workspace_constraint.schema.json"}}, "max_nodes": {"type": "integer", "minimum": 1}, "max_depth": {"type": "integer", "minimum": 1}, "max_elapsed_s": {"type": "number", "exclusiveMinimum": 0}, "max_tool_calls": {"type": "integer", "minimum": 1}, "max_replans": {"type": "integer", "minimum": 0}, "max_recovery_actions": {"type": "integer", "minimum": 0}, "max_same_error_retries": {"type": "integer", "minimum": 0}, "no_progress_limit": {"type": "integer", "minimum": 1}, "approval_policy": {"type": "object", "additionalProperties": false, "properties": {"required_for_risk_classes": {"type": "array", "items": {"type": "string"}}, "estop_requires_human": {"type": "boolean"}, "ambiguity_requires_human": {"type": "boolean"}, "description": {"type": "string"}}}, "metadata": {"type": "object", "additionalProperties": false, "patternProperties": {"^.*$": {}}}
+  }
+}

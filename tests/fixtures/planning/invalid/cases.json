@@ -1,0 +1,14 @@
+{
+  "malicious_fields": [
+    "executable", "argv", "env", "environment", "adapter", "backend", "script", "cwd", "execute", "hardware_allowed",
+    "operator_token", "python_path", "client_path", "reset_script", "config_path", "output_path", "result_path", "extra_args", "passthrough_args", "shell",
+    "executable", "argv", "env", "adapter", "backend", "script", "cwd", "execute", "hardware_allowed", "operator_token",
+    "python_path", "client_path", "reset_script", "config_path", "output_path", "result_path", "extra_args", "passthrough_args", "shell", "environment"
+  ],
+  "cases": [
+    "unknown-capability", "internal-capability", "unsupported-capability", "live-plan-only", "not-allowed", "forbidden", "risk-ceiling", "kind-mismatch", "invalid-arguments", "extra-arguments",
+    "executable-injection", "argv-injection", "env-injection", "adapter-injection", "backend-injection", "script-injection", "cwd-injection", "hardware-allowed-injection", "execute-injection", "frame-missing",
+    "frame-mismatch", "workspace-violation", "dynamic-pose-no-guard", "missing-verifier", "weakened-verifier", "missing-resource", "resource-conflict", "timeout-budget", "retry-budget", "recovery-budget",
+    "estop-recovery", "dangling-node", "dangling-binding", "unreachable-node", "no-terminal", "unbounded-self-loop", "unbounded-cycle", "no-evidence", "returncode-success", "stale-evidence"
+  ]
+}

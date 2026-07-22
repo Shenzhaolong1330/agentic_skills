@@ -1,0 +1,1 @@
+{"envelope_id":"reject_live","target_mode":"live","allowed_capabilities":["motion.move_to_pose"],"risk_ceiling":"MOTION","max_recovery_actions":0}

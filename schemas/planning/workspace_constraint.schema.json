@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentic-skills.local/schemas/planning/workspace_constraint.schema.json",
+  "title": "WorkspaceConstraint", "type": "object", "additionalProperties": false,
+  "required": ["workspace_id", "frame", "min_xyz_m", "max_xyz_m"],
+  "properties": {"workspace_id": {"type": "string", "minLength": 1}, "frame": {"type": "string", "minLength": 1}, "min_xyz_m": {"type": "array", "prefixItems": [{"type": "number"}, {"type": "number"}, {"type": "number"}], "items": false}, "max_xyz_m": {"type": "array", "prefixItems": [{"type": "number"}, {"type": "number"}, {"type": "number"}], "items": false}, "allowed_entity_types": {"type": "array", "items": {"type": "string", "minLength": 1}}, "description": {"type": "string"}}
+}

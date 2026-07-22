@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentic-skills.local/schemas/planning/evidence_requirement.schema.json",
+  "title": "EvidenceRequirement", "type": "object", "additionalProperties": false,
+  "required": ["evidence_id", "fact_selector"],
+  "properties": {"evidence_id": {"type": "string", "minLength": 1}, "fact_selector": {"type": "object", "additionalProperties": false, "patternProperties": {"^.*$": {} }}, "required_status": {"type": "string", "minLength": 1}, "freshness_required": {"type": "boolean"}, "minimum_confidence": {"type": "number", "minimum": 0, "maximum": 1}, "frame_requirement": {"type": ["string", "null"]}, "description": {"type": "string"}}
+}
