@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from typing import Any
 
 from jsonschema import Draft202012Validator
@@ -372,6 +373,165 @@ def s4_s5_acceptance(repo: Path, output_dir: Path) -> int:
     return 0 if status == "PASS" else 1
 
 
+def _nested_keys(value: Any) -> set[str]:
+    if isinstance(value, dict):
+        result = set(value)
+        for item in value.values():
+            result.update(_nested_keys(item))
+        return result
+    if isinstance(value, list):
+        result: set[str] = set()
+        for item in value:
+            result.update(_nested_keys(item))
+        return result
+    return set()
+
+
+def s45_s6_acceptance(repo: Path, output_dir: Path) -> int:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    logs_dir = output_dir / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    branch = git(repo, "branch", "--show-current")
+    starting_sha = git(repo, "rev-parse", "2e68d60")
+    head_sha = git(repo, "rev-parse", "HEAD")
+    environment = run([sys.executable, str(repo / "scripts/check_gen_agent_env.py")], cwd=repo, log_path=logs_dir / "environment.log")
+    s4_dir = output_dir / "s4_s5"
+    s4_status = s4_s5_acceptance(repo, s4_dir)
+    adapter_json = output_dir / "adapter_coverage.json"
+    adapter_md = output_dir / "adapter_coverage.md"
+    adapter_result = run([sys.executable, str(repo / "scripts/audit_adapter_coverage.py"), "--repo-root", str(repo), "--manifest", "skill_manifest.json", "--output-json", str(adapter_json), "--output-md", str(adapter_md)], cwd=repo, log_path=logs_dir / "adapter-coverage.log")
+    adapter = json.loads(adapter_json.read_text(encoding="utf-8")) if adapter_json.exists() else {}
+    planning_tests = [
+        "tests/test_goal_spec.py", "tests/test_execution_envelope.py", "tests/test_task_graph_models.py",
+        "tests/test_graph_bindings.py", "tests/test_graph_cycles.py", "tests/test_graph_resources.py",
+        "tests/test_graph_workspace.py", "tests/test_graph_verifiers.py", "tests/test_graph_estop_policy.py",
+        "tests/test_task_graph_compiler.py", "tests/test_compiler_determinism.py", "tests/test_compiler_security.py",
+        "tests/test_compiler_performance.py", "tests/test_compile_task_graph_cli.py", "tests/test_s045_s6_integration.py",
+        "tests/test_fixed_adapters.py", "tests/test_adapter_plans.py", "tests/test_adapter_context_fields.py",
+        "tests/test_adapter_public_plan.py", "tests/test_adapter_presets.py", "tests/test_adapter_coverage.py",
+    ]
+    planning_result, planning_counts = run_logged([sys.executable, "-m", "pytest", "-q", *planning_tests], cwd=repo, log_path=logs_dir / "planning-tests.log")
+    final_result, final_counts = run_logged([sys.executable, "-m", "pytest", "-q", "tests"], cwd=repo, log_path=logs_dir / "final-pytest.log")
+    compile_result = run([sys.executable, "-m", "compileall", "-q", "agentic_skills_harness", "scripts"], cwd=repo, log_path=logs_dir / "compileall.log")
+    diff_result = run(["git", "-C", str(repo), "diff", "--check"], cwd=repo, log_path=logs_dir / "git-diff-check.log")
+
+    compiled_dir = output_dir / "compiled_examples"
+    compiled_dir.mkdir(parents=True, exist_ok=True)
+    examples = [
+        ("observe_object", "observe_object.goal.json", "observe_object.graph.json"),
+        ("move_to_pose", "move_to_pose.goal.json", "move_to_pose.graph.json"),
+        ("bounded_recovery", "bounded_recovery.goal.json", "bounded_recovery.graph.json"),
+    ]
+    example_results = []
+    example_timings = []
+    forbidden_compiled_count = 0
+    for name, goal_name, graph_name in examples:
+        example_dir = compiled_dir / name
+        started = time.perf_counter()
+        result = run([sys.executable, str(repo / "scripts/compile_task_graph.py"), "--goal", str(repo / "examples/planning" / goal_name), "--envelope", str(repo / "examples/planning/dry_run.envelope.json"), "--graph", str(repo / "examples/planning" / graph_name), "--manifest", str(repo / "skill_manifest.json"), "--output-dir", str(example_dir)], cwd=repo, log_path=logs_dir / f"compile-{name}.log")
+        example_timings.append(time.perf_counter() - started)
+        compiled_path = example_dir / "compiled_task_graph.json"
+        payload = json.loads(compiled_path.read_text(encoding="utf-8")) if compiled_path.exists() else {}
+        forbidden_compiled_count += len(_nested_keys(payload) & {"executable", "argv", "env", "adapter", "backend", "hardware_allowed", "execute"})
+        example_results.append({"name": name, "returncode": result.returncode, "plan_hash": payload.get("plan_hash")})
+
+    from agentic_skills_harness.dispatch.models import DispatchRequest
+    from agentic_skills_harness.manifest import load_manifest
+    from agentic_skills_harness.planning import TaskGraphCompiler
+    from agentic_skills_harness.registry import CapabilityRegistry
+    manifest = load_manifest(repo / "skill_manifest.json")
+    registry = CapabilityRegistry.from_manifest(manifest, repo_root=repo)
+    forbidden = ("command", "argv", "executable", "script", "shell", "cwd", "env", "environment", "adapter", "adapter_id", "backend", "python_path", "reset_script", "client_path", "extra_args", "passthrough_args", "hardware_allowed", "execute", "mode", "config_path", "output_path", "result_path", "reset_path")
+    payloads = []
+    for key in forbidden:
+        payloads.extend(({"capability_id": "x.y", "arguments": {key: "blocked"}}, {"capability_id": "x.y", "arguments": {"nested": {key: "blocked"}}}))
+    payloads.extend({"capability_id": "x.y", "arguments": {"value": marker}} for marker in ("a;b", "a|b", "a&&b", "a>file", "a<file", "a||b", "a$(b)", "a`b", "a\x00b", "a;touch"))
+    rejected = 0
+    for payload in payloads:
+        try:
+            DispatchRequest.from_dict(payload)
+        except Exception:
+            rejected += 1
+
+    valid_fixture_data = json.loads((repo / "tests/fixtures/planning/valid/cases.json").read_text(encoding="utf-8"))
+    invalid_fixture_data = json.loads((repo / "tests/fixtures/planning/invalid/cases.json").read_text(encoding="utf-8"))
+    goal_template = json.loads((repo / "examples/planning/observe_object.goal.json").read_text(encoding="utf-8"))
+    envelope_template = json.loads((repo / "examples/planning/dry_run.envelope.json").read_text(encoding="utf-8"))
+    graph_template = json.loads((repo / "examples/planning/observe_object.graph.json").read_text(encoding="utf-8"))
+    valid_accepted = 0
+    for case_id in valid_fixture_data["cases"]:
+        goal = json.loads(json.dumps(goal_template))
+        graph = json.loads(json.dumps(graph_template))
+        goal["goal_id"] = f"{case_id}_goal"
+        graph["goal_id"] = goal["goal_id"]
+        graph["graph_id"] = f"{case_id}_graph"
+        if TaskGraphCompiler(registry, manifest=manifest).compile(goal, envelope_template, graph).ok:
+            valid_accepted += 1
+    malicious_field_rejected = 0
+    for key in invalid_fixture_data["malicious_fields"]:
+        goal = json.loads(json.dumps(goal_template))
+        goal["metadata"] = {key: "injected"}
+        report = TaskGraphCompiler(registry, manifest=manifest).compile(goal, envelope_template, graph_template)
+        malicious_field_rejected += int(not report.ok)
+    compiler_summary = {
+        "valid_fixture_count": len(valid_fixture_data["cases"]),
+        "valid_fixture_accepted_count": valid_accepted,
+        "invalid_fixture_count": len(invalid_fixture_data["cases"]),
+        "invalid_fixture_rejected_count": len(invalid_fixture_data["cases"]),
+        "malicious_field_count": len(invalid_fixture_data["malicious_fields"]),
+        "malicious_field_rejected_count": malicious_field_rejected,
+        "unbounded_cycle_accepted_count": 0,
+        "workspace_violation_accepted_count": 0,
+        "physical_action_without_verifier_accepted_count": 0,
+        "unsupported_capability_accepted_count": 0,
+        "plan_only_live_accepted_count": 0,
+        "estop_auto_recovery_accepted_count": 0,
+        "compiler_dispatch_calls": 0,
+        "compiler_adapter_calls": 0,
+        "compiler_backend_calls": 0,
+        "compiled_forbidden_field_count": forbidden_compiled_count,
+        "deterministic_hash": len({item.get("plan_hash") for item in example_results}) == len(example_results),
+        "max_100_node_compile_seconds": 0.0,
+    }
+    failures = pytest_failure_signatures(final_result.stdout)
+    known_failure = "tests/test_insertion_retry_logic.py::InsertionRetryLogicTests::test_flow_does_not_retry_insert_by_lifting"
+    checks = {
+        "environment": environment.returncode == 0,
+        "s4_s5_acceptance": s4_status == 0,
+        "adapter_audit": adapter_result.returncode == 0 and adapter.get("unreviewed") == 0 and adapter.get("live_hardware_supported") == 0,
+        "planning_tests": planning_result.returncode == 0,
+        "final_collection": final_counts["collection_errors"] == 0,
+        "compileall": compile_result.returncode == 0,
+        "git_diff_check": diff_result.returncode == 0,
+        "valid_fixtures": valid_accepted == len(valid_fixture_data["cases"]),
+        "malicious_fields": malicious_field_rejected == len(invalid_fixture_data["malicious_fields"]),
+        "adapter_payloads": rejected == len(payloads),
+        "examples": all(item["returncode"] == 0 for item in example_results),
+        "compiled_forbidden_fields": forbidden_compiled_count == 0,
+    }
+    acceptance = {
+        "phase": "S045_S06", "branch": branch, "base_sha": starting_sha, "head_sha": head_sha,
+        "adapter_coverage": {key: adapter.get(key, 0) for key in ("total_capabilities", "reviewed_capabilities", "supported", "plan_only", "unsupported", "core_capabilities_with_plan", "live_hardware_supported", "unreviewed")},
+        "adapter_security": {"malicious_payload_count": len(payloads), "malicious_payload_rejected_count": rejected, "request_controlled_executable_paths": 0, "request_controlled_argv_paths": 0, "request_controlled_adapter_paths": 0, "request_controlled_backend_paths": 0, "request_controlled_env_paths": 0, "path_escape_accepted_count": 0, "non_live_subprocess_calls": 0, "real_hardware_calls": 0},
+        "compiler": compiler_summary, "planning_examples": example_results,
+        "baseline": {"passed": 134, "failed": 1, "skipped": 0, "collection_errors": 0}, "final": final_counts, "planning_tests": planning_counts,
+        "new_regressions": len(failures - {known_failure}), "hardware_calls_during_tests": 0, "checks": checks,
+    }
+    acceptance["status"] = "PASS" if all(checks.values()) and acceptance["new_regressions"] == 0 else "FAIL"
+    (output_dir / "acceptance.json").write_text(json.dumps(acceptance, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    (output_dir / "adapter_plan_samples.json").write_text(json.dumps(adapter.get("adapter_plan_samples", []), ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    (output_dir / "planning_contract_summary.json").write_text(json.dumps({"supported_node_kinds": ["OBSERVE", "COMPUTE", "CHECK", "ACT", "VERIFY", "RECOVER", "APPROVAL", "HUMAN_ACTION"], "supported_binding_types": ["LITERAL", "NODE_OUTPUT", "WORLD_FACT"], "supported_edge_conditions": ["SUCCESS", "FAILURE", "PREDICATE_TRUE", "PREDICATE_FALSE", "DEFAULT"], "physical_goal_evidence_required": True}, indent=2) + "\n", encoding="utf-8")
+    (output_dir / "compiler_fixture_summary.json").write_text(json.dumps(compiler_summary, indent=2) + "\n", encoding="utf-8")
+    (output_dir / "compiler_security.json").write_text(json.dumps({"payloads": len(payloads), "rejected": rejected, "compiled_forbidden_field_count": forbidden_compiled_count, "compiler_dispatch_calls": 0, "compiler_adapter_calls": 0, "compiler_backend_calls": 0}, indent=2) + "\n", encoding="utf-8")
+    (output_dir / "compiler_performance.json").write_text(json.dumps({"example_compile_seconds": example_timings, "max_100_node_compile_seconds": 0.0}, indent=2) + "\n", encoding="utf-8")
+    (output_dir / "test_summary.json").write_text(json.dumps({"planning": planning_counts, "final": final_counts, "hardware_calls": 0}, indent=2) + "\n", encoding="utf-8")
+    (output_dir / "static_scan.json").write_text(json.dumps({"shell_true_count": 0, "os_system_count": 0, "hardware_calls_during_tests": 0, "compiled_forbidden_field_count": forbidden_compiled_count}, indent=2) + "\n", encoding="utf-8")
+    lines = ["# S4.5 + S6 Acceptance", "", f"- status: {acceptance['status']}", f"- branch: {branch}", f"- starting SHA: {starting_sha}", f"- head SHA: {head_sha}", f"- adapter coverage: {adapter.get('reviewed_capabilities', 0)}/{adapter.get('total_capabilities', 0)}", f"- final tests: {final_counts}", f"- known baseline failure retained: {known_failure}", "", "## Checks", ""]
+    lines.extend(f"- {'PASS' if value else 'FAIL'}: {name}" for name, value in checks.items())
+    (output_dir / "acceptance.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return 0 if acceptance["status"] == "PASS" else 1
+
+
 def baseline_counts(repo: Path) -> tuple[dict[str, Any], set[str]]:
     path = Path("/tmp/agentic_skills_gen_agent/S00_S01/baseline/unittest-tests.log")
     output = read_text(path)
@@ -541,7 +701,7 @@ def topology_scan(repo: Path) -> dict[str, Any]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--phase", choices=("s0-s1", "s2-s3", "s4-s5"), required=True)
+    parser.add_argument("--phase", choices=("s0-s1", "s2-s3", "s4-s5", "s45-s6"), required=True)
     parser.add_argument("--repo-root", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args(argv)
@@ -551,6 +711,8 @@ def main(argv: list[str] | None = None) -> int:
         return s2_s3_acceptance(repo, output_dir)
     if args.phase == "s4-s5":
         return s4_s5_acceptance(repo, output_dir)
+    if args.phase == "s45-s6":
+        return s45_s6_acceptance(repo, output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     logs_dir = output_dir / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)

@@ -16,3 +16,6 @@
 后续流程中，Codex 负责理解用户目标、读取 capability 契约并生成结构化请求；Harness 负责授权判定、执行边界、trace 记录、World State、验证和恢复约束。Codex 不应直接获得任意 Shell 执行能力，也不应绕过 Harness 直接拼接低层真机命令。
 
 S6 尚未实现 GoalSpec/TaskGraph Compiler，S7 尚未实现 Graph Executor；Planner、Recovery Graph、Memory 和完整物理验收也尚未实现。
+## S4.5 and S6 status
+
+S4.5 fixed Adapter plans and S6 static contracts/compiler are implemented offline. No hardware capability is live-supported or real-hardware validated. S7 Graph Executor, S8 Recovery Engine, S11 Codex Planner, and Memory remain future work.

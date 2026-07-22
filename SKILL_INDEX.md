@@ -39,3 +39,6 @@ predicates, invalidation, and effect/goal verification are documented in
 3. 低层脚本只作为 manifest entrypoint，不从 Codex 直接拼接执行真机。
 4. 先审查 `command_plan.json` 和 trace，再考虑 live。
 5. reset 是 task runtime recovery state，不是 shell 脚本里的无条件前置动作。
+## S4.5/S6 planning boundary
+
+Use the fixed Adapter coverage and static planning contracts under docs/gen_agent when producing dry-run plans. Plan-only is not live support; the Compiler does not execute tasks and no natural-language Planner, Graph Executor, Recovery Engine, or Memory is present.

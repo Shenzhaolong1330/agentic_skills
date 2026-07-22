@@ -14,3 +14,6 @@ Draft 2020-12，并由 `agentic_skills_harness.schema_validation` 通过仓库�
   `PredicateSpec`/`PredicateResult`, `VerificationRequest`, and audit schemas.
 
 默认 6DoF 阈值为平移 `0.005 m`、旋转 `0.0872664626 rad`。原任务只明确 5 mm 平移要求，旋转阈值约等于 5 degrees，可由 runner CLI 覆盖。
+## Planning schemas
+
+schemas/planning contains Draft 2020-12 GoalSpec, ExecutionEnvelope, InputBinding, TaskGraph, diagnostics, and compiled-plan contracts. They are local-only schemas with closed object roots; execution-control fields are rejected by the typed models and compiler. A compiled graph is descriptive and contains no executable command.
