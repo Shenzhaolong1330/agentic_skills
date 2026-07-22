@@ -12,6 +12,7 @@ from .contracts.serialization import ContractValidationError, reject_unknown, re
 VISIBILITIES = {"public", "internal", "legacy"}
 VERIFIER_TYPES = {"output_schema", "capability", "task_specific", "none"}
 DISPATCH_SUPPORT = {"supported", "plan_only", "unsupported"}
+MODE_SUPPORT = {"supported", "planned_only", "unsupported", "disabled", "not_validated"}
 CAPABILITY_ID_RE = re.compile(r"^[a-z][a-z0-9]*(?:\.[a-z][a-z0-9_-]*)+$")
 SEMVER_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
 
@@ -81,6 +82,7 @@ class CapabilityContract:
     adapter_id: str | None = None
     dispatch_support: str = "unsupported"
     artifact_policy: dict[str, Any] | None = None
+    mode_support: dict[str, str] | None = None
 
     def __post_init__(self) -> None:
         for name in ("name", "capability_id", "capability_version", "path", "type", "input_schema_ref", "output_schema_ref", "notes", "description"):
@@ -123,6 +125,25 @@ class CapabilityContract:
             if not isinstance(self.artifact_policy, dict):
                 raise ContractValidationError("artifact_policy must be an object")
             object.__setattr__(self, "artifact_policy", dict(self.artifact_policy))
+        if self.mode_support is None:
+            if self.dispatch_support == "supported":
+                defaults = {"mock": "supported", "dry_run": "planned_only", "from_artifacts": "supported", "live": "not_validated" if self.requires_hardware else "supported"}
+            elif self.dispatch_support == "plan_only":
+                defaults = {"mock": "planned_only", "dry_run": "planned_only", "from_artifacts": "unsupported", "live": "not_validated" if self.requires_hardware else "supported"}
+            else:
+                defaults = {"mock": "unsupported", "dry_run": "unsupported", "from_artifacts": "unsupported", "live": "disabled" if self.requires_hardware else "unsupported"}
+            object.__setattr__(self, "mode_support", defaults)
+        else:
+            if not isinstance(self.mode_support, dict) or set(self.mode_support) != {"mock", "dry_run", "from_artifacts", "live"}:
+                raise ContractValidationError("mode_support must define mock, dry_run, from_artifacts, and live")
+            normalized_modes = {}
+            for mode, status in self.mode_support.items():
+                if not isinstance(status, str) or status not in MODE_SUPPORT:
+                    raise ContractValidationError(f"invalid mode_support.{mode}: {status!r}")
+                normalized_modes[mode] = status
+            object.__setattr__(self, "mode_support", normalized_modes)
+        if self.requires_hardware and self.mode_support.get("live") == "supported":
+            raise ContractValidationError("hardware capability live support must remain disabled or not_validated")
         if self.kind == CapabilityKind.RECOVERY and self.risk_class not in (RiskClass.RECOVERY, RiskClass.HIGH_RISK):
             raise ContractValidationError("recovery capability must use RECOVERY or HIGH_RISK risk")
         is_physical = bool(self.physical_side_effects or self.moves_robot or self.controls_gripper)
@@ -142,8 +163,9 @@ class CapabilityContract:
             "requires_hardware", "opens_camera", "connects_robot_rpc", "moves_robot", "controls_gripper", "physical_side_effects", "risk_class",
             "resources", "preconditions", "effects", "invalidates", "timeout_s", "verifier", "error_codes", "default_safe_to_run", "allowed_as_recovery",
             "execute_flag", "notes", "description", "adapter_id", "dispatch_support", "artifact_policy",
+            "mode_support",
         )
-        required_names = tuple(name for name in names if name not in {"adapter_id", "dispatch_support", "artifact_policy"})
+        required_names = tuple(name for name in names if name not in {"adapter_id", "dispatch_support", "artifact_policy", "mode_support"})
         reject_unknown(data, names, required_names)
         return cls(
             name=data["name"], capability_id=data["capability_id"], capability_version=data["capability_version"], kind=data["kind"], visibility=data["visibility"],
@@ -153,7 +175,7 @@ class CapabilityContract:
             preconditions=tuple(data["preconditions"]), effects=tuple(data["effects"]), invalidates=tuple(data["invalidates"]), timeout_s=data["timeout_s"], verifier=VerifierContract.from_dict(data["verifier"]),
             error_codes=tuple(ErrorCode(code) for code in require_list(data["error_codes"], "error_codes")), default_safe_to_run=data["default_safe_to_run"], allowed_as_recovery=data["allowed_as_recovery"],
             execute_flag=data["execute_flag"], notes=data["notes"], description=data["description"], skill_name=skill_name, skill_layer=skill_layer,
-            adapter_id=data.get("adapter_id"), dispatch_support=data.get("dispatch_support", "unsupported"), artifact_policy=data.get("artifact_policy"),
+            adapter_id=data.get("adapter_id"), dispatch_support=data.get("dispatch_support", "unsupported"), artifact_policy=data.get("artifact_policy"), mode_support=data.get("mode_support"),
         )
 
     def to_dict(self) -> dict[str, Any]:

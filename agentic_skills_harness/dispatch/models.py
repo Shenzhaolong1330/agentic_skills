@@ -12,7 +12,8 @@ from ..types import SkillContext, SkillMode
 FORBIDDEN_REQUEST_KEYS = {
     "command", "argv", "executable", "script", "shell", "cwd", "env", "environment",
     "adapter", "adapter_id", "backend", "python_path", "reset_script", "client_path",
-    "extra_args", "passthrough_args",
+    "extra_args", "passthrough_args", "hardware_allowed", "execute", "mode", "artifact_dir",
+    "robot_server", "manifest_path", "config_path", "output_path", "result_path", "reset_path",
 }
 _SHELL_META = re.compile(r"(?:[;&|<>`]|\$\(|\x00)")
 
@@ -85,6 +86,9 @@ class DispatchContext:
     allow_internal: bool = False
     metadata: Mapping[str, Any] = field(default_factory=dict)
     trace_dir: str | Path | None = None
+    robot_server: str = ""
+    repo_root: str | Path | None = None
+    manifest_path: str | Path | None = None
 
     def __post_init__(self) -> None:
         mode = self.mode if isinstance(self.mode, SkillMode) else SkillMode(str(self.mode))
@@ -93,6 +97,11 @@ class DispatchContext:
         object.__setattr__(self, "execute", require_bool(self.execute, "execute"))
         object.__setattr__(self, "artifact_dir", str(Path(self.artifact_dir).expanduser()))
         object.__setattr__(self, "fixture_roots", tuple(str(Path(item).expanduser()) for item in self.fixture_roots))
+        object.__setattr__(self, "robot_server", require_string(self.robot_server, "robot_server") if self.robot_server is not None else "")
+        if self.repo_root is not None:
+            object.__setattr__(self, "repo_root", str(Path(self.repo_root).expanduser().resolve()))
+        if self.manifest_path is not None:
+            object.__setattr__(self, "manifest_path", str(Path(self.manifest_path).expanduser().resolve()))
         object.__setattr__(self, "metadata", ensure_jsonable(require_object(dict(self.metadata), "metadata"), "metadata"))
         if len(stable_dumps(self.metadata).encode("utf-8")) > 8192:
             raise ContractValidationError("context metadata exceeds 8192 bytes")
@@ -117,16 +126,31 @@ class InvocationPlan:
     side_effects: tuple[str, ...]
     gate_decision: Mapping[str, Any]
     planned_only: bool = False
+    capability_version: str = ""
+    risk_class: str = ""
+    artifact_policy: Mapping[str, Any] = field(default_factory=dict)
+    output_parser: str = "json"
+    error_mapping: Mapping[str, str] = field(default_factory=dict)
+    binding_id: str = ""
+    fixed_arguments: tuple[str, ...] = ()
+    context_derived_arguments: tuple[str, ...] = ()
+    generated_artifacts: tuple[str, ...] = ()
 
     def to_public_dict(self) -> dict[str, Any]:
         executable_name = Path(self.executable).name
-        public_argv = [executable_name if index == 0 else (Path(value).name if value == self.executable else value) for index, value in enumerate(self.argv)]
+        public_argv = [
+            executable_name if index == 0 else (Path(value).name if Path(value).is_absolute() else value)
+            for index, value in enumerate(self.argv)
+        ]
         return {
             "request_id": self.request_id, "capability_id": self.capability_id, "adapter_id": self.adapter_id,
             "mode": self.mode, "argv": public_argv, "timeout_s": self.timeout_s,
             "artifact_dir": Path(self.artifact_dir).name, "requires_hardware": self.requires_hardware,
             "side_effects": list(self.side_effects), "gate_decision": dict(self.gate_decision), "planned_only": self.planned_only,
+            "capability_version": self.capability_version, "risk_class": self.risk_class,
+            "artifact_policy": dict(self.artifact_policy), "output_parser": self.output_parser,
+            "error_mapping": dict(self.error_mapping), "binding_id": self.binding_id,
         }
 
     def to_dict(self) -> dict[str, Any]:
-        return {"request_id": self.request_id, "capability_id": self.capability_id, "adapter_id": self.adapter_id, "mode": self.mode, "executable": self.executable, "argv": list(self.argv), "cwd": self.cwd, "timeout_s": self.timeout_s, "artifact_dir": self.artifact_dir, "requires_hardware": self.requires_hardware, "side_effects": list(self.side_effects), "gate_decision": dict(self.gate_decision), "planned_only": self.planned_only}
+        return {"request_id": self.request_id, "capability_id": self.capability_id, "adapter_id": self.adapter_id, "mode": self.mode, "executable": self.executable, "argv": list(self.argv), "cwd": self.cwd, "timeout_s": self.timeout_s, "artifact_dir": self.artifact_dir, "requires_hardware": self.requires_hardware, "side_effects": list(self.side_effects), "gate_decision": dict(self.gate_decision), "planned_only": self.planned_only, "capability_version": self.capability_version, "risk_class": self.risk_class, "artifact_policy": dict(self.artifact_policy), "output_parser": self.output_parser, "error_mapping": dict(self.error_mapping), "binding_id": self.binding_id, "fixed_arguments": list(self.fixed_arguments), "context_derived_arguments": list(self.context_derived_arguments), "generated_artifacts": list(self.generated_artifacts)}
