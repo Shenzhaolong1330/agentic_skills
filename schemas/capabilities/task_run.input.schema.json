@@ -4,11 +4,5 @@
   "title": "Task run input",
   "type": "object",
   "additionalProperties": false,
-  "properties": {
-    "mode": {"type": "string", "enum": ["mock", "dry_run", "from_artifacts", "live"]},
-    "hardware_allowed": {"type": "boolean"},
-    "execute": {"type": "boolean"},
-    "artifact_dir": {"type": "string", "minLength": 1},
-    "run_id": {"type": "string", "minLength": 1}
-  }
+  "properties": {}
 }
