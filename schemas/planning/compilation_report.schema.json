@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentic-skills.local/schemas/planning/compilation_report.schema.json",
+  "title": "CompilationReport", "type": "object", "additionalProperties": false,
+  "required": ["ok", "executable", "issues", "compiled_graph"],
+  "properties": {"ok": {"type": "boolean"}, "executable": {"const": false}, "issues": {"type": "array", "items": {"$ref": "https://agentic-skills.local/schemas/planning/compilation_issue.schema.json"}}, "compiled_graph": {"type": ["object", "null"], "additionalProperties": false}}
+}

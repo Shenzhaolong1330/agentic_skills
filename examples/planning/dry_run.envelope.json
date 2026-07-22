@@ -1,0 +1,21 @@
+{
+  "envelope_id": "safe-dry-run-v1",
+  "target_mode": "dry_run",
+  "allowed_capabilities": ["robot.observe_health", "motion.move_to_pose", "robot.recover_reset_home"],
+  "forbidden_capabilities": [],
+  "risk_ceiling": "RECOVERY",
+  "allowed_resources": ["robot.dual_franka.state", "robot.dual_franka.shared_workspace"],
+  "workspace_constraints": [
+    {"workspace_id": "safe_fixture_workspace", "frame": "base", "min_xyz_m": [0.1, -0.2, 0.1], "max_xyz_m": [0.5, 0.2, 0.6], "allowed_entity_types": ["fixture_object"], "description": "Offline fixture bounds only; never a real robot authorization."}
+  ],
+  "max_nodes": 16,
+  "max_depth": 8,
+  "max_elapsed_s": 60,
+  "max_tool_calls": 8,
+  "max_replans": 0,
+  "max_recovery_actions": 2,
+  "max_same_error_retries": 1,
+  "no_progress_limit": 3,
+  "approval_policy": {"required_for_risk_classes": ["MOTION", "RECOVERY"], "estop_requires_human": true, "ambiguity_requires_human": true, "description": "Approval is workflow metadata, not hardware authorization."},
+  "metadata": {"fixture_only": true}
+}

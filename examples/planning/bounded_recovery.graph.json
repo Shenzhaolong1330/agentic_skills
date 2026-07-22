@@ -1,0 +1,21 @@
+{
+  "graph_id": "bounded_health_recovery_graph",
+  "goal_id": "bounded_health_recovery_fixture",
+  "entry_node_id": "health_before",
+  "nodes": [
+    {"node_id": "health_before", "kind": "OBSERVE", "capability_id": "robot.observe_health", "arguments": {}, "resource_requirements": [{"resource_id": "robot.dual_franka.state", "mode": "shared", "description": "Health observation."}]},
+    {"node_id": "recover_once", "kind": "RECOVER", "capability_id": "robot.recover_reset_home", "arguments": {}, "verifier": {"mode": "predicate", "predicate": {"operator": "robot_health_is", "operands": [{"entity_id": "robot-1"}, "READY"]}}, "resource_requirements": [{"resource_id": "robot.dual_franka.shared_workspace", "mode": "exclusive", "description": "Recovery resource."}], "max_visits": 2},
+    {"node_id": "health_after", "kind": "OBSERVE", "capability_id": "robot.observe_health", "arguments": {}, "resource_requirements": [{"resource_id": "robot.dual_franka.state", "mode": "shared", "description": "Post-recovery health observation."}], "max_visits": 2},
+    {"node_id": "needs_human", "kind": "HUMAN_ACTION", "metadata": {"terminal_state": "NEEDS_HUMAN", "description": "Human handles repeated failed health recovery."}}
+  ],
+  "edges": [
+    {"edge_id": "before-success", "source_node_id": "health_before", "target_node_id": "health_after", "condition": "SUCCESS", "priority": 0},
+    {"edge_id": "before-failure", "source_node_id": "health_before", "target_node_id": "recover_once", "condition": "FAILURE", "max_traversals": 1, "priority": 1},
+    {"edge_id": "recover-to-check", "source_node_id": "recover_once", "target_node_id": "health_after", "condition": "SUCCESS", "max_traversals": 2, "priority": 0},
+    {"edge_id": "check-success", "source_node_id": "health_after", "target_node_id": "health_after", "condition": "PREDICATE_TRUE", "max_traversals": 1, "priority": 0},
+    {"edge_id": "check-failure-recover", "source_node_id": "health_after", "target_node_id": "recover_once", "condition": "FAILURE", "max_traversals": 1, "priority": 1},
+    {"edge_id": "check-human", "source_node_id": "health_after", "target_node_id": "needs_human", "condition": "DEFAULT", "priority": 2}
+  ],
+  "terminal_nodes": ["health_after", "needs_human"],
+  "metadata": {"fixture_only": true}
+}

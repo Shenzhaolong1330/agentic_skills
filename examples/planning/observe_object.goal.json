@@ -1,0 +1,12 @@
+{
+  "goal_id": "observe_robot_health_fixture",
+  "goal_kind": "OBSERVATION",
+  "description": "Observe robot health using the offline fixed plan.",
+  "entities": [{"entity_id": "robot-1", "entity_type": "robot", "attributes": {"fixture": true}}],
+  "initial_assumptions": [{"fixture_only": true}],
+  "success_predicate": {"operator": "robot_health_is", "operands": [{"entity_id": "robot-1"}, "READY"]},
+  "failure_predicates": [{"predicate": {"operator": "robot_health_is", "operands": [{"entity_id": "robot-1"}, "FAULT"]}, "terminal_state": "NEEDS_HUMAN", "reason": "Health fault requires human handling."}],
+  "required_evidence": [{"evidence_id": "health-observation", "fact_selector": {"predicate": "robot.health", "entity_id": "robot-1"}, "required_status": "VERIFIED", "freshness_required": true, "minimum_confidence": 0.8, "description": "Fresh health fact from S5 world state."}],
+  "ambiguities": [],
+  "metadata": {"fixture_only": true}
+}

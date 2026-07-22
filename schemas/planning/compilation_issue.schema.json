@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentic-skills.local/schemas/planning/compilation_issue.schema.json",
+  "title": "CompilationIssue", "type": "object", "additionalProperties": false,
+  "required": ["code", "severity", "path", "message"],
+  "properties": {"code": {"type": "string", "minLength": 1}, "severity": {"type": "string", "enum": ["INFO", "WARNING", "ERROR"]}, "path": {"type": "string"}, "message": {"type": "string", "minLength": 1}, "node_id": {"type": ["string", "null"]}, "capability_id": {"type": ["string", "null"]}, "details": {"type": "object", "additionalProperties": false, "patternProperties": {"^.*$": {}}}}
+}

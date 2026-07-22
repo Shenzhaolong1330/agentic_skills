@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentic-skills.local/schemas/planning/entity_spec.schema.json",
+  "title": "EntitySpec", "type": "object", "additionalProperties": false,
+  "required": ["entity_id", "entity_type"],
+  "properties": {"entity_id": {"type": "string", "minLength": 1}, "entity_type": {"type": "string", "minLength": 1}, "constraints": {"type": "object", "additionalProperties": false, "patternProperties": {"^.*$": {}}}, "attributes": {"type": "object", "additionalProperties": false, "patternProperties": {"^.*$": {}}}}
+}

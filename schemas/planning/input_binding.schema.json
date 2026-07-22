@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentic-skills.local/schemas/planning/input_binding.schema.json",
+  "title": "InputBinding", "type": "object", "additionalProperties": false,
+  "required": ["binding_id", "target_argument_path", "source_type"],
+  "properties": {"binding_id": {"type": "string", "minLength": 1}, "target_argument_path": {"type": "string", "pattern": "^(/[^./\\[\\]]*)*$"}, "source_type": {"type": "string", "enum": ["LITERAL", "NODE_OUTPUT", "WORLD_FACT"]}, "source_node_id": {"type": ["string", "null"]}, "source_output_path": {"type": ["string", "null"]}, "world_fact_selector": {"type": ["object", "null"], "additionalProperties": false, "patternProperties": {"^.*$": {}}}, "literal": {}, "expected_schema_ref": {"type": ["string", "null"]}, "constraints": {"type": "object", "additionalProperties": false, "patternProperties": {"^.*$": {}}}}
+}

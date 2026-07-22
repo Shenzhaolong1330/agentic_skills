@@ -1,0 +1,11 @@
+{
+  "graph_id": "observe_robot_health_graph",
+  "goal_id": "observe_robot_health_fixture",
+  "entry_node_id": "observe_health",
+  "nodes": [
+    {"node_id": "observe_health", "kind": "OBSERVE", "capability_id": "robot.observe_health", "arguments": {}, "resource_requirements": [{"resource_id": "robot.dual_franka.state", "mode": "shared", "description": "Robot health observation."}], "max_visits": 1, "metadata": {"fixture_only": true}}
+  ],
+  "edges": [],
+  "terminal_nodes": ["observe_health"],
+  "metadata": {"fixture_only": true}
+}

@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentic-skills.local/schemas/planning/graph_node.schema.json",
+  "title": "GraphNode", "type": "object", "additionalProperties": false,
+  "required": ["node_id", "kind"],
+  "properties": {
+    "node_id": {"type": "string", "minLength": 1}, "kind": {"type": "string", "enum": ["OBSERVE", "COMPUTE", "CHECK", "ACT", "VERIFY", "RECOVER", "APPROVAL", "HUMAN_ACTION"]}, "capability_id": {"type": ["string", "null"]}, "arguments": {"type": "object", "additionalProperties": false, "patternProperties": {"^.*$": {}}}, "input_bindings": {"type": "array", "items": {"$ref": "https://agentic-skills.local/schemas/planning/input_binding.schema.json"}}, "preconditions": {"type": "array", "items": {"$ref": "https://agentic-skills.local/schemas/world/predicate_spec.schema.json"}}, "expected_effects": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["effect_id", "predicate"], "properties": {"effect_id": {"type": "string", "minLength": 1}, "predicate": {"$ref": "https://agentic-skills.local/schemas/world/predicate_spec.schema.json"}, "verification_required": {"type": "boolean"}, "state_status_on_unverified": {"type": "string"}}}}, "verifier": {"type": ["object", "null"], "additionalProperties": false, "patternProperties": {"^.*$": {}}}, "resource_requirements": {"type": "array", "items": {"$ref": "https://agentic-skills.local/schemas/resource_requirement.schema.json"}}, "timeout_s": {"type": ["number", "null"], "exclusiveMinimum": 0}, "retry_policy": {"$ref": "https://agentic-skills.local/schemas/planning/retry_policy.schema.json"}, "max_visits": {"type": "integer", "minimum": 1, "maximum": 1024}, "metadata": {"type": "object", "additionalProperties": false, "patternProperties": {"^.*$": {}}}
+  }
+}

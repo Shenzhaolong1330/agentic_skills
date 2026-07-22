@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentic-skills.local/schemas/planning/goal_spec.schema.json",
+  "title": "GoalSpec", "type": "object", "additionalProperties": false,
+  "required": ["goal_id", "goal_kind", "description", "success_predicate"],
+  "properties": {
+    "goal_id": {"type": "string", "minLength": 1}, "goal_kind": {"type": "string", "enum": ["OBSERVATION", "COMPUTE", "PHYSICAL_STATE_CHANGE"]}, "description": {"type": "string", "minLength": 1},
+    "entities": {"type": "array", "items": {"$ref": "https://agentic-skills.local/schemas/planning/entity_spec.schema.json"}}, "initial_assumptions": {"type": "array", "items": {"type": "object", "additionalProperties": false, "patternProperties": {"^.*$": {}}}},
+    "success_predicate": {"$ref": "https://agentic-skills.local/schemas/world/predicate_spec.schema.json"}, "failure_predicates": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["predicate", "terminal_state", "reason"], "properties": {"predicate": {"$ref": "https://agentic-skills.local/schemas/world/predicate_spec.schema.json"}, "terminal_state": {"type": "string", "enum": ["FAILED", "NEEDS_HUMAN", "UNSAFE", "TIMEOUT", "BUDGET_EXCEEDED", "NO_PROGRESS", "CANCELLED"]}, "reason": {"type": "string", "minLength": 1}}}},
+    "required_evidence": {"type": "array", "items": {"$ref": "https://agentic-skills.local/schemas/planning/evidence_requirement.schema.json"}}, "ambiguities": {"type": "array", "items": {"$ref": "https://agentic-skills.local/schemas/planning/ambiguity.schema.json"}}, "metadata": {"type": "object", "additionalProperties": false, "patternProperties": {"^.*$": {}}}
+  }
+}

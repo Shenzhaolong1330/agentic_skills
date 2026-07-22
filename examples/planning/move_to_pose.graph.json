@@ -1,0 +1,16 @@
+{
+  "graph_id": "move_fixture_pose_graph",
+  "goal_id": "move_fixture_pose_verified",
+  "entry_node_id": "observe_before_move",
+  "nodes": [
+    {"node_id": "observe_before_move", "kind": "OBSERVE", "capability_id": "robot.observe_health", "arguments": {}, "resource_requirements": [{"resource_id": "robot.dual_franka.state", "mode": "shared", "description": "Fixture health observation."}]},
+    {"node_id": "move_fixture_pose", "kind": "ACT", "capability_id": "motion.move_to_pose", "arguments": {"frame": "base", "xyz_m": [0.2, 0.0, 0.3], "source": "safe_fixture", "side": "left"}, "preconditions": [{"operator": "robot_health_is", "operands": [{"entity_id": "robot-1"}, "READY"]}], "expected_effects": [{"effect_id": "pose-change", "predicate": {"operator": "frame_equals", "operands": [{"predicate": "robot.pose", "entity_id": "robot-1"}, "base"]}, "verification_required": true, "state_status_on_unverified": "TENTATIVE"}], "verifier": {"mode": "predicate", "predicate": {"operator": "pose_error_within", "operands": [{"predicate": "robot.pose_error", "entity_id": "robot-1"}, 0.01, 0.05]}}, "resource_requirements": [{"resource_id": "robot.dual_franka.shared_workspace", "mode": "exclusive", "description": "Fixture motion resource."}]},
+    {"node_id": "verify_fixture_pose", "kind": "VERIFY", "arguments": {}, "verifier": {"mode": "predicate", "predicate": {"operator": "pose_error_within", "operands": [{"predicate": "robot.pose_error", "entity_id": "robot-1"}, 0.01, 0.05]}}, "resource_requirements": [{"resource_id": "robot.dual_franka.state", "mode": "shared", "description": "Verification evidence resource."}]}
+  ],
+  "edges": [
+    {"edge_id": "before-to-act", "source_node_id": "observe_before_move", "target_node_id": "move_fixture_pose", "condition": "SUCCESS", "priority": 0},
+    {"edge_id": "act-to-verify", "source_node_id": "move_fixture_pose", "target_node_id": "verify_fixture_pose", "condition": "SUCCESS", "priority": 0}
+  ],
+  "terminal_nodes": ["verify_fixture_pose"],
+  "metadata": {"fixture_only": true, "not_for_real_robot": true}
+}
