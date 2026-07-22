@@ -20,4 +20,3 @@ class GraphVerifierTests(unittest.TestCase):
         graph["nodes"][1]["verifier"] = {"mode": "returncode", "source": "action_result"}
         report = TaskGraphCompiler(r).compile(example("move_to_pose.goal.json"), example("dry_run.envelope.json"), graph)
         self.assertIn("VERIFIER_WEAKENS_CONTRACT", {item.code for item in report.issues})
-

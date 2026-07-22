@@ -18,4 +18,3 @@ class AdapterPresetTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             from agentic_skills_harness.dispatch.adapters.presets import PresetSpec
             PresetSpec("bad", "../outside.json", "x.y", "bad")
-

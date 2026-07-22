@@ -21,4 +21,3 @@ class AdapterCoverageTests(unittest.TestCase):
         self.assertGreaterEqual(result["core_capabilities_with_plan"], 5)
         self.assertEqual(result["live_hardware_supported"], 0)
         self.assertEqual(result["duplicate_adapter_bindings"], 0)
-

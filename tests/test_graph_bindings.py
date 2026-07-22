@@ -13,4 +13,3 @@ class GraphBindingTests(unittest.TestCase):
             InputBinding("bad", "xyz_m", "LITERAL", literal=[0, 0, 0])
         with self.assertRaises(Exception):
             InputBinding("bad", "/x", "NODE_OUTPUT", source_node_id="n", source_output_path="output.value")
-

@@ -19,4 +19,3 @@ class GraphCycleTests(unittest.TestCase):
         graph = {"graph_id": "cycle", "goal_id": goal["goal_id"], "entry_node_id": "n", "nodes": [{"node_id": "n", "kind": "OBSERVE", "capability_id": "robot.observe_health", "resource_requirements": [{"resource_id": "robot.dual_franka.state", "mode": "shared", "description": "state"}]}], "edges": [{"edge_id": "loop", "source_node_id": "n", "target_node_id": "n", "condition": "FAILURE"}], "terminal_nodes": ["n"]}
         report = TaskGraphCompiler(r).compile(goal, envelope, graph)
         self.assertIn("UNBOUNDED_CYCLE", {item.code for item in report.issues})
-

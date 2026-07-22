@@ -16,4 +16,3 @@ class S045S6IntegrationTests(unittest.TestCase):
         report = TaskGraphCompiler(r, manifest=load_manifest("skill_manifest.json")).compile(example("move_to_pose.goal.json"), example("dry_run.envelope.json"), example("move_to_pose.graph.json"))
         self.assertTrue(report.ok)
         self.assertEqual(report.compiled_graph.target_mode, "dry_run")
-

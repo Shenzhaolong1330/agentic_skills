@@ -22,4 +22,3 @@ class CompilerDeterminismTests(unittest.TestCase):
         p1 = c1.compile(example("observe_object.goal.json"), example("dry_run.envelope.json"), example("observe_object.graph.json")).compiled_graph
         p2 = c2.compile(example("observe_object.goal.json"), example("dry_run.envelope.json"), example("observe_object.graph.json")).compiled_graph
         self.assertNotEqual(p1.plan_hash, p2.plan_hash)
-

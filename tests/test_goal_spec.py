@@ -18,4 +18,3 @@ class GoalSpecTests(unittest.TestCase):
     def test_physical_goal_keeps_evidence_explicit(self):
         value = GoalSpec.from_dict({"goal_id": "g", "goal_kind": "PHYSICAL_STATE_CHANGE", "description": "change", "success_predicate": {"operator": "exists", "operands": [{"predicate": "robot.pose"}]}})
         self.assertFalse(value.required_evidence)
-

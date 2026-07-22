@@ -22,4 +22,3 @@ class AdapterContextFieldTests(unittest.TestCase):
         self.assertIn("--hardware-allowed", plan.argv)
         self.assertIn("--execute", plan.argv)
         self.assertNotIn("--execute", DispatchRequest("gripper.command", {"operation": "open", "side": "left"}).to_dict()["arguments"])
-

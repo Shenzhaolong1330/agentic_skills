@@ -20,4 +20,3 @@ class PublicPlanTests(unittest.TestCase):
         public = plan.to_public_dict()
         self.assertFalse(any(str(value).startswith(("/home/", "/tmp/")) for value in public["argv"]))
         self.assertNotIn("cwd", public)
-
