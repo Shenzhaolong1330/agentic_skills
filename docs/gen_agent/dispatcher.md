@@ -17,3 +17,6 @@ physical success, and each dispatch can write a redacted trace.
 Current manifest entries are explicitly unsupported until a safe first-party
 binding is registered; the inventory is not made “complete” by granting an
 arbitrary adapter.
+## Fixed Adapter boundary
+
+The dispatcher uses a closed first-party adapter registry. Requests cannot select an adapter/backend or provide execution paths. Hardware entries are plan-only in this phase, and live dispatch rejects capabilities whose manifest mode support is not supported.

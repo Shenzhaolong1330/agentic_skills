@@ -63,3 +63,6 @@ reset 没有被禁用，但只能作为 manifest 允许的 recovery entrypoint�
 ## 新增 skill manifest entry
 
 新增 entrypoint 时必须声明 `requires_hardware`、`opens_camera`、`connects_robot_rpc`、`moves_robot`、`controls_gripper`、`default_safe_to_run`、`allowed_as_recovery`、`execute_flag` 和 side effects。这样 Codex 后续不需要全仓搜索即可安全路由。
+## S4.5/S6 scope
+
+The harness now includes fixed Adapter coverage and static GoalSpec/ExecutionEnvelope/TaskGraph compilation. Compiled plans contain no commands and do not authorize hardware. Live Adapter validation, Graph Executor, Recovery Engine, natural-language Planner, and Memory are not implemented.

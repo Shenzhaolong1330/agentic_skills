@@ -45,3 +45,6 @@ S6 GoalSpec/TaskGraph Compiler, S7 Graph Executor, Planner, Recovery Graph,
 Memory, and true physical acceptance are not implemented. Later layers must
 reuse the Registry, Gate, Dispatcher, and verifier boundaries without gaining
 arbitrary command execution.
+## S4.5/S6 boundary
+
+Fixed adapters can produce reviewable dry-run InvocationPlans but do not imply live support. GoalSpec, ExecutionEnvelope, and TaskGraph are authorization-neutral contracts. The static compiler produces no commands and performs no execution; S7 and later runtime stages are not part of this phase.

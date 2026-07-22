@@ -11,3 +11,6 @@ bounded and can target only observation/check capabilities.
 Goal verification requires an explicit `PredicateSpec` over current,
 non-stale, non-invalidated, non-tentative facts. Fatal and unsafe errors block
 goal verification. Effect and goal updates are separate immutable operations.
+## Planning integration
+
+The S6 compiler preserves the capability verifier contract and rejects graph verifiers that weaken it. Compilation does not call VerifierEngine; S7 or a later executor must provide runtime evidence.
