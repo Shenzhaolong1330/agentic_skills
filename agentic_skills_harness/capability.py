@@ -11,6 +11,7 @@ from .contracts.serialization import ContractValidationError, reject_unknown, re
 
 VISIBILITIES = {"public", "internal", "legacy"}
 VERIFIER_TYPES = {"output_schema", "capability", "task_specific", "none"}
+DISPATCH_SUPPORT = {"supported", "plan_only", "unsupported"}
 CAPABILITY_ID_RE = re.compile(r"^[a-z][a-z0-9]*(?:\.[a-z][a-z0-9_-]*)+$")
 SEMVER_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
 
@@ -77,6 +78,9 @@ class CapabilityContract:
     description: str
     skill_name: str = ""
     skill_layer: str = ""
+    adapter_id: str | None = None
+    dispatch_support: str = "unsupported"
+    artifact_policy: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         for name in ("name", "capability_id", "capability_version", "path", "type", "input_schema_ref", "output_schema_ref", "notes", "description"):
@@ -110,6 +114,15 @@ class CapabilityContract:
         object.__setattr__(self, "error_codes", tuple(ErrorCode(code) for code in codes))
         if self.execute_flag is not None:
             object.__setattr__(self, "execute_flag", require_string(self.execute_flag, "execute_flag", non_empty=True))
+        if self.adapter_id is not None:
+            object.__setattr__(self, "adapter_id", require_string(self.adapter_id, "adapter_id", non_empty=True))
+        object.__setattr__(self, "dispatch_support", require_string(self.dispatch_support, "dispatch_support", non_empty=True))
+        if self.dispatch_support not in DISPATCH_SUPPORT:
+            raise ContractValidationError(f"invalid dispatch_support: {self.dispatch_support!r}")
+        if self.artifact_policy is not None:
+            if not isinstance(self.artifact_policy, dict):
+                raise ContractValidationError("artifact_policy must be an object")
+            object.__setattr__(self, "artifact_policy", dict(self.artifact_policy))
         if self.kind == CapabilityKind.RECOVERY and self.risk_class not in (RiskClass.RECOVERY, RiskClass.HIGH_RISK):
             raise ContractValidationError("recovery capability must use RECOVERY or HIGH_RISK risk")
         is_physical = bool(self.physical_side_effects or self.moves_robot or self.controls_gripper)
@@ -128,9 +141,10 @@ class CapabilityContract:
             "name", "capability_id", "capability_version", "kind", "visibility", "path", "type", "input_schema_ref", "output_schema_ref",
             "requires_hardware", "opens_camera", "connects_robot_rpc", "moves_robot", "controls_gripper", "physical_side_effects", "risk_class",
             "resources", "preconditions", "effects", "invalidates", "timeout_s", "verifier", "error_codes", "default_safe_to_run", "allowed_as_recovery",
-            "execute_flag", "notes", "description",
+            "execute_flag", "notes", "description", "adapter_id", "dispatch_support", "artifact_policy",
         )
-        reject_unknown(data, names, names)
+        required_names = tuple(name for name in names if name not in {"adapter_id", "dispatch_support", "artifact_policy"})
+        reject_unknown(data, names, required_names)
         return cls(
             name=data["name"], capability_id=data["capability_id"], capability_version=data["capability_version"], kind=data["kind"], visibility=data["visibility"],
             path=data["path"], type=data["type"], input_schema_ref=data["input_schema_ref"], output_schema_ref=data["output_schema_ref"], requires_hardware=data["requires_hardware"],
@@ -139,6 +153,7 @@ class CapabilityContract:
             preconditions=tuple(data["preconditions"]), effects=tuple(data["effects"]), invalidates=tuple(data["invalidates"]), timeout_s=data["timeout_s"], verifier=VerifierContract.from_dict(data["verifier"]),
             error_codes=tuple(ErrorCode(code) for code in require_list(data["error_codes"], "error_codes")), default_safe_to_run=data["default_safe_to_run"], allowed_as_recovery=data["allowed_as_recovery"],
             execute_flag=data["execute_flag"], notes=data["notes"], description=data["description"], skill_name=skill_name, skill_layer=skill_layer,
+            adapter_id=data.get("adapter_id"), dispatch_support=data.get("dispatch_support", "unsupported"), artifact_policy=data.get("artifact_policy"),
         )
 
     def to_dict(self) -> dict[str, Any]:

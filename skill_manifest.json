@@ -68,7 +68,9 @@
           "default_safe_to_run": false,
           "allowed_as_recovery": false,
           "execute_flag": null,
-          "notes": "Live camera perception; task dry_run records a command plan instead."
+          "notes": "Live camera perception; task dry_run records a command plan instead.",
+          "dispatch_support": "unsupported",
+          "adapter_id": null
         }
       ]
     },
@@ -114,8 +116,8 @@
           "invalidates": [],
           "timeout_s": 120.0,
           "verifier": {
-            "type": "capability",
-            "capability_id": "motion.move_to_pose",
+            "type": "task_specific",
+            "capability_id": null,
             "required_for_physical_success": true,
             "physical_verification_limited": true,
             "notes": "Contract declaration only; runtime physical verification is not executed in this phase."
@@ -128,7 +130,9 @@
           "default_safe_to_run": false,
           "allowed_as_recovery": false,
           "execute_flag": "--execute",
-          "notes": "Default should be plan-only; live motion requires HardwareGate."
+          "notes": "Default should be plan-only; live motion requires HardwareGate.",
+          "dispatch_support": "unsupported",
+          "adapter_id": null
         }
       ]
     },
@@ -186,7 +190,9 @@
           "default_safe_to_run": false,
           "allowed_as_recovery": false,
           "execute_flag": null,
-          "notes": "Status is read-only but still requires hardware authorization before RPC connection."
+          "notes": "Status is read-only but still requires hardware authorization before RPC connection.",
+          "dispatch_support": "unsupported",
+          "adapter_id": null
         },
         {
           "name": "gripper_control",
@@ -205,7 +211,9 @@
           "moves_robot": false,
           "controls_gripper": true,
           "physical_side_effects": [
-            "controls gripper"
+            "controls gripper",
+            "changes gripper state",
+            "may change held-state"
           ],
           "risk_class": "GRIPPER",
           "resources": [
@@ -224,8 +232,8 @@
           "invalidates": [],
           "timeout_s": 120.0,
           "verifier": {
-            "type": "capability",
-            "capability_id": "gripper.command",
+            "type": "task_specific",
+            "capability_id": null,
             "required_for_physical_success": true,
             "physical_verification_limited": true,
             "notes": "Contract declaration only; runtime physical verification is not executed in this phase."
@@ -238,7 +246,9 @@
           "default_safe_to_run": false,
           "allowed_as_recovery": false,
           "execute_flag": "--execute",
-          "notes": "status is read-only but still connects RPC; open/close require gate."
+          "notes": "status is read-only but still connects RPC; open/close require gate.",
+          "dispatch_support": "unsupported",
+          "adapter_id": null
         }
       ]
     },
@@ -296,7 +306,9 @@
           "default_safe_to_run": false,
           "allowed_as_recovery": true,
           "execute_flag": null,
-          "notes": "Use status for live health check; no reset command is sent."
+          "notes": "Use status for live health check; no reset command is sent.",
+          "dispatch_support": "unsupported",
+          "adapter_id": null
         },
         {
           "name": "check_and_reset_ensure",
@@ -318,7 +330,10 @@
             "moves robot arms",
             "controls gripper",
             "may clear controller faults",
-            "may change held-state"
+            "may change held-state",
+            "changes gripper state",
+            "may move both arms",
+            "may open gripper"
           ],
           "risk_class": "RECOVERY",
           "resources": [
@@ -336,12 +351,18 @@
           ],
           "invalidates": [
             "robot.health",
-            "world.observations"
+            "world.observations",
+            "robot.pose",
+            "robot.state",
+            "gripper.state",
+            "relation.holding",
+            "object.held_state",
+            "object.dynamic_pose"
           ],
           "timeout_s": 120.0,
           "verifier": {
-            "type": "capability",
-            "capability_id": "robot.recover_reset_home",
+            "type": "task_specific",
+            "capability_id": null,
             "required_for_physical_success": true,
             "physical_verification_limited": true,
             "notes": "Contract declaration only; runtime physical verification is not executed in this phase."
@@ -354,7 +375,9 @@
           "default_safe_to_run": false,
           "allowed_as_recovery": true,
           "execute_flag": "--execute",
-          "notes": "Preferred AUTO_RESET_RECOVERY entrypoint; may move arms, clear faults, home/reset robot, and alter gripper/object state depending the underlying reset script."
+          "notes": "Preferred AUTO_RESET_RECOVERY entrypoint; may move arms, clear faults, home/reset robot, and alter gripper/object state depending the underlying reset script.",
+          "dispatch_support": "unsupported",
+          "adapter_id": null
         }
       ]
     },
@@ -417,7 +440,9 @@
           "default_safe_to_run": false,
           "allowed_as_recovery": false,
           "execute_flag": null,
-          "notes": "Supervision only; not a default task stage."
+          "notes": "Supervision only; not a default task stage.",
+          "dispatch_support": "unsupported",
+          "adapter_id": null
         },
         {
           "name": "view_state_realsense_reset",
@@ -455,8 +480,8 @@
           "invalidates": [],
           "timeout_s": 120.0,
           "verifier": {
-            "type": "capability",
-            "capability_id": "state.reset_realsense",
+            "type": "task_specific",
+            "capability_id": null,
             "required_for_physical_success": true,
             "physical_verification_limited": true,
             "notes": "Contract declaration only; runtime physical verification is not executed in this phase."
@@ -469,7 +494,9 @@
           "default_safe_to_run": false,
           "allowed_as_recovery": false,
           "execute_flag": "--execute",
-          "notes": "Camera reset is a physical device state change and is not robot E-stop recovery."
+          "notes": "Camera reset is a physical device state change and is not robot E-stop recovery.",
+          "dispatch_support": "unsupported",
+          "adapter_id": null
         }
       ]
     },
@@ -497,7 +524,9 @@
           "controls_gripper": true,
           "physical_side_effects": [
             "moves robot arms",
-            "controls gripper"
+            "controls gripper",
+            "changes gripper state",
+            "may change held-state"
           ],
           "risk_class": "HIGH_RISK",
           "resources": [
@@ -516,8 +545,8 @@
           "invalidates": [],
           "timeout_s": 120.0,
           "verifier": {
-            "type": "capability",
-            "capability_id": "procedure.handover_transition",
+            "type": "task_specific",
+            "capability_id": null,
             "required_for_physical_success": true,
             "physical_verification_limited": true,
             "notes": "Contract declaration only; runtime physical verification is not executed in this phase."
@@ -530,7 +559,9 @@
           "default_safe_to_run": false,
           "allowed_as_recovery": false,
           "execute_flag": "--execute",
-          "notes": "Task runner must gate partner close and active release."
+          "notes": "Task runner must gate partner close and active release.",
+          "dispatch_support": "unsupported",
+          "adapter_id": null
         }
       ]
     },
@@ -560,7 +591,10 @@
             "moves robot arms",
             "controls gripper",
             "may clear controller faults",
-            "may change held-state"
+            "may change held-state",
+            "changes gripper state",
+            "may move both arms",
+            "may open gripper"
           ],
           "risk_class": "RECOVERY",
           "resources": [
@@ -578,12 +612,18 @@
           ],
           "invalidates": [
             "robot.health",
-            "world.observations"
+            "world.observations",
+            "robot.pose",
+            "robot.state",
+            "gripper.state",
+            "relation.holding",
+            "object.held_state",
+            "object.dynamic_pose"
           ],
           "timeout_s": 120.0,
           "verifier": {
-            "type": "capability",
-            "capability_id": "recovery.robot_reset",
+            "type": "task_specific",
+            "capability_id": null,
             "required_for_physical_success": true,
             "physical_verification_limited": true,
             "notes": "Contract declaration only; runtime physical verification is not executed in this phase."
@@ -596,7 +636,9 @@
           "default_safe_to_run": false,
           "allowed_as_recovery": true,
           "execute_flag": "--execute",
-          "notes": "Recovery-only wrapper; it may move arms and open grippers. Gate before conda activation and robot-reset."
+          "notes": "Recovery-only wrapper; it may move arms and open grippers. Gate before conda activation and robot-reset.",
+          "dispatch_support": "unsupported",
+          "adapter_id": null
         },
         {
           "name": "run_robot_recover",
@@ -615,7 +657,11 @@
           "moves_robot": false,
           "controls_gripper": false,
           "physical_side_effects": [
-            "changes controller state"
+            "changes controller state",
+            "changes gripper state",
+            "may change held-state",
+            "may move both arms",
+            "may open gripper"
           ],
           "risk_class": "RECOVERY",
           "resources": [
@@ -633,12 +679,18 @@
           ],
           "invalidates": [
             "robot.health",
-            "world.observations"
+            "world.observations",
+            "robot.pose",
+            "robot.state",
+            "gripper.state",
+            "relation.holding",
+            "object.held_state",
+            "object.dynamic_pose"
           ],
           "timeout_s": 120.0,
           "verifier": {
-            "type": "capability",
-            "capability_id": "recovery.robot_recover",
+            "type": "task_specific",
+            "capability_id": null,
             "required_for_physical_success": true,
             "physical_verification_limited": true,
             "notes": "Contract declaration only; runtime physical verification is not executed in this phase."
@@ -651,7 +703,9 @@
           "default_safe_to_run": false,
           "allowed_as_recovery": true,
           "execute_flag": "--execute",
-          "notes": "Controller recovery can change physical robot state and is recovery-only."
+          "notes": "Controller recovery can change physical robot state and is recovery-only.",
+          "dispatch_support": "unsupported",
+          "adapter_id": null
         },
         {
           "name": "run_robot_go_home",
@@ -670,7 +724,8 @@
           "moves_robot": true,
           "controls_gripper": false,
           "physical_side_effects": [
-            "moves robot arms"
+            "moves robot arms",
+            "may move both arms"
           ],
           "risk_class": "MOTION",
           "resources": [
@@ -686,11 +741,18 @@
           "effects": [
             "physical_effect_requires_observation"
           ],
-          "invalidates": [],
+          "invalidates": [
+            "robot.pose",
+            "robot.state",
+            "gripper.state",
+            "relation.holding",
+            "object.held_state",
+            "object.dynamic_pose"
+          ],
           "timeout_s": 120.0,
           "verifier": {
-            "type": "capability",
-            "capability_id": "motion.go_home",
+            "type": "task_specific",
+            "capability_id": null,
             "required_for_physical_success": true,
             "physical_verification_limited": true,
             "notes": "Contract declaration only; runtime physical verification is not executed in this phase."
@@ -703,7 +765,9 @@
           "default_safe_to_run": false,
           "allowed_as_recovery": false,
           "execute_flag": "--execute",
-          "notes": "Home is a physical motion and is not E-stop recovery."
+          "notes": "Home is a physical motion and is not E-stop recovery.",
+          "dispatch_support": "unsupported",
+          "adapter_id": null
         }
       ]
     },
@@ -732,7 +796,9 @@
           "physical_side_effects": [
             "moves robot arms",
             "controls gripper",
-            "composes hardware capabilities"
+            "composes hardware capabilities",
+            "changes gripper state",
+            "may change held-state"
           ],
           "risk_class": "HIGH_RISK",
           "resources": [
@@ -770,7 +836,9 @@
           "default_safe_to_run": false,
           "allowed_as_recovery": false,
           "execute_flag": "--execute",
-          "notes": "Default mode is mock/dry_run. Live uses HardwareGate and AUTO_RESET_RECOVERY."
+          "notes": "Default mode is mock/dry_run. Live uses HardwareGate and AUTO_RESET_RECOVERY.",
+          "dispatch_support": "unsupported",
+          "adapter_id": null
         },
         {
           "name": "task_live_locate_tube",
@@ -820,7 +888,9 @@
           "default_safe_to_run": false,
           "allowed_as_recovery": false,
           "execute_flag": null,
-          "notes": "Task-owned live tube localization; callable only by the gated task runner."
+          "notes": "Task-owned live tube localization; callable only by the gated task runner.",
+          "dispatch_support": "unsupported",
+          "adapter_id": null
         },
         {
           "name": "task_live_grasp_handover",
@@ -840,7 +910,9 @@
           "controls_gripper": true,
           "physical_side_effects": [
             "moves robot arms",
-            "controls gripper"
+            "controls gripper",
+            "changes gripper state",
+            "may change held-state"
           ],
           "risk_class": "HIGH_RISK",
           "resources": [
@@ -873,7 +945,9 @@
           "default_safe_to_run": false,
           "allowed_as_recovery": false,
           "execute_flag": "--execute",
-          "notes": "Task-owned grasp and transition handover; callable only by the gated task runner."
+          "notes": "Task-owned grasp and transition handover; callable only by the gated task runner.",
+          "dispatch_support": "unsupported",
+          "adapter_id": null
         },
         {
           "name": "task_live_insert_flow",
@@ -894,7 +968,9 @@
           "physical_side_effects": [
             "moves robot arms",
             "controls gripper",
-            "composes hardware capabilities"
+            "composes hardware capabilities",
+            "changes gripper state",
+            "may change held-state"
           ],
           "risk_class": "CONTACT",
           "resources": [
@@ -932,7 +1008,9 @@
           "default_safe_to_run": false,
           "allowed_as_recovery": false,
           "execute_flag": "--execute",
-          "notes": "Task-owned rack/hole localization, insertion, release, and retract; callable only by the gated task runner."
+          "notes": "Task-owned rack/hole localization, insertion, release, and retract; callable only by the gated task runner.",
+          "dispatch_support": "unsupported",
+          "adapter_id": null
         },
         {
           "name": "single_flow",
@@ -953,7 +1031,9 @@
           "physical_side_effects": [
             "moves robot arms",
             "controls gripper",
-            "composes hardware capabilities"
+            "composes hardware capabilities",
+            "changes gripper state",
+            "may change held-state"
           ],
           "risk_class": "HIGH_RISK",
           "resources": [
@@ -991,7 +1071,9 @@
           "default_safe_to_run": false,
           "allowed_as_recovery": false,
           "execute_flag": "--execute",
-          "notes": "Fixed public wrapper; authorization preflight runs before SAM, RealSense, RPC, or motion."
+          "notes": "Fixed public wrapper; authorization preflight runs before SAM, RealSense, RPC, or motion.",
+          "dispatch_support": "unsupported",
+          "adapter_id": null
         },
         {
           "name": "full_flow",
@@ -1012,7 +1094,9 @@
           "physical_side_effects": [
             "moves robot arms",
             "controls gripper",
-            "composes hardware capabilities"
+            "composes hardware capabilities",
+            "changes gripper state",
+            "may change held-state"
           ],
           "risk_class": "HIGH_RISK",
           "resources": [
@@ -1050,7 +1134,9 @@
           "default_safe_to_run": false,
           "allowed_as_recovery": false,
           "execute_flag": "--execute",
-          "notes": "Fixed public wrapper; authorization preflight runs before SAM, RealSense, RPC, or motion."
+          "notes": "Fixed public wrapper; authorization preflight runs before SAM, RealSense, RPC, or motion.",
+          "dispatch_support": "unsupported",
+          "adapter_id": null
         }
       ]
     }
