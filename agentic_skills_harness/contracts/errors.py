@@ -59,6 +59,21 @@ ERROR_CATALOG: dict[ErrorCode, dict[str, Any]] = {
     ErrorCode.RESOURCE_CONFLICT: _entry(ErrorCategory.RESOURCE, ErrorSeverity.RECOVERABLE, True, True, False),
     ErrorCode.BUDGET_EXCEEDED: _entry(ErrorCategory.TIMEOUT, ErrorSeverity.FATAL, False, False, True),
     ErrorCode.NO_PROGRESS: _entry(ErrorCategory.TIMEOUT, ErrorSeverity.RECOVERABLE, False, True, False),
+    ErrorCode.INVALID_STATE_TRANSITION: _entry(ErrorCategory.INTERNAL, ErrorSeverity.FATAL, False, False, True),
+    ErrorCode.EXECUTION_PRECONDITION_FAILED: _entry(ErrorCategory.PRECONDITION, ErrorSeverity.RECOVERABLE, False, True, False),
+    ErrorCode.INPUT_BINDING_FAILED: _entry(ErrorCategory.INPUT, ErrorSeverity.FATAL, False, True, False),
+    ErrorCode.NODE_TIMEOUT: _entry(ErrorCategory.TIMEOUT, ErrorSeverity.RECOVERABLE, True, True, False),
+    ErrorCode.TASK_TIMEOUT: _entry(ErrorCategory.TIMEOUT, ErrorSeverity.FATAL, False, False, True),
+    ErrorCode.EXECUTION_INTERRUPTED: _entry(ErrorCategory.INTERNAL, ErrorSeverity.FATAL, False, False, True),
+    ErrorCode.CHECKPOINT_CORRUPT: _entry(ErrorCategory.INTERNAL, ErrorSeverity.FATAL, False, False, True),
+    ErrorCode.CHECKPOINT_MISMATCH: _entry(ErrorCategory.INPUT, ErrorSeverity.FATAL, False, False, True),
+    ErrorCode.EVENT_LOG_CORRUPT: _entry(ErrorCategory.INTERNAL, ErrorSeverity.FATAL, False, False, True),
+    ErrorCode.RESOURCE_ACQUISITION_FAILED: _entry(ErrorCategory.RESOURCE, ErrorSeverity.RECOVERABLE, True, True, False),
+    ErrorCode.REPLAN_REQUIRED: _entry(ErrorCategory.INPUT, ErrorSeverity.RECOVERABLE, False, True, False),
+    ErrorCode.HUMAN_ACTION_REQUIRED: _entry(ErrorCategory.AUTHORIZATION, ErrorSeverity.RECOVERABLE, False, False, True),
+    ErrorCode.NO_TERMINAL_PATH: _entry(ErrorCategory.INPUT, ErrorSeverity.FATAL, False, True, False),
+    ErrorCode.NON_DETERMINISTIC_GRAPH: _entry(ErrorCategory.INPUT, ErrorSeverity.FATAL, False, True, False),
+    ErrorCode.PARALLEL_EXECUTION_NOT_SUPPORTED_IN_S7: _entry(ErrorCategory.INPUT, ErrorSeverity.FATAL, False, True, False),
 }
 
 ERROR_DIRECTORY = ERROR_CATALOG
