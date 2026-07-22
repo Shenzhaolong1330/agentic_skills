@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentic-skills.local/schemas/world/predicate_spec.schema.json",
+  "title": "PredicateSpec",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["operator", "operands"],
+  "properties": {
+    "operator": {"type": "string", "enum": ["exists", "equals", "not_equals", "greater_than", "less_than", "within_range", "fresh", "confidence_at_least", "frame_equals", "pose_error_within", "holding", "supported_by", "inside", "robot_health_is", "resource_available", "all", "any", "not"]},
+    "operands": {"type": "array", "maxItems": 128, "items": {}},
+    "predicate_id": {"type": "string", "minLength": 1}
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentic-skills.local/schemas/world/predicate_result.schema.json",
+  "title": "PredicateResult",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["satisfied", "predicate_id", "operator", "evidence_fact_ids", "reason", "errors", "evaluated_at"],
+  "properties": {
+    "satisfied": {"type": "boolean"}, "predicate_id": {"type": "string", "minLength": 1}, "operator": {"type": "string", "minLength": 1}, "evidence_fact_ids": {"type": "array", "items": {"type": "string"}}, "reason": {"type": "string"}, "errors": {"type": "array", "items": {"type": "string"}}, "evaluated_at": {"type": "string", "format": "date-time", "pattern": "(?:Z|\\+00:00)$"}
+  }
+}

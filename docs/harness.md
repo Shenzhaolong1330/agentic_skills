@@ -8,6 +8,12 @@ Manifest v0.2 is loaded by the read-only `CapabilityRegistry`; it provides
 stable capability IDs, local schema contracts, risk/resources, and verifier
 metadata. Registry lookup never executes a capability.
 
+The S4 Dispatcher consumes only typed capability arguments. Adapters are
+selected by the system, not the caller. S5 World State, predicates,
+invalidation, and verifier engine are separate from dispatch; output-schema
+success is not physical success and the Dispatcher does not verify a top-level
+goal.
+
 ## Modes
 
 - `mock`: 使用 mock fixture，不打开相机、不连接机器人、不执行 reset。

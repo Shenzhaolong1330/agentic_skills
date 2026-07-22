@@ -8,9 +8,11 @@
 - S1: PASS — live hardware access is gated by `hardware_allowed`.
 - S2: implemented in this commit — generic execution types, structured errors, and schemas.
 - S3: implemented in this commit — Manifest v0.2, read-only Registry, and public capability index.
-- S4: not implemented — Dispatcher.
-- S5: not implemented — planning/world-state integration.
+- S4: implemented — typed Dispatcher, fixed AdapterRegistry, safe path policy,
+  fake/no-execution backends, output/error mapping, and trace.
+- S5: implemented — World State, bounded predicates, state invalidation, and
+  effect/goal verifier foundations.
 
-后续流程中，Codex 负责理解用户目标、读取 capability 契约并生成结构化计划；Harness 负责授权判定、执行边界、trace 记录、健康检查和恢复约束。Codex 不应直接获得任意 Shell 执行能力，也不应绕过 Harness 直接拼接低层真机命令。
+后续流程中，Codex 负责理解用户目标、读取 capability 契约并生成结构化请求；Harness 负责授权判定、执行边界、trace 记录、World State、验证和恢复约束。Codex 不应直接获得任意 Shell 执行能力，也不应绕过 Harness 直接拼接低层真机命令。
 
-后续阶段可在不破坏本基线的前提下引入固定 Dispatcher、world state、task graph 和 memory。它们必须复用当前 Registry、Gate 与 Manifest 契约，不能让 Planner 改写安全不变量或获得任意命令执行能力。
+S6 尚未实现 GoalSpec/TaskGraph Compiler，S7 尚未实现 Graph Executor；Planner、Recovery Graph、Memory 和完整物理验收也尚未实现。
