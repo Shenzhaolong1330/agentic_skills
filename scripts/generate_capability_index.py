@@ -38,6 +38,7 @@ def render(registry: CapabilityRegistry) -> str:
             f"- physical side effects: {', '.join(capability.physical_side_effects) if capability.physical_side_effects else 'none declared'}",
             f"- resources: {', '.join(f'{item.resource_id} ({item.mode.value})' for item in capability.resources)}",
             f"- verifier: `{verifier.type}`; physical verification limited: `{str(verifier.physical_verification_limited).lower()}`",
+            f"- dispatch support: `{capability.dispatch_support}`; adapter binding: `{capability.adapter_id or 'none'}`",
             f"- allowed as recovery: `{str(capability.allowed_as_recovery).lower()}`",
             "",
         ])

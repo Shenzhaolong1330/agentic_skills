@@ -4,6 +4,6 @@
   "title": "Gripper command input",
   "type": "object",
   "additionalProperties": false,
-  "required": ["command", "side"],
-  "properties": {"command": {"type": "string", "enum": ["status", "open", "close", "initialize"]}, "side": {"type": "string", "enum": ["left", "right"]}, "execute": {"type": "boolean"}}
+  "required": ["operation", "side"],
+  "properties": {"operation": {"type": "string", "enum": ["status", "open", "close", "initialize"]}, "side": {"type": "string", "enum": ["left", "right"]}}
 }

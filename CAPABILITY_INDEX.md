@@ -12,9 +12,10 @@
 - output contract: `schemas/action_result.schema.json`
 - requires hardware: `true`
 - risk class: `GRIPPER`
-- physical side effects: controls gripper
+- physical side effects: controls gripper, changes gripper state, may change held-state
 - resources: robot.dual_franka.grippers (exclusive)
-- verifier: `capability`; physical verification limited: `true`
+- verifier: `task_specific`; physical verification limited: `true`
+- dispatch support: `unsupported`; adapter binding: `none`
 - allowed as recovery: `false`
 
 ## `gripper.observe_status`
@@ -29,6 +30,7 @@
 - physical side effects: none declared
 - resources: robot.dual_franka.grippers (shared)
 - verifier: `output_schema`; physical verification limited: `false`
+- dispatch support: `unsupported`; adapter binding: `none`
 - allowed as recovery: `false`
 
 ## `motion.go_home`
@@ -40,9 +42,10 @@
 - output contract: `schemas/action_result.schema.json`
 - requires hardware: `true`
 - risk class: `MOTION`
-- physical side effects: moves robot arms
+- physical side effects: moves robot arms, may move both arms
 - resources: robot.dual_franka.shared_workspace (exclusive)
-- verifier: `capability`; physical verification limited: `true`
+- verifier: `task_specific`; physical verification limited: `true`
+- dispatch support: `unsupported`; adapter binding: `none`
 - allowed as recovery: `false`
 
 ## `motion.move_to_pose`
@@ -56,7 +59,8 @@
 - risk class: `MOTION`
 - physical side effects: moves robot arms
 - resources: robot.dual_franka.shared_workspace (exclusive)
-- verifier: `capability`; physical verification limited: `true`
+- verifier: `task_specific`; physical verification limited: `true`
+- dispatch support: `unsupported`; adapter binding: `none`
 - allowed as recovery: `false`
 
 ## `perception.locate_object_3d`
@@ -71,6 +75,7 @@
 - physical side effects: none declared
 - resources: camera.realsense (shared)
 - verifier: `output_schema`; physical verification limited: `false`
+- dispatch support: `unsupported`; adapter binding: `none`
 - allowed as recovery: `false`
 
 ## `procedure.handover_transition`
@@ -82,9 +87,10 @@
 - output contract: `schemas/action_result.schema.json`
 - requires hardware: `true`
 - risk class: `HIGH_RISK`
-- physical side effects: moves robot arms, controls gripper
+- physical side effects: moves robot arms, controls gripper, changes gripper state, may change held-state
 - resources: robot.dual_franka.shared_workspace (exclusive)
-- verifier: `capability`; physical verification limited: `true`
+- verifier: `task_specific`; physical verification limited: `true`
+- dispatch support: `unsupported`; adapter binding: `none`
 - allowed as recovery: `false`
 
 ## `recovery.robot_recover`
@@ -96,9 +102,10 @@
 - output contract: `schemas/action_result.schema.json`
 - requires hardware: `true`
 - risk class: `RECOVERY`
-- physical side effects: changes controller state
+- physical side effects: changes controller state, changes gripper state, may change held-state, may move both arms, may open gripper
 - resources: robot.dual_franka.shared_workspace (exclusive)
-- verifier: `capability`; physical verification limited: `true`
+- verifier: `task_specific`; physical verification limited: `true`
+- dispatch support: `unsupported`; adapter binding: `none`
 - allowed as recovery: `true`
 
 ## `recovery.robot_reset`
@@ -110,9 +117,10 @@
 - output contract: `schemas/action_result.schema.json`
 - requires hardware: `true`
 - risk class: `RECOVERY`
-- physical side effects: moves robot arms, controls gripper, may clear controller faults, may change held-state
+- physical side effects: moves robot arms, controls gripper, may clear controller faults, may change held-state, changes gripper state, may move both arms, may open gripper
 - resources: robot.dual_franka.shared_workspace (exclusive)
-- verifier: `capability`; physical verification limited: `true`
+- verifier: `task_specific`; physical verification limited: `true`
+- dispatch support: `unsupported`; adapter binding: `none`
 - allowed as recovery: `true`
 
 ## `robot.observe_health`
@@ -127,6 +135,7 @@
 - physical side effects: none declared
 - resources: robot.dual_franka.state (shared)
 - verifier: `output_schema`; physical verification limited: `false`
+- dispatch support: `unsupported`; adapter binding: `none`
 - allowed as recovery: `true`
 
 ## `robot.recover_reset_home`
@@ -138,9 +147,10 @@
 - output contract: `schemas/action_result.schema.json`
 - requires hardware: `true`
 - risk class: `RECOVERY`
-- physical side effects: moves robot arms, controls gripper, may clear controller faults, may change held-state
+- physical side effects: moves robot arms, controls gripper, may clear controller faults, may change held-state, changes gripper state, may move both arms, may open gripper
 - resources: robot.dual_franka.shared_workspace (exclusive)
-- verifier: `capability`; physical verification limited: `true`
+- verifier: `task_specific`; physical verification limited: `true`
+- dispatch support: `unsupported`; adapter binding: `none`
 - allowed as recovery: `true`
 
 ## `state.capture_realsense`
@@ -155,6 +165,7 @@
 - physical side effects: none declared
 - resources: camera.realsense (shared), robot.dual_franka.state (shared)
 - verifier: `output_schema`; physical verification limited: `false`
+- dispatch support: `unsupported`; adapter binding: `none`
 - allowed as recovery: `false`
 
 ## `state.reset_realsense`
@@ -168,7 +179,8 @@
 - risk class: `HIGH_RISK`
 - physical side effects: changes camera device state
 - resources: camera.realsense (exclusive)
-- verifier: `capability`; physical verification limited: `true`
+- verifier: `task_specific`; physical verification limited: `true`
+- dispatch support: `unsupported`; adapter binding: `none`
 - allowed as recovery: `false`
 
 ## `task.pick_insert.full_flow`
@@ -180,9 +192,10 @@
 - output contract: `schemas/action_result.schema.json`
 - requires hardware: `true`
 - risk class: `HIGH_RISK`
-- physical side effects: moves robot arms, controls gripper, composes hardware capabilities
+- physical side effects: moves robot arms, controls gripper, composes hardware capabilities, changes gripper state, may change held-state
 - resources: robot.dual_franka.shared_workspace (exclusive), camera.realsense (exclusive)
 - verifier: `task_specific`; physical verification limited: `true`
+- dispatch support: `unsupported`; adapter binding: `none`
 - allowed as recovery: `false`
 
 ## `task.pick_insert.run`
@@ -194,9 +207,10 @@
 - output contract: `schemas/action_result.schema.json`
 - requires hardware: `true`
 - risk class: `HIGH_RISK`
-- physical side effects: moves robot arms, controls gripper, composes hardware capabilities
+- physical side effects: moves robot arms, controls gripper, composes hardware capabilities, changes gripper state, may change held-state
 - resources: robot.dual_franka.shared_workspace (exclusive), camera.realsense (exclusive)
 - verifier: `task_specific`; physical verification limited: `true`
+- dispatch support: `unsupported`; adapter binding: `none`
 - allowed as recovery: `false`
 
 ## `task.pick_insert.single_flow`
@@ -208,7 +222,8 @@
 - output contract: `schemas/action_result.schema.json`
 - requires hardware: `true`
 - risk class: `HIGH_RISK`
-- physical side effects: moves robot arms, controls gripper, composes hardware capabilities
+- physical side effects: moves robot arms, controls gripper, composes hardware capabilities, changes gripper state, may change held-state
 - resources: robot.dual_franka.shared_workspace (exclusive), camera.realsense (exclusive)
 - verifier: `task_specific`; physical verification limited: `true`
+- dispatch support: `unsupported`; adapter binding: `none`
 - allowed as recovery: `false`
