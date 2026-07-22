@@ -48,3 +48,6 @@ arbitrary command execution.
 ## S4.5/S6 boundary
 
 Fixed adapters can produce reviewable dry-run InvocationPlans but do not imply live support. GoalSpec, ExecutionEnvelope, and TaskGraph are authorization-neutral contracts. The static compiler produces no commands and performs no execution; S7 and later runtime stages are not part of this phase.
+# S7 runtime boundary
+
+The bounded Graph Executor consumes only `CompiledTaskGraph`, calls capabilities only through `CapabilityDispatcher`, and persists hash-chained events plus atomic checkpoints. S7 supports mock, dry-run, and artifact replay only; live and physical execution remain disabled.

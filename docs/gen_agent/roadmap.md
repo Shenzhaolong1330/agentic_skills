@@ -19,3 +19,6 @@ S6 尚未实现 GoalSpec/TaskGraph Compiler，S7 尚未实现 Graph Executor；P
 ## S4.5 and S6 status
 
 S4.5 fixed Adapter plans and S6 static contracts/compiler are implemented offline. No hardware capability is live-supported or real-hardware validated. S7 Graph Executor, S8 Recovery Engine, S11 Codex Planner, and Memory remain future work.
+# S7 status
+
+S7 adds the bounded, recoverable, auditable CompiledTaskGraph Executor. S8 automatic recovery strategy selection and graph generation are not implemented. Existing S9 test-tube task migration, Codex Planner, and Memory remain pending.

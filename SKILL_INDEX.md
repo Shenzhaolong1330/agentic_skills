@@ -42,3 +42,6 @@ predicates, invalidation, and effect/goal verification are documented in
 ## S4.5/S6 planning boundary
 
 Use the fixed Adapter coverage and static planning contracts under docs/gen_agent when producing dry-run plans. Plan-only is not live support; the Compiler does not execute tasks and no natural-language Planner, Graph Executor, Recovery Engine, or Memory is present.
+# S7 runtime
+
+The compiled graph executor, persistence contracts, and offline acceptance runner live under `agentic_skills_harness/execution/` and `scripts/run_compiled_task_graph.py`.

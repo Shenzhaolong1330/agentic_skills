@@ -14,3 +14,6 @@ goal verification. Effect and goal updates are separate immutable operations.
 ## Planning integration
 
 The S6 compiler preserves the capability verifier contract and rejects graph verifiers that weaken it. Compilation does not call VerifierEngine; S7 or a later executor must provide runtime evidence.
+# S7 integration
+
+Effect verification and goal verification remain separate. Return code and output-schema validity do not prove physical effect. Stale, tentative, invalidated, or limited evidence cannot produce physical goal verification.
