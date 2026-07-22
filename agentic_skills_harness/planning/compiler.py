@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 from collections import defaultdict, deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from math import isfinite
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from ..capability import CapabilityContract
 from ..contracts.enums import CapabilityKind, ErrorCode, ResourceMode, RiskClass
-from ..contracts.serialization import ContractValidationError, stable_dumps, utc_now_iso
+from ..contracts.serialization import ContractValidationError, reject_unknown, stable_dumps, utc_now_iso
 from ..registry import CapabilityRegistry
 from ..schema_validation import validate_json
 from .bindings import BindingSource, InputBinding
@@ -52,9 +52,11 @@ class CompiledNode:
     max_visits: int
     input_schema_digest: str | None
     output_schema_digest: str | None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    fact_projections: tuple[dict[str, Any], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        value = {
             "node_id": self.node_id, "kind": self.kind, "capability_id": self.capability_id,
             "capability_version": self.capability_version, "dispatch_status": self.dispatch_status,
             "execution_disposition": self.execution_disposition, "risk_class": self.risk_class,
@@ -66,6 +68,25 @@ class CompiledNode:
             "timeout_s": self.timeout_s, "retry_policy": dict(self.retry_policy), "max_visits": self.max_visits,
             "input_schema_digest": self.input_schema_digest, "output_schema_digest": self.output_schema_digest,
         }
+        if self.metadata:
+            value["metadata"] = dict(self.metadata)
+        if self.fact_projections:
+            value["fact_projections"] = [dict(item) for item in self.fact_projections]
+        return value
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "CompiledNode":
+        allowed = {"node_id", "kind", "capability_id", "capability_version", "dispatch_status", "execution_disposition", "risk_class", "resources", "arguments", "input_bindings", "preconditions", "expected_effects", "verifier_contract", "timeout_s", "retry_policy", "max_visits", "input_schema_digest", "output_schema_digest", "metadata", "fact_projections"}
+        reject_unknown(data, allowed, ("node_id", "kind", "dispatch_status", "execution_disposition"))
+        return cls(
+            node_id=data["node_id"], kind=data["kind"], capability_id=data.get("capability_id"), capability_version=data.get("capability_version"),
+            dispatch_status=data["dispatch_status"], execution_disposition=data["execution_disposition"], risk_class=data.get("risk_class"),
+            resources=tuple(data.get("resources", ())), arguments=dict(data.get("arguments", {})), input_bindings=tuple(data.get("input_bindings", ())),
+            preconditions=tuple(data.get("preconditions", ())), expected_effects=tuple(data.get("expected_effects", ())), verifier_contract=data.get("verifier_contract"),
+            timeout_s=data.get("timeout_s"), retry_policy=dict(data.get("retry_policy", {"max_attempts": 1, "retry_on_error_codes": [], "backoff_policy": {"kind": "none"}, "parameter_adjustment_policy": None})),
+            max_visits=data.get("max_visits", 1), input_schema_digest=data.get("input_schema_digest"), output_schema_digest=data.get("output_schema_digest"),
+            metadata=dict(data.get("metadata", {})), fact_projections=tuple(data.get("fact_projections", ())),
+        )
 
 
 @dataclass(frozen=True)
@@ -102,6 +123,8 @@ class CompiledTaskGraph:
     workspace_constraints: tuple[dict[str, Any], ...]
     warnings: tuple[dict[str, Any], ...]
     compiled_at: str
+    goal_predicate: dict[str, Any] | None = None
+    goal_kind: str | None = None
 
     def _hash_payload(self) -> dict[str, Any]:
         payload = self.to_dict()
@@ -110,7 +133,7 @@ class CompiledTaskGraph:
         return payload
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        value = {
             "compiled_graph_version": self.compiled_graph_version, "graph_id": self.graph_id, "goal_id": self.goal_id,
             "target_mode": self.target_mode, "manifest_version": self.manifest_version, "manifest_digest": self.manifest_digest,
             "capability_index_digest": self.capability_index_digest, "goal_digest": self.goal_digest,
@@ -120,6 +143,25 @@ class CompiledTaskGraph:
             "budgets": dict(self.budgets), "workspace_constraints": [dict(item) for item in self.workspace_constraints],
             "warnings": [dict(item) for item in self.warnings], "compiled_at": self.compiled_at,
         }
+        if self.goal_predicate is not None:
+            value["goal_predicate"] = dict(self.goal_predicate)
+        if self.goal_kind is not None:
+            value["goal_kind"] = self.goal_kind
+        return value
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "CompiledTaskGraph":
+        allowed = {"compiled_graph_version", "graph_id", "goal_id", "target_mode", "manifest_version", "manifest_digest", "capability_index_digest", "goal_digest", "envelope_digest", "source_graph_digest", "plan_hash", "compiled_nodes", "compiled_edges", "terminal_nodes", "budgets", "workspace_constraints", "warnings", "compiled_at", "goal_predicate", "goal_kind"}
+        reject_unknown(data, allowed, ("compiled_graph_version", "graph_id", "goal_id", "target_mode", "manifest_version", "manifest_digest", "capability_index_digest", "goal_digest", "envelope_digest", "source_graph_digest", "plan_hash", "compiled_nodes", "compiled_edges", "terminal_nodes", "budgets", "compiled_at"))
+        edges = tuple(CompiledEdge(item["edge_id"], item["source_node_id"], item["target_node_id"], item["condition"], tuple(item.get("error_codes", ())), item.get("max_traversals"), item.get("priority", 0)) for item in data["compiled_edges"])
+        return cls(
+            compiled_graph_version=data["compiled_graph_version"], graph_id=data["graph_id"], goal_id=data["goal_id"], target_mode=data["target_mode"],
+            manifest_version=data["manifest_version"], manifest_digest=data["manifest_digest"], capability_index_digest=data["capability_index_digest"],
+            goal_digest=data["goal_digest"], envelope_digest=data["envelope_digest"], source_graph_digest=data["source_graph_digest"], plan_hash=data["plan_hash"],
+            compiled_nodes=tuple(CompiledNode.from_dict(item) for item in data["compiled_nodes"]), compiled_edges=edges, terminal_nodes=tuple(data["terminal_nodes"]),
+            budgets=dict(data["budgets"]), workspace_constraints=tuple(data.get("workspace_constraints", ())), warnings=tuple(data.get("warnings", ())), compiled_at=data["compiled_at"],
+            goal_predicate=None if data.get("goal_predicate") is None else dict(data["goal_predicate"]), goal_kind=data.get("goal_kind"),
+        )
 
 
 class TaskGraphCompiler:
@@ -559,6 +601,7 @@ class TaskGraphCompiler:
                 retry_policy=node.retry_policy.to_dict(), max_visits=node.max_visits,
                 input_schema_digest=digest(self.registry.resolve_input_schema(capability.capability_id)) if capability else None,
                 output_schema_digest=digest(self.registry.resolve_output_schema(capability.capability_id)) if capability else None,
+                metadata=dict(node.metadata), fact_projections=tuple(node.metadata.get("fact_projections", ())),
             ))
         compiled_edges = tuple(CompiledEdge(item.edge_id, item.source_node_id, item.target_node_id, item.condition.value, item.error_codes, item.max_traversals, item.priority) for item in graph.edges)
         manifest = self.manifest or {"version": "0.2.x", "capabilities": capability_index}
@@ -574,5 +617,6 @@ class TaskGraphCompiler:
             budgets={"max_nodes": envelope.max_nodes, "max_depth": envelope.max_depth, "max_elapsed_s": envelope.max_elapsed_s, "max_tool_calls": envelope.max_tool_calls, "max_replans": envelope.max_replans, "max_recovery_actions": envelope.max_recovery_actions, "max_same_error_retries": envelope.max_same_error_retries, "no_progress_limit": envelope.no_progress_limit},
             workspace_constraints=tuple(item.to_dict() for item in envelope.workspace_constraints),
             warnings=tuple(item.to_dict() for item in issues if item.severity == IssueSeverity.WARNING), compiled_at=utc_now_iso(),
+            goal_predicate=goal.success_predicate.to_dict(), goal_kind=goal.goal_kind.value,
         )
         return CompiledTaskGraph(**{**base.__dict__, "plan_hash": digest(base._hash_payload())})
