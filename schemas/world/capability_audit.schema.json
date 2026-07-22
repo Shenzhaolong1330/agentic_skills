@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentic-skills.local/schemas/world/capability_audit.schema.json",
+  "title": "CapabilityAudit",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["capability_id", "visibility", "kind", "requires_hardware", "opens_camera", "connects_robot_rpc", "moves_robot", "controls_gripper", "physical_side_effects", "risk_class", "resources", "invalidates", "verifier", "source_evidence", "findings", "severity", "unresolved_ambiguity"],
+  "properties": {"capability_id": {"type": "string", "minLength": 1}, "visibility": {"type": "string"}, "kind": {"type": "string"}, "requires_hardware": {"type": "boolean"}, "opens_camera": {"type": "boolean"}, "connects_robot_rpc": {"type": "boolean"}, "moves_robot": {"type": "boolean"}, "controls_gripper": {"type": "boolean"}, "physical_side_effects": {"type": "array", "items": {"type": "string"}}, "risk_class": {"type": "string"}, "resources": {"type": "array"}, "invalidates": {"type": "array", "items": {"type": "string"}}, "verifier": {"type": "object"}, "source_evidence": {"type": "array", "items": {"type": "string"}}, "findings": {"type": "array", "items": {"type": "string"}}, "severity": {"type": "string", "enum": ["PASS", "WARNING", "ERROR"]}, "unresolved_ambiguity": {"type": "boolean"}}
+}

@@ -4,6 +4,12 @@
 
 Capability contract details and public routing metadata are in [`CAPABILITY_INDEX.md`](CAPABILITY_INDEX.md). The index is generated from the manifest and does not expose internal entrypoint commands or paths.
 
+S4 dispatch uses only typed capability IDs and arguments; the system selects a
+fixed adapter and the current actual manifest inventory is plan-only/unsupported
+until each binding is independently reviewed. S5 World State, bounded
+predicates, invalidation, and effect/goal verification are documented in
+`docs/gen_agent/`.
+
 ## 全局安全原则
 
 - 默认模式是 `mock` 或 `dry_run`，不会控制真实机器人、夹爪、相机或 ROS。

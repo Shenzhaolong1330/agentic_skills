@@ -1,4 +1,4 @@
-# Gen-Agent S0/S1 架构基线
+# Gen-Agent architecture (S0-S5)
 
 ## 范围
 
@@ -26,6 +26,22 @@ to the current runner and are not silently converted.
 dispatcher and does not import, start, or invoke an entrypoint. `CAPABILITY_INDEX.md`
 is a deterministic public view of the same manifest entries.
 
+## S4/S5 boundary
+
+`CapabilityDispatcher` accepts typed `DispatchRequest` values and selects fixed
+adapters internally. It performs visibility, schema, path, gate, timeout,
+output, error, result, and trace handling; it does not perform top-level goal
+verification. `WorldStateStore` records provenance-bearing facts,
+`PredicateEngine` evaluates a closed predicate language, and
+`InvalidationEngine` applies platform reset/recovery invalidation.
+
+`VerifierEngine` distinguishes output structure, controller arrival, observed
+effect, and explicit goal verification. Limited physical verifiers remain
+limited; no output schema or command completion is physical success.
+
 ## 后续方向（非 S0/S1 实现内容）
 
-后续阶段可在不破坏本基线的前提下引入固定 dispatcher、world state、task graph 和 memory。它们必须复用当前 Registry、Gate 与 manifest 契约，不能让 Planner 改写安全不变量或获得任意命令执行能力。
+S6 GoalSpec/TaskGraph Compiler, S7 Graph Executor, Planner, Recovery Graph,
+Memory, and true physical acceptance are not implemented. Later layers must
+reuse the Registry, Gate, Dispatcher, and verifier boundaries without gaining
+arbitrary command execution.

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentic-skills.local/schemas/world/world_fact.schema.json",
+  "title": "WorldFact",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["fact_id", "subject", "predicate", "object", "value", "status", "confidence", "frame", "observed_at", "valid_until", "source_capability_id", "source_capability_version", "artifact_refs", "calibration_hash", "revision", "metadata", "freshness_ttl_s"],
+  "properties": {
+    "fact_id": {"type": "string", "minLength": 1},
+    "subject": {"$ref": "entity_ref.schema.json"},
+    "predicate": {"type": "string", "minLength": 1},
+    "object": {},
+    "value": {},
+    "status": {"type": "string", "enum": ["OBSERVED", "TENTATIVE", "VERIFIED", "INVALIDATED"]},
+    "confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+    "frame": {"type": ["string", "null"]},
+    "observed_at": {"type": "string", "format": "date-time", "pattern": "(?:Z|\\+00:00)$"},
+    "valid_until": {"type": ["string", "null"], "format": "date-time", "pattern": "(?:Z|\\+00:00)$"},
+    "source_capability_id": {"type": ["string", "null"]},
+    "source_capability_version": {"type": ["string", "null"]},
+    "artifact_refs": {"type": "array", "items": {"type": "string"}},
+    "calibration_hash": {"type": ["string", "null"]},
+    "revision": {"type": "integer", "minimum": 0},
+    "metadata": {"type": "object"},
+    "freshness_ttl_s": {"type": ["number", "null"], "exclusiveMinimum": 0}
+  }
+}

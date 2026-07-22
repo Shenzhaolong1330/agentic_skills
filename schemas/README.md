@@ -10,5 +10,7 @@ Draft 2020-12，并由 `agentic_skills_harness.schema_validation` 通过仓库�
 - `execution_budget.schema.json`、`resource_requirement.schema.json`、`state_invalidation.schema.json`：预算、资源和状态失效 contract。
 - `capability_manifest.schema.json`：Capability Manifest v0.2 的外部契约。
 - `capabilities/`：实际 manifest entrypoint 使用的最小输入 contract；物理输出统一使用通用 ActionResult，并不表示本阶段已执行物理 verifier。
+- `world/`: Draft 2020-12 `EntityRef`, `WorldFact`, `WorldSnapshot`, bounded
+  `PredicateSpec`/`PredicateResult`, `VerificationRequest`, and audit schemas.
 
 默认 6DoF 阈值为平移 `0.005 m`、旋转 `0.0872664626 rad`。原任务只明确 5 mm 平移要求，旋转阈值约等于 5 degrees，可由 runner CLI 覆盖。

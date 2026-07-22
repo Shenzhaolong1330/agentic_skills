@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentic-skills.local/schemas/world/entity_ref.schema.json",
+  "title": "EntityRef",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["entity_id", "entity_type", "attributes"],
+  "properties": {
+    "entity_id": {"type": "string", "minLength": 1},
+    "entity_type": {"type": "string", "minLength": 1},
+    "attributes": {"type": "object"}
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentic-skills.local/schemas/world/verification_request.schema.json",
+  "title": "VerificationRequest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["capability_id", "evidence", "arguments"],
+  "properties": {"capability_id": {"type": "string", "minLength": 1}, "predicate": {"$ref": "predicate_spec.schema.json"}, "evidence": {"type": "array"}, "arguments": {"type": "object"}
+  }
+}
