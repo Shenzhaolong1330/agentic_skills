@@ -23,6 +23,14 @@ S4.5 fixed Adapter plans, S6 static contracts/compiler, S7 Graph Executor,
 S8 Recovery Engine, and S9 task migration are implemented offline. No
 hardware capability is live-supported or real-hardware validated. S11 Codex
 Planner and Memory remain future work.
+
+## S10 status
+
+S10A adds static live-capability audit, generic meta-operation contracts,
+readiness/evidence models, safety guards, and S10H operator tooling. The
+expected result is implementation-ready/pending hardware acceptance only;
+GraphExecutor live remains disabled. S10H must be run by an operator on site.
+S11 Planner and Memory are not implemented.
 # S7 status
 
 S7 adds the bounded, recoverable, auditable CompiledTaskGraph Executor. S8

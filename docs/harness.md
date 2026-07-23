@@ -14,6 +14,10 @@ invalidation, and verifier engine are separate from dispatch; output-schema
 success is not physical success and the Dispatcher does not verify a top-level
 goal.
 
+S10 readiness is evidence metadata rather than another authorization token.
+It binds capability/adapter/schema/configuration identity and is checked by a
+future atomic live preflight. The generic GraphExecutor remains offline-only.
+
 ## Modes
 
 - `mock`: 使用 mock fixture，不打开相机、不连接机器人、不执行 reset。
