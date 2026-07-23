@@ -30,7 +30,7 @@ class DispatchError(ValueError):
 
 
 class CapabilityDispatcher:
-    def __init__(self, capability_registry: Any, *, adapter_registry: AdapterRegistry | None = None, backend: ExecutionBackend | None = None, gate: HardwareGate | None = None, trace_writer: DispatchTraceWriter | None = None, world_state: WorldStateStore | None = None, invalidation_engine: InvalidationEngine | None = None) -> None:
+    def __init__(self, capability_registry: Any, *, adapter_registry: AdapterRegistry | None = None, backend: ExecutionBackend | None = None, gate: HardwareGate | None = None, trace_writer: DispatchTraceWriter | None = None, world_state: WorldStateStore | None = None, invalidation_engine: InvalidationEngine | None = None, live_policy: Any | None = None) -> None:
         self.registry = capability_registry
         if adapter_registry is None:
             adapters = build_fixed_adapter_registry(capability_registry)
@@ -40,6 +40,7 @@ class CapabilityDispatcher:
         self.gate = gate or HardwareGate({})
         self.trace_writer = trace_writer
         self.invalidation_engine = invalidation_engine or (InvalidationEngine(world_state) if world_state is not None else None)
+        self.live_policy = live_policy
 
     @staticmethod
     def _context(context: DispatchContext | SkillContext | Mapping[str, Any] | None) -> DispatchContext:
@@ -78,6 +79,24 @@ class CapabilityDispatcher:
             result = self._generic_result(request.capability_id, make_error(ErrorCode.CAPABILITY_NOT_FOUND, "unknown capability", details={"capability_id": request.capability_id}))
             self._trace(request, None, context_value, None, False, result, started_at, utc_now_iso())
             return result
+        if context_value.mode.value == "live" and capability.requires_hardware and self.live_policy is not None:
+            # The generic dispatcher only accepts a preflight decision supplied
+            # by the dedicated atomic runner. Missing evidence is fail-closed;
+            # the GraphExecutor never supplies this field and remains offline.
+            try:
+                from ..live.policy import LivePreflightRequest
+                payload = context_value.metadata.get("live_preflight")
+                if not isinstance(payload, dict):
+                    raise ValueError("live_preflight_evidence_required")
+                decision = self.live_policy.evaluate(LivePreflightRequest(**payload))
+                if not decision.allowed:
+                    result = self._generic_result(capability.capability_id, make_error(ErrorCode.AUTHORIZATION_DENIED, "live preflight rejected", details=decision.to_dict()), observation=capability.kind == CapabilityKind.OBSERVATION, started_at=started_at)
+                    self._trace(request, capability, context_value, None, False, result, started_at, utc_now_iso())
+                    return result
+            except Exception as exc:
+                result = self._generic_result(capability.capability_id, make_error(ErrorCode.AUTHORIZATION_DENIED, str(exc), details={"backend_calls_allowed": 0}), observation=capability.kind == CapabilityKind.OBSERVATION, started_at=started_at)
+                self._trace(request, capability, context_value, None, False, result, started_at, utc_now_iso())
+                return result
         if context_value.mode.value == "live" and capability.requires_hardware and capability.dispatch_support == "plan_only":
             result = self._generic_result(capability.capability_id, make_error(ErrorCode.CAPABILITY_UNSUPPORTED, "hardware live execution is disabled or not validated in this phase", details={"mode_support": capability.mode_support}), observation=capability.kind == CapabilityKind.OBSERVATION, started_at=started_at)
             self._trace(request, capability, context_value, None, False, result, started_at, utc_now_iso())

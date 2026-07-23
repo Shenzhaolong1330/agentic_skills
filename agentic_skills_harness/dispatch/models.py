@@ -14,6 +14,7 @@ FORBIDDEN_REQUEST_KEYS = {
     "adapter", "adapter_id", "backend", "python_path", "reset_script", "client_path",
     "extra_args", "passthrough_args", "hardware_allowed", "execute", "mode", "artifact_dir",
     "robot_server", "manifest_path", "config_path", "output_path", "result_path", "reset_path",
+    "workspace_override", "speed_override", "force_override", "acceptance_state", "validated", "pose",
 }
 _SHELL_META = re.compile(r"(?:[;&|<>`]|\$\(|\x00)")
 

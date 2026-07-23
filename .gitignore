@@ -37,3 +37,6 @@ datasets/
 .DS_Store
 .idea/
 .vscode/
+
+# Local S10 operator configuration and hardware identity are never committed.
+config/local/
