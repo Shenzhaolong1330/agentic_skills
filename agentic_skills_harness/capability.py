@@ -13,6 +13,8 @@ VISIBILITIES = {"public", "internal", "legacy"}
 VERIFIER_TYPES = {"output_schema", "capability", "task_specific", "none"}
 DISPATCH_SUPPORT = {"supported", "plan_only", "unsupported"}
 MODE_SUPPORT = {"supported", "planned_only", "unsupported", "disabled", "not_validated"}
+LIVE_READINESS = {"DISABLED", "CONTRACT_ONLY", "IMPLEMENTATION_READY", "HARDWARE_ACCEPTANCE_PENDING", "VALIDATED_READ_ONLY", "VALIDATED_ACTION", "VALIDATED_RECOVERY", "REJECTED"}
+VERIFICATION_MATURITY = {"NONE", "OUTPUT_ONLY", "LIMITED", "INDEPENDENT_EVIDENCE", "PHYSICALLY_VALIDATED"}
 CAPABILITY_ID_RE = re.compile(r"^[a-z][a-z0-9]*(?:\.[a-z][a-z0-9_-]*)+$")
 SEMVER_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
 
@@ -83,6 +85,11 @@ class CapabilityContract:
     dispatch_support: str = "unsupported"
     artifact_policy: dict[str, Any] | None = None
     mode_support: dict[str, str] | None = None
+    canonical_operation_id: str = ""
+    live_readiness: str = ""
+    required_acceptance_level: str = "H0_CONFIG"
+    implementation_status: str = ""
+    verification_maturity: str = ""
 
     def __post_init__(self) -> None:
         for name in ("name", "capability_id", "capability_version", "path", "type", "input_schema_ref", "output_schema_ref", "notes", "description"):
@@ -142,6 +149,16 @@ class CapabilityContract:
                     raise ContractValidationError(f"invalid mode_support.{mode}: {status!r}")
                 normalized_modes[mode] = status
             object.__setattr__(self, "mode_support", normalized_modes)
+        if not self.canonical_operation_id:
+            object.__setattr__(self, "canonical_operation_id", self.capability_id)
+        if self.live_readiness not in LIVE_READINESS:
+            inferred = "CONTRACT_ONLY" if self.dispatch_support == "unsupported" else ("HARDWARE_ACCEPTANCE_PENDING" if self.requires_hardware else "IMPLEMENTATION_READY")
+            object.__setattr__(self, "live_readiness", inferred)
+        if self.implementation_status not in {"CONTRACT_ONLY", "IMPLEMENTATION_READY", "DISABLED"}:
+            object.__setattr__(self, "implementation_status", "CONTRACT_ONLY" if self.dispatch_support == "unsupported" else "IMPLEMENTATION_READY")
+        if self.verification_maturity not in VERIFICATION_MATURITY:
+            inferred_maturity = "OUTPUT_ONLY" if self.verifier.type == "output_schema" else ("LIMITED" if self.verifier.physical_verification_limited else "NONE")
+            object.__setattr__(self, "verification_maturity", inferred_maturity)
         if self.requires_hardware and self.mode_support.get("live") == "supported":
             raise ContractValidationError("hardware capability live support must remain disabled or not_validated")
         if self.kind == CapabilityKind.RECOVERY and self.risk_class not in (RiskClass.RECOVERY, RiskClass.HIGH_RISK):
@@ -164,8 +181,9 @@ class CapabilityContract:
             "resources", "preconditions", "effects", "invalidates", "timeout_s", "verifier", "error_codes", "default_safe_to_run", "allowed_as_recovery",
             "execute_flag", "notes", "description", "adapter_id", "dispatch_support", "artifact_policy",
             "mode_support",
+            "canonical_operation_id", "live_readiness", "required_acceptance_level", "implementation_status", "verification_maturity",
         )
-        required_names = tuple(name for name in names if name not in {"adapter_id", "dispatch_support", "artifact_policy", "mode_support"})
+        required_names = tuple(name for name in names if name not in {"adapter_id", "dispatch_support", "artifact_policy", "mode_support", "canonical_operation_id", "live_readiness", "required_acceptance_level", "implementation_status", "verification_maturity"})
         reject_unknown(data, names, required_names)
         return cls(
             name=data["name"], capability_id=data["capability_id"], capability_version=data["capability_version"], kind=data["kind"], visibility=data["visibility"],
@@ -176,6 +194,7 @@ class CapabilityContract:
             error_codes=tuple(ErrorCode(code) for code in require_list(data["error_codes"], "error_codes")), default_safe_to_run=data["default_safe_to_run"], allowed_as_recovery=data["allowed_as_recovery"],
             execute_flag=data["execute_flag"], notes=data["notes"], description=data["description"], skill_name=skill_name, skill_layer=skill_layer,
             adapter_id=data.get("adapter_id"), dispatch_support=data.get("dispatch_support", "unsupported"), artifact_policy=data.get("artifact_policy"), mode_support=data.get("mode_support"),
+            canonical_operation_id=data.get("canonical_operation_id", ""), live_readiness=data.get("live_readiness", ""), required_acceptance_level=data.get("required_acceptance_level", "H0_CONFIG"), implementation_status=data.get("implementation_status", ""), verification_maturity=data.get("verification_maturity", ""),
         )
 
     def to_dict(self) -> dict[str, Any]:

@@ -40,6 +40,9 @@ def render(registry: CapabilityRegistry) -> str:
             f"- resources: {', '.join(f'{item.resource_id} ({item.mode.value})' for item in capability.resources)}",
             f"- verifier: `{verifier.type}`; physical verification limited: `{str(verifier.physical_verification_limited).lower()}`",
             f"- dispatch support: `{capability.dispatch_support}`; adapter binding: `{capability.adapter_id or 'none'}`",
+            f"- canonical operation: `{capability.canonical_operation_id}`",
+            f"- live readiness: `{capability.live_readiness}`; required acceptance: `{capability.required_acceptance_level}`",
+            f"- implementation status: `{capability.implementation_status}`; verifier maturity: `{capability.verification_maturity}`",
             f"- allowed as recovery: `{str(capability.allowed_as_recovery).lower()}`",
             "",
         ])
