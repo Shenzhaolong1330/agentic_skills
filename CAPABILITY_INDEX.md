@@ -17,6 +17,9 @@
 - resources: robot.dual_franka.grippers (exclusive)
 - verifier: `task_specific`; physical verification limited: `true`
 - dispatch support: `plan_only`; adapter binding: `fixed.gripper.command.v1`
+- canonical operation: `gripper.command`
+- live readiness: `HARDWARE_ACCEPTANCE_PENDING`; required acceptance: `H0_CONFIG`
+- implementation status: `IMPLEMENTATION_READY`; verifier maturity: `LIMITED`
 - allowed as recovery: `false`
 
 ## `gripper.observe_status`
@@ -32,6 +35,9 @@
 - resources: robot.dual_franka.grippers (shared)
 - verifier: `output_schema`; physical verification limited: `false`
 - dispatch support: `plan_only`; adapter binding: `fixed.gripper.observe_status.v1`
+- canonical operation: `gripper.observe_status`
+- live readiness: `HARDWARE_ACCEPTANCE_PENDING`; required acceptance: `H0_CONFIG`
+- implementation status: `IMPLEMENTATION_READY`; verifier maturity: `OUTPUT_ONLY`
 - allowed as recovery: `false`
 
 ## `motion.go_home`
@@ -47,6 +53,9 @@
 - resources: robot.dual_franka.shared_workspace (exclusive)
 - verifier: `task_specific`; physical verification limited: `true`
 - dispatch support: `plan_only`; adapter binding: `fixed.motion.go_home.v1`
+- canonical operation: `motion.go_home`
+- live readiness: `HARDWARE_ACCEPTANCE_PENDING`; required acceptance: `H0_CONFIG`
+- implementation status: `IMPLEMENTATION_READY`; verifier maturity: `LIMITED`
 - allowed as recovery: `false`
 
 ## `motion.move_to_pose`
@@ -62,6 +71,9 @@
 - resources: robot.dual_franka.shared_workspace (exclusive)
 - verifier: `task_specific`; physical verification limited: `true`
 - dispatch support: `plan_only`; adapter binding: `fixed.motion.move_to_pose.v1`
+- canonical operation: `motion.move_to_pose`
+- live readiness: `HARDWARE_ACCEPTANCE_PENDING`; required acceptance: `H0_CONFIG`
+- implementation status: `IMPLEMENTATION_READY`; verifier maturity: `LIMITED`
 - allowed as recovery: `false`
 
 ## `perception.locate_object_3d`
@@ -77,6 +89,9 @@
 - resources: camera.realsense (shared)
 - verifier: `output_schema`; physical verification limited: `false`
 - dispatch support: `unsupported`; adapter binding: `none`
+- canonical operation: `perception.locate_object_3d`
+- live readiness: `CONTRACT_ONLY`; required acceptance: `H0_CONFIG`
+- implementation status: `CONTRACT_ONLY`; verifier maturity: `OUTPUT_ONLY`
 - allowed as recovery: `false`
 
 ## `procedure.handover_transition`
@@ -92,6 +107,9 @@
 - resources: robot.dual_franka.shared_workspace (exclusive)
 - verifier: `task_specific`; physical verification limited: `true`
 - dispatch support: `plan_only`; adapter binding: `fixed.procedure.handover_transition.v1`
+- canonical operation: `procedure.handover_transition`
+- live readiness: `HARDWARE_ACCEPTANCE_PENDING`; required acceptance: `H0_CONFIG`
+- implementation status: `IMPLEMENTATION_READY`; verifier maturity: `LIMITED`
 - allowed as recovery: `false`
 
 ## `recovery.robot_recover`
@@ -107,6 +125,9 @@
 - resources: robot.dual_franka.shared_workspace (exclusive)
 - verifier: `task_specific`; physical verification limited: `true`
 - dispatch support: `plan_only`; adapter binding: `fixed.recovery.robot_recover.v1`
+- canonical operation: `recovery.robot_recover`
+- live readiness: `HARDWARE_ACCEPTANCE_PENDING`; required acceptance: `H0_CONFIG`
+- implementation status: `IMPLEMENTATION_READY`; verifier maturity: `LIMITED`
 - allowed as recovery: `true`
 
 ## `recovery.robot_reset`
@@ -122,6 +143,9 @@
 - resources: robot.dual_franka.shared_workspace (exclusive)
 - verifier: `task_specific`; physical verification limited: `true`
 - dispatch support: `plan_only`; adapter binding: `fixed.recovery.robot_reset.v1`
+- canonical operation: `recovery.robot_reset`
+- live readiness: `HARDWARE_ACCEPTANCE_PENDING`; required acceptance: `H0_CONFIG`
+- implementation status: `IMPLEMENTATION_READY`; verifier maturity: `LIMITED`
 - allowed as recovery: `true`
 
 ## `robot.observe_health`
@@ -137,6 +161,9 @@
 - resources: robot.dual_franka.state (shared)
 - verifier: `output_schema`; physical verification limited: `false`
 - dispatch support: `plan_only`; adapter binding: `fixed.robot.observe_health.v1`
+- canonical operation: `robot.observe_health`
+- live readiness: `HARDWARE_ACCEPTANCE_PENDING`; required acceptance: `H0_CONFIG`
+- implementation status: `IMPLEMENTATION_READY`; verifier maturity: `OUTPUT_ONLY`
 - allowed as recovery: `true`
 
 ## `robot.recover_reset_home`
@@ -152,6 +179,9 @@
 - resources: robot.dual_franka.shared_workspace (exclusive)
 - verifier: `task_specific`; physical verification limited: `true`
 - dispatch support: `plan_only`; adapter binding: `fixed.robot.recover_reset_home.v1`
+- canonical operation: `robot.recover_reset_home`
+- live readiness: `HARDWARE_ACCEPTANCE_PENDING`; required acceptance: `H0_CONFIG`
+- implementation status: `IMPLEMENTATION_READY`; verifier maturity: `LIMITED`
 - allowed as recovery: `true`
 
 ## `state.capture_realsense`
@@ -167,6 +197,9 @@
 - resources: camera.realsense (shared), robot.dual_franka.state (shared)
 - verifier: `output_schema`; physical verification limited: `false`
 - dispatch support: `plan_only`; adapter binding: `fixed.state.capture_realsense.v1`
+- canonical operation: `state.capture_realsense`
+- live readiness: `HARDWARE_ACCEPTANCE_PENDING`; required acceptance: `H0_CONFIG`
+- implementation status: `IMPLEMENTATION_READY`; verifier maturity: `OUTPUT_ONLY`
 - allowed as recovery: `false`
 
 ## `state.reset_realsense`
@@ -182,6 +215,9 @@
 - resources: camera.realsense (exclusive)
 - verifier: `task_specific`; physical verification limited: `true`
 - dispatch support: `plan_only`; adapter binding: `fixed.state.reset_realsense.v1`
+- canonical operation: `state.reset_realsense`
+- live readiness: `HARDWARE_ACCEPTANCE_PENDING`; required acceptance: `H0_CONFIG`
+- implementation status: `IMPLEMENTATION_READY`; verifier maturity: `LIMITED`
 - allowed as recovery: `false`
 
 ## `task.pick_insert.full_flow`
@@ -197,6 +233,9 @@
 - resources: robot.dual_franka.shared_workspace (exclusive), camera.realsense (exclusive)
 - verifier: `task_specific`; physical verification limited: `true`
 - dispatch support: `unsupported`; adapter binding: `none`
+- canonical operation: `task.pick_insert.full_flow`
+- live readiness: `CONTRACT_ONLY`; required acceptance: `H0_CONFIG`
+- implementation status: `CONTRACT_ONLY`; verifier maturity: `LIMITED`
 - allowed as recovery: `false`
 
 ## `task.pick_insert.run`
@@ -212,6 +251,9 @@
 - resources: robot.dual_franka.shared_workspace (exclusive), camera.realsense (exclusive)
 - verifier: `task_specific`; physical verification limited: `true`
 - dispatch support: `unsupported`; adapter binding: `none`
+- canonical operation: `task.pick_insert.run`
+- live readiness: `CONTRACT_ONLY`; required acceptance: `H0_CONFIG`
+- implementation status: `CONTRACT_ONLY`; verifier maturity: `LIMITED`
 - allowed as recovery: `false`
 
 ## `task.pick_insert.single_flow`
@@ -227,4 +269,7 @@
 - resources: robot.dual_franka.shared_workspace (exclusive), camera.realsense (exclusive)
 - verifier: `task_specific`; physical verification limited: `true`
 - dispatch support: `unsupported`; adapter binding: `none`
+- canonical operation: `task.pick_insert.single_flow`
+- live readiness: `CONTRACT_ONLY`; required acceptance: `H0_CONFIG`
+- implementation status: `CONTRACT_ONLY`; verifier maturity: `LIMITED`
 - allowed as recovery: `false`
