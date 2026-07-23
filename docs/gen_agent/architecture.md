@@ -1,4 +1,4 @@
-# Gen-Agent architecture (S0-S5)
+# Gen-Agent architecture (S0-S9)
 
 ## 范围
 
@@ -41,9 +41,10 @@ limited; no output schema or command completion is physical success.
 
 ## 后续方向（非 S0/S1 实现内容）
 
-S6 GoalSpec/TaskGraph Compiler, S7 Graph Executor, Planner, Recovery Graph,
-Memory, and true physical acceptance are not implemented. Later layers must
-reuse the Registry, Gate, Dispatcher, and verifier boundaries without gaining
+S6 GoalSpec/TaskGraph Compiler, S7 Graph Executor, S8 Recovery Engine, and
+S9 offline task migration are implemented under the same Registry, Gate,
+Dispatcher, and verifier boundaries. Natural-language Planner, Memory, and
+true physical acceptance remain future work; later layers must not gain
 arbitrary command execution.
 ## S4.5/S6 boundary
 
@@ -51,3 +52,20 @@ Fixed adapters can produce reviewable dry-run InvocationPlans but do not imply l
 # S7 runtime boundary
 
 The bounded Graph Executor consumes only `CompiledTaskGraph`, calls capabilities only through `CapabilityDispatcher`, and persists hash-chained events plus atomic checkpoints. S7 supports mock, dry-run, and artifact replay only; live and physical execution remain disabled.
+# S8 recovery boundary
+
+The Recovery Engine consumes typed failure context and a committed remainder,
+selects only first-party strategies through policy/platform guards, and
+executes recovery templates as ordinary bounded graphs. Remainder replanning
+must pass monotonicity checks before replacing a plan. Recovery events and
+lineage are nested in the same checkpoint and hash chain. No recovery path
+constructs or dispatches arbitrary shell/code, and offline recovery never
+performs physical execution.
+
+# S9 task boundary
+
+Task definitions supply task-scoped private capabilities, GoalSpec,
+ExecutionEnvelope, explicit graph, recovery policy, and compatibility mapping.
+The migrated pick-tube task is an offline fixture implementation; the legacy
+live entrypoint remains independently gated and is not enabled by the new
+runtime.

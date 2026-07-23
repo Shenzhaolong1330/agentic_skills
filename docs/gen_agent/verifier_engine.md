@@ -17,3 +17,10 @@ The S6 compiler preserves the capability verifier contract and rejects graph ver
 # S7 integration
 
 Effect verification and goal verification remain separate. Return code and output-schema validity do not prove physical effect. Stale, tentative, invalidated, or limited evidence cannot produce physical goal verification.
+# S8 recovery verification
+
+Recovery completion is separate from goal completion. A reset, retreat, or
+action-plan result cannot satisfy the physical goal predicate. The migrated
+task requires fresh inside/support/release/health evidence, while offline
+runs expose only logical fixture verification and report physical verification
+as false.

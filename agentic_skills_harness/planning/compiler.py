@@ -32,6 +32,33 @@ RISK_ORDER = {
 }
 
 
+_TASK_CONTEXT_TOKEN = object()
+
+
+@dataclass(frozen=True)
+class TaskCompilationContext:
+    """Non-JSON authority for a trusted first-party TaskDefinition.
+
+    An external graph can mention an internal capability ID, but the compiler
+    accepts it only when this object was created by ``trusted``.  The authority
+    token is intentionally not serializable and is never read from graph or
+    envelope JSON.
+    """
+
+    task_id: str
+    task_version: str
+    internal_capability_allowlist: tuple[str, ...] = ()
+    _authority: object | None = field(default=None, repr=False, compare=False)
+
+    @classmethod
+    def trusted(cls, task_id: str, task_version: str, internal_capability_allowlist: Iterable[str]) -> "TaskCompilationContext":
+        return cls(str(task_id), str(task_version), tuple(sorted(set(str(item) for item in internal_capability_allowlist))), _TASK_CONTEXT_TOKEN)
+
+    @property
+    def is_trusted(self) -> bool:
+        return self._authority is _TASK_CONTEXT_TOKEN
+
+
 @dataclass(frozen=True)
 class CompiledNode:
     node_id: str
@@ -172,7 +199,7 @@ class TaskGraphCompiler:
         self.manifest = dict(manifest) if manifest is not None else None
         self.manifest_path = Path(manifest_path).resolve() if manifest_path is not None else None
 
-    def compile(self, goal: GoalSpec | Mapping[str, Any], envelope: ExecutionEnvelope | Mapping[str, Any], graph: TaskGraph | Mapping[str, Any]) -> CompilationReport:
+    def compile(self, goal: GoalSpec | Mapping[str, Any], envelope: ExecutionEnvelope | Mapping[str, Any], graph: TaskGraph | Mapping[str, Any], *, compilation_context: TaskCompilationContext | None = None) -> CompilationReport:
         issues: list[CompilationIssue] = []
         raw_goal = goal.to_dict() if isinstance(goal, GoalSpec) else goal
         raw_envelope = envelope.to_dict() if isinstance(envelope, ExecutionEnvelope) else envelope
@@ -193,7 +220,7 @@ class TaskGraphCompiler:
         self._validate_ambiguities(goal_model, issues)
         self._validate_ids_and_reachability(goal_model, graph_model, issues)
         self._validate_bindings(graph_model, issues)
-        self._validate_capabilities(goal_model, envelope_model, graph_model, issues)
+        self._validate_capabilities(goal_model, envelope_model, graph_model, issues, compilation_context)
         self._validate_resources(envelope_model, graph_model, issues)
         self._validate_budgets(envelope_model, graph_model, issues)
         self._validate_cycles(envelope_model, graph_model, issues)
@@ -294,7 +321,7 @@ class TaskGraphCompiler:
                 if binding.target_argument_path and not binding.target_argument_path.startswith("/"):
                     self._add(issues, "INVALID_TASK_GRAPH", f"$.nodes[{node.node_id}].input_bindings[{binding.binding_id}]", "target argument path is not a JSON Pointer", node_id=node.node_id)
 
-    def _validate_capabilities(self, goal: GoalSpec, envelope: ExecutionEnvelope, graph: TaskGraph, issues: list[CompilationIssue]) -> None:
+    def _validate_capabilities(self, goal: GoalSpec, envelope: ExecutionEnvelope, graph: TaskGraph, issues: list[CompilationIssue], compilation_context: TaskCompilationContext | None = None) -> None:
         allowed = set(envelope.allowed_capabilities) or {item.capability_id for item in self.registry.list()}
         forbidden = set(envelope.forbidden_capabilities)
         for node in graph.nodes:
@@ -308,11 +335,12 @@ class TaskGraphCompiler:
             if capability is None:
                 self._add(issues, "UNKNOWN_CAPABILITY", f"$.nodes[{node.node_id}].capability_id", "unknown capability", node_id=node.node_id, capability_id=node.capability_id)
                 continue
-            if capability.visibility != "public":
-                self._add(issues, "CAPABILITY_NOT_PUBLIC", f"$.nodes[{node.node_id}].capability_id", "internal and legacy capabilities cannot be enabled by an envelope", node_id=node.node_id, capability_id=node.capability_id)
+            trusted_internal = capability.visibility == "internal" and compilation_context is not None and compilation_context.is_trusted and capability.capability_id in compilation_context.internal_capability_allowlist
+            if capability.visibility != "public" and not trusted_internal:
+                self._add(issues, "CAPABILITY_NOT_PUBLIC", f"$.nodes[{node.node_id}].capability_id", "internal and legacy capabilities require trusted TaskCompilationContext", node_id=node.node_id, capability_id=node.capability_id)
             if capability.capability_id in forbidden:
                 self._add(issues, "CAPABILITY_FORBIDDEN", f"$.nodes[{node.node_id}].capability_id", "capability is explicitly forbidden", node_id=node.node_id, capability_id=node.capability_id)
-            elif capability.capability_id not in allowed:
+            elif capability.capability_id not in allowed and not trusted_internal:
                 self._add(issues, "CAPABILITY_NOT_ALLOWED", f"$.nodes[{node.node_id}].capability_id", "capability is outside the envelope allowlist", node_id=node.node_id, capability_id=node.capability_id)
             if capability.dispatch_support == "unsupported":
                 self._add(issues, "CAPABILITY_UNSUPPORTED", f"$.nodes[{node.node_id}].capability_id", "capability has no safe first-party adapter", node_id=node.node_id, capability_id=node.capability_id)
