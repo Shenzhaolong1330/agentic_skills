@@ -5,6 +5,13 @@ description: Task-level harness for locating a loose test tube, selecting the ta
 
 # Pick Tube Insert Rack
 
+The repository also contains an offline agentic implementation at
+`task_skills/pick_tube_insert_rack/agentic/`. It compiles a registered
+`TaskDefinition` into an explicit GoalSpec/TaskGraph and runs through the
+bounded GraphExecutor plus Recovery Engine. Use
+`python scripts/run_pick_tube_insert_rack_graph.py --mode mock` for the
+offline graph path; it never enables live hardware.
+
 Use this task skill for the full task-level orchestration. It is not an atomic P2P, gripper, perception, or reset command.
 
 ## Safe Default Entry

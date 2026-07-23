@@ -320,7 +320,10 @@ def _common_rpc_args(args: argparse.Namespace) -> list[str]:
 
 
 def _maybe_execute(args: argparse.Namespace) -> list[str]:
-    return ["--execute"] if args.execute else []
+    # ``--execute`` is a workflow-intent flag for this legacy compatibility
+    # wrapper.  Only the explicitly gated live path may forward it to a child
+    # process; mock/dry_run/from_artifacts remain plan-only.
+    return ["--execute"] if args.execute and bool(getattr(args, "_physical_execution_enabled", False)) else []
 
 
 def build_stage_commands(args: argparse.Namespace, *, holder_side: str) -> list[StageCommand]:
@@ -877,11 +880,10 @@ def main(argv: list[str] | None = None) -> int:
         manifest_path=next(parent / "skill_manifest.json" for parent in SCRIPT_DIR.parents if (parent / "skill_manifest.json").is_file()),
     )
     if not gate_decision.allowed:
-        if gate_decision.planned_only:
-            args.execute = False
-        else:
+        if not gate_decision.planned_only:
             print(json.dumps({"ok": False, "gate_decision": gate_decision.to_dict()}, ensure_ascii=False), file=sys.stderr)
             return 1
+    args._physical_execution_enabled = bool(args.mode == "live" and args.execute and gate_decision.allowed)
     if args.insert_max_correction_iters < 0:
         raise ValueError("--insert-max-correction-iters must be non-negative")
     if not math.isfinite(args.insert_settle_time_sec) or args.insert_settle_time_sec < 0.0:
@@ -925,16 +927,21 @@ def main(argv: list[str] | None = None) -> int:
         print_report(report, compact=args.compact)
         return 0
 
-    try:
-        fractions = read_gripper_fractions(args)
-    except Exception:
-        report["stopped_reason"] = "read_gripper_fractions_failed"
-        log("读取夹爪状态失败，完整异常如下:")
-        traceback_text = traceback.format_exc()
-        print(traceback_text, file=sys.stderr, end="", flush=True)
-        _write_log_file(traceback_text.rstrip("\n"))
-        print_report(report, compact=args.compact)
-        return 1
+    if args.mode == "live":
+        try:
+            fractions = read_gripper_fractions(args)
+        except Exception:
+            report["stopped_reason"] = "read_gripper_fractions_failed"
+            log("读取夹爪状态失败，完整异常如下:")
+            traceback_text = traceback.format_exc()
+            print(traceback_text, file=sys.stderr, end="", flush=True)
+            _write_log_file(traceback_text.rstrip("\n"))
+            print_report(report, compact=args.compact)
+            return 1
+    else:
+        # Offline compatibility tests and callers must not connect to a
+        # gripper merely to choose a holder arm.
+        fractions = {"left": 0.8, "right": 0.0}
     log(
         "夹爪闭合比例: "
         f"left={fractions.get('left', 0.0):.3f}, right={fractions.get('right', 0.0):.3f}"
