@@ -8,3 +8,8 @@ This is not a Graph Executor. World State and Verifier are not driven by the com
 # S7 handoff
 
 The compiler emits plan, manifest, capability-index, input-schema, and output-schema digests. The Executor rechecks these values and the current Registry disposition before any Dispatcher call.
+# S8/S9 compiler boundary
+
+Task-private capability IDs require a trusted, checked-in
+`TaskCompilationContext`. Public callers cannot smuggle internal IDs into a
+graph, and compilation still produces no hardware command or execution.

@@ -8,3 +8,8 @@ Physical actions must carry a verifier and have a later verification path. Expec
 # Runtime note
 
 Task graphs are static planning contracts. The Executor does not accept or recompile raw TaskGraph values; only the compiler's digest-bound `CompiledTaskGraph` can enter S7 runtime.
+# S8 recovery graphs
+
+Recovery templates are ordinary explicit task graphs with observe, compute,
+action-plan, and verify nodes. They do not embed executable code and are
+executed by the same GraphExecutor as the task remainder.

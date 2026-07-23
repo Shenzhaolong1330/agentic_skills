@@ -1,7 +1,7 @@
 """Static goal and task-graph contracts for Gen-Agent planning."""
 
 from .bindings import BindingSource, InputBinding
-from .compiler import CompiledEdge, CompiledNode, CompiledTaskGraph, TaskGraphCompiler
+from .compiler import CompiledEdge, CompiledNode, CompiledTaskGraph, TaskCompilationContext, TaskGraphCompiler
 from .diagnostics import CompilationIssue, CompilationReport
 from .envelope import ApprovalPolicy, ExecutionEnvelope, TargetMode, WorkspaceConstraint
 from .goals import Ambiguity, EntitySpec, EvidenceRequirement, FailurePredicate, GoalKind, GoalSpec
@@ -11,6 +11,6 @@ __all__ = [
     "Ambiguity", "ApprovalPolicy", "BindingSource", "CompiledEdge", "CompiledNode", "CompiledTaskGraph",
     "CompilationIssue", "CompilationReport", "EdgeCondition", "EntitySpec", "EvidenceRequirement",
     "ExecutionEnvelope", "ExpectedEffect", "FailurePredicate", "GoalKind", "GoalSpec", "GraphEdge",
-    "GraphNode", "InputBinding", "NodeKind", "RetryPolicy", "TargetMode", "TaskGraph", "TaskGraphCompiler",
+    "GraphNode", "InputBinding", "NodeKind", "RetryPolicy", "TargetMode", "TaskCompilationContext", "TaskGraph", "TaskGraphCompiler",
     "WorkspaceConstraint",
 ]

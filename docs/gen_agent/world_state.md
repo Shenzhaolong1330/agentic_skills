@@ -16,3 +16,8 @@ S6 compiled graphs may reference world facts and PredicateSpec evidence, but no 
 # S7 integration
 
 OBSERVE updates World State only through explicit compiled fact projections. ACT invalidates conservatively and may create only TENTATIVE simulated effects; dry-run creates no physical effect. VERIFIED facts require the Verifier.
+# Recovery fact handling
+
+Recovery records invalidated facts explicitly. Holding, insertion, release,
+pose, and occupancy facts are never inferred from a command result; recovery
+must obtain fresh observations before treating the remainder as safe.
