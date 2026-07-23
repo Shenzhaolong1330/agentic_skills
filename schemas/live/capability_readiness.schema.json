@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentic-skills.local/schemas/live/capability_readiness.schema.json",
+  "type": "object", "additionalProperties": false,
+  "required": ["capability_id", "capability_version", "adapter_id", "adapter_digest", "input_schema_digest", "output_schema_digest", "risk_class", "readiness_state", "required_acceptance_level", "accepted_hardware_fingerprints", "accepted_calibration_hashes", "limitations", "updated_at", "verification_maturity", "workspace_digest"],
+  "properties": {
+    "capability_id": {"type": "string"}, "capability_version": {"type": "string"}, "adapter_id": {"type": "string"}, "adapter_digest": {"type": "string"}, "input_schema_digest": {"type": "string"}, "output_schema_digest": {"type": "string"}, "risk_class": {"type": "string"},
+    "readiness_state": {"enum": ["DISABLED", "CONTRACT_ONLY", "IMPLEMENTATION_READY", "HARDWARE_ACCEPTANCE_PENDING", "VALIDATED_READ_ONLY", "VALIDATED_ACTION", "VALIDATED_RECOVERY", "REJECTED"]},
+    "required_acceptance_level": {"enum": ["H0_CONFIG", "H1_READ_ONLY", "H2_GRIPPER_EMPTY", "H3_MOTION_P2P", "H4_MOTION_RELATIVE", "H5_STOP", "H6_GRASP_VERIFICATION", "H7_RECOVERY", "H8_RESET_HOME"]},
+    "accepted_hardware_fingerprints": {"type": "array", "items": {"type": "string"}}, "accepted_calibration_hashes": {"type": "array", "items": {"type": "string"}}, "limitations": {"type": "array", "items": {"type": "string"}}, "updated_at": {"type": "string"}, "verification_maturity": {"enum": ["NONE", "OUTPUT_ONLY", "LIMITED", "INDEPENDENT_EVIDENCE", "PHYSICALLY_VALIDATED"]}, "workspace_digest": {"type": "string"}
+  }
+}
