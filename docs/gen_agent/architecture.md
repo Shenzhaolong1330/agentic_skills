@@ -69,3 +69,10 @@ ExecutionEnvelope, explicit graph, recovery policy, and compatibility mapping.
 The migrated pick-tube task is an offline fixture implementation; the legacy
 live entrypoint remains independently gated and is not enabled by the new
 runtime.
+
+# S10 boundary
+
+S10 adds readiness/evidence and a fail-closed live preflight for a future
+operator-only atomic acceptance runner. GraphExecutor remains offline-only;
+`hardware_allowed` remains the only human hardware authorization and
+side-effect operations additionally require `execute`.

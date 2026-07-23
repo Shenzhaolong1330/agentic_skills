@@ -28,3 +28,9 @@ plan lineage, and task definitions are defined under `schemas/recovery/`.
 These schemas contain descriptive, serializable data only; executable code,
 callbacks, shell commands, adapter objects, and hardware handles are not
 valid fields.
+
+# S10 schemas
+
+`schemas/live/` describes readiness, hardware fingerprints, acceptance plans,
+steps, observations, results, and fail-closed preflight output. These schemas
+do not grant live authorization and contain no secrets.

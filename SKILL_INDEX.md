@@ -47,6 +47,14 @@ Use the fixed Adapter coverage and static planning contracts under docs/gen_agen
 The compiled graph executor, persistence contracts, and offline acceptance runner live under `agentic_skills_harness/execution/` and `scripts/run_compiled_task_graph.py`.
 # S8/S9 runtime
 
+# S10A/S10H boundary
+
+S10A is offline implementation and readiness preparation. S10H is the fixed,
+operator-only H0-H8 acceptance sequence. No Codex or automated test may run
+live hardware, and readiness evidence is not a second token. Guarded move,
+safe stop, fault recovery, and grasp verification remain limited unless the
+underlying API supplies independent evidence.
+
 The deterministic Recovery Engine and remainder replanning contracts live
 under `agentic_skills_harness/recovery/`. The migrated offline task definition
 is `task_skills/pick_tube_insert_rack/agentic/`; see
