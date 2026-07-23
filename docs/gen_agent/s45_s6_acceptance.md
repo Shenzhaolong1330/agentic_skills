@@ -4,4 +4,6 @@ Acceptance is offline and hardware-free. It audits all manifest capabilities, fi
 
 The current known baseline failure remains `test_flow_does_not_retry_insert_by_lifting`; it is not a new regression. No real camera, RPC, reset, motion, or gripper operation is permitted. A passing dry-run plan is not a live-support claim and no Adapter has been accepted on a real robot in this phase.
 
-S7 Graph Executor, S8 Recovery Engine, S11 Codex Planner, and long-term Memory are not implemented.
+At the historical S4.5/S6 checkpoint, S7 Graph Executor, S8 Recovery Engine,
+S11 Codex Planner, and long-term Memory were not implemented. Current S7-S9
+acceptance is documented in `s8_s9_acceptance.md`.
