@@ -1,0 +1,36 @@
+version: 1
+operator:
+  # This is a safety acknowledgement, not a credential or authorization token.
+  interactive_required: true
+  operator_confirmed: false
+hardware:
+  robot_type: "FILL_ME"
+  controller_type: "FILL_ME"
+  rpc_protocol_version: "FILL_ME"
+  arm_ids: ["left", "right"]
+  camera_serial: "REDACTED_LOCAL_ONLY"
+  gripper_type: "FILL_ME"
+  workspace_digest: "FILL_ME"
+  calibration_hash: "FILL_ME"
+  reset_config_digest: "FILL_ME"
+workspace:
+  robot_base_frame: base
+  safe_acceptance_poses:
+    left_h3_a: {frame: base, xyz_m: [0.35, 0.20, 0.45]}
+    left_h3_b: {frame: base, xyz_m: [0.35, 0.25, 0.45]}
+    left_h3_c: {frame: base, xyz_m: [0.35, 0.15, 0.45]}
+    right_h3_a: {frame: base, xyz_m: [0.35, -0.20, 0.45]}
+    right_h3_b: {frame: base, xyz_m: [0.35, -0.25, 0.45]}
+    right_h3_c: {frame: base, xyz_m: [0.35, -0.15, 0.45]}
+limits:
+  max_translation_speed_m_s: 0.03
+  max_rotation_speed_rad_s: 0.15
+  max_translation_step_m: 0.010
+  max_rotation_step_rad: 0.035
+  max_timeout_s: 30.0
+  max_relative_displacement_m: 0.010
+acceptance:
+  artifact_root: /tmp/agentic_skills_gen_agent/S10/hardware
+  calibration_hash: FILL_ME
+  require_empty_grippers_before_reset: true
+  graph_live_enabled: false
