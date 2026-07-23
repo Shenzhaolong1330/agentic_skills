@@ -63,9 +63,21 @@ reset 没有被禁用，但只能作为 manifest 允许的 recovery entrypoint�
 ## 新增 skill manifest entry
 
 新增 entrypoint 时必须声明 `requires_hardware`、`opens_camera`、`connects_robot_rpc`、`moves_robot`、`controls_gripper`、`default_safe_to_run`、`allowed_as_recovery`、`execute_flag` 和 side effects。这样 Codex 后续不需要全仓搜索即可安全路由。
-## S4.5/S6 scope
+## S4.5/S6/S8/S9 scope
 
-The harness now includes fixed Adapter coverage and static GoalSpec/ExecutionEnvelope/TaskGraph compilation. Compiled plans contain no commands and do not authorize hardware. Live Adapter validation, Graph Executor, Recovery Engine, natural-language Planner, and Memory are not implemented.
+The harness includes fixed Adapter coverage, static GoalSpec/ExecutionEnvelope/
+TaskGraph compilation, the bounded offline Graph Executor, the deterministic
+Recovery Engine, and the registered offline task-definition path. Compiled
+plans and recovery graphs contain no commands and do not authorize hardware.
+Natural-language Planner, Memory, and true physical acceptance remain outside
+this branch.
 # S7 execution
 
 The harness includes an offline bounded Graph Executor with mock, dry-run, and artifact-replay modes. It writes artifacts outside the repository by default and never runs a live manifest entrypoint in S7.
+# S8/S9 runtime additions
+
+The harness now contains a generic recovery package and a task-definition
+registry. Both reuse the existing typed dispatcher, graph executor, event
+chain, checkpoints, world-state invalidation, and verifier boundaries. The
+default and accepted modes remain offline; no hardware connector is enabled
+by this addition.

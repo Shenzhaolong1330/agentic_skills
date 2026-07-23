@@ -20,3 +20,11 @@ schemas/planning contains Draft 2020-12 GoalSpec, ExecutionEnvelope, InputBindin
 # S7 schemas
 
 Runtime records, attempts, budgets, events, checkpoints, task results, cancellation requests, and human action requests are defined under `schemas/execution/`. Runtime artifacts are canonical JSON and relative to an artifact directory.
+
+# S8/S9 schemas
+
+Recovery context, strategy, decision, attempt/result, replan request/result,
+plan lineage, and task definitions are defined under `schemas/recovery/`.
+These schemas contain descriptive, serializable data only; executable code,
+callbacks, shell commands, adapter objects, and hardware handles are not
+valid fields.

@@ -21,6 +21,7 @@ def render(registry: CapabilityRegistry) -> str:
         "",
         "> Generated from `skill_manifest.json` v0.2.0. Only `visibility=public` entries are listed.",
         "> This is metadata for routing and review; the Registry never executes a capability.",
+        "> S9 task-private capabilities are intentionally omitted and remain behind a trusted TaskCompilationContext.",
         "",
     ]
     for capability in registry.list():

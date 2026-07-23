@@ -45,3 +45,10 @@ Use the fixed Adapter coverage and static planning contracts under docs/gen_agen
 # S7 runtime
 
 The compiled graph executor, persistence contracts, and offline acceptance runner live under `agentic_skills_harness/execution/` and `scripts/run_compiled_task_graph.py`.
+# S8/S9 runtime
+
+The deterministic Recovery Engine and remainder replanning contracts live
+under `agentic_skills_harness/recovery/`. The migrated offline task definition
+is `task_skills/pick_tube_insert_rack/agentic/`; see
+`docs/gen_agent/pick_tube_insert_rack_migration.md` and
+`scripts/audit_task_migration.py`.
