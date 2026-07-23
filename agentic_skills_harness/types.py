@@ -246,6 +246,16 @@ class TaskResult:
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     artifacts: dict[str, Any] = field(default_factory=dict)
+    execution_scope: str = "NONE"
+    graph_id: str | None = None
+    plan_hash: str | None = None
+    goal_verified: bool = False
+    physical_goal_verified: bool = False
+    physical_execution_performed: bool = False
+    recovery_attempts: int = 0
+    replan_attempts: int = 0
+    plan_lineage: dict[str, Any] | None = None
+    task_execution_result_ref: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return to_plain(self)

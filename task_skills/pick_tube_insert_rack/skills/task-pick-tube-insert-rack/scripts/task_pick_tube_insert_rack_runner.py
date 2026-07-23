@@ -525,7 +525,76 @@ def _run_live(
     return result
 
 
+def _run_offline_graph(args: argparse.Namespace) -> TaskResult:
+    """Run offline compatibility modes through the canonical S9 graph."""
+    from agentic_skills_harness.execution import GraphExecutor
+    from agentic_skills_harness.manifest import load_manifest
+    from agentic_skills_harness.registry import CapabilityRegistry
+    from agentic_skills_harness.world.store import WorldStateStore
+    from task_skills.pick_tube_insert_rack.agentic.definition import PICK_TUBE_INSERT_RACK
+    from task_skills.pick_tube_insert_rack.agentic.dispatcher import PickTubeOfflineDispatcher
+    from task_skills.pick_tube_insert_rack.agentic.facts import populate_success_fixture
+
+    run_id = new_run_id("pick_tube_insert_rack_graph")
+    artifact_dir = args.artifact_dir or Path("/tmp/agentic_skills_runs") / run_id
+    output_json = args.output_json or artifact_dir / "task_result.json"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    mode = SkillMode(args.mode)
+    context = SkillContext(
+        run_id=run_id, mode=mode, hardware_allowed=False, execute=False,
+        artifact_dir=str(artifact_dir), manifest_path=str(args.manifest),
+        robot_server=None, mock_robot_health=args.mock_robot_health,
+        recovery_policy={"auto_reset_on_abnormal": bool(args.auto_reset_on_abnormal), "resume_after_held_object_reset": False},
+        max_auto_reset_attempts=int(args.max_auto_reset_attempts), auto_reset_on_abnormal=bool(args.auto_reset_on_abnormal),
+    )
+    trace = TraceWriter(artifact_dir)
+    manifest = load_manifest(args.manifest)
+    trace.write_context(context)
+    trace.write_manifest_snapshot(manifest)
+    reset_results: list[dict[str, object]] = []
+    if args.mock_robot_health == "estop":
+        result = TaskResult(False, TaskState.ABORT, False, False, context, [], {"execution_scope": mode.value, "physical_execution_performed": False, "physical_goal_verified": False}, reset_results, "estop_or_unsafe_requires_manual_intervention")
+        trace.write_task_result(result, output_json)
+        return result
+    if args.mock_robot_health in {"abnormal", "fault", "unreachable"} and args.auto_reset_on_abnormal:
+        reset_results.append({"ok": True, "outcome": "PLANNED_ONLY" if mode == SkillMode.DRY_RUN else "MOCK_RESET_OK", "attempted": True, "executed": False, "planned_only": mode == SkillMode.DRY_RUN, "held_object_risk": False, "resumed_after_reset": False})
+        trace.path("reset_recovery_1.json").write_text(json.dumps(reset_results[0], ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    base_registry = CapabilityRegistry.from_manifest(manifest, repo_root=Path(args.manifest).resolve().parent)
+    report, task_registry, goal, envelope, graph, compilation_context = PICK_TUBE_INSERT_RACK.compile(base_registry, manifest, mode=mode.value)
+    if not report.ok or report.compiled_graph is None:
+        result = TaskResult(False, TaskState.ABORT, False, False, context, [], {"execution_scope": mode.value, "physical_execution_performed": False, "physical_goal_verified": False, "compilation": report.to_dict()}, reset_results, "task_graph_compilation_failed")
+        trace.write_task_result(result, output_json)
+        return result
+    for node in report.compiled_graph.compiled_nodes:
+        trace.append_command_plan(CommandPlan(argv=["task_graph", node.node_id], entrypoint_ref=node.node_id, requires_hardware=False, would_execute=False, recovery=False, reason="offline GraphExecutor plan"))
+    world = populate_success_fixture(WorldStateStore())
+    execution = GraphExecutor(report.compiled_graph, registry=task_registry, manifest=manifest, dispatcher=PickTubeOfflineDispatcher(), mode=mode.value, artifact_dir=artifact_dir / "graph_runtime", world_state=world, from_artifacts_root=args.artifact_dir).run()
+    ok = execution.outcome.value in {"GOAL_VERIFIED", "GRAPH_COMPLETED_UNVERIFIED", "PLAN_COMPLETED"}
+    outputs = {
+        "execution_scope": execution.execution_scope.value, "graph_id": execution.graph_id, "plan_hash": execution.plan_hash,
+        "goal_verified": execution.goal_verified, "physical_goal_verified": False, "physical_execution_performed": False,
+        "recovery_attempts": 0, "replan_attempts": 0, "plan_lineage": {"root_plan_hash": execution.plan_hash, "entries": []},
+        "task_execution_result_ref": "graph_runtime/task_execution_result.json", "selected_arm": "left", "selected_hole": "rack_hole_1",
+        "task_state": TaskState.COMPLETE.value if ok else TaskState.ABORT.value, "completion_flag": ok,
+        "physical_verified": False, "reset_recovery": reset_results,
+    }
+    trace.path("graph_execution_result.json").write_text(execution.to_json() + "\n", encoding="utf-8")
+    result = TaskResult(
+        ok, TaskState.COMPLETE if ok else TaskState.ABORT, ok, False, context, [], outputs, reset_results,
+        None if ok else execution.outcome.value,
+        warnings=["offline compatibility runner delegates to the canonical S9 graph; physical verification is false"],
+        execution_scope=execution.execution_scope.value, graph_id=execution.graph_id, plan_hash=execution.plan_hash,
+        goal_verified=execution.goal_verified, physical_goal_verified=False, physical_execution_performed=False,
+        recovery_attempts=0, replan_attempts=0, plan_lineage={"root_plan_hash": execution.plan_hash, "entries": []},
+        task_execution_result_ref="graph_runtime/task_execution_result.json",
+    )
+    trace.write_task_result(result, output_json)
+    return result
+
+
 def run(args: argparse.Namespace) -> TaskResult:
+    if SkillMode(args.mode) != SkillMode.LIVE:
+        return _run_offline_graph(args)
     run_id = new_run_id("pick_tube_insert_rack")
     artifact_dir = args.artifact_dir or Path("/tmp/agentic_skills_runs") / run_id
     output_json = args.output_json or artifact_dir / "task_result.json"
