@@ -31,6 +31,9 @@ limits:
   max_relative_displacement_m: 0.010
 acceptance:
   artifact_root: /tmp/agentic_skills_gen_agent/S10/hardware
+  # Closed preset enum: grounded-sam or openrouter-vlm. Neither mode accepts
+  # a caller-provided locator config, model, target, executable, or serial.
+  scene_locator_mode: grounded-sam
   calibration_hash: FILL_ME
   require_empty_grippers_before_reset: true
   graph_live_enabled: false
