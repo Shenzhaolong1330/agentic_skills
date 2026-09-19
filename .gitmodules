@@ -1,0 +1,3 @@
+[submodule "atomic_skills/object_locator"]
+	path = atomic_skills/object_locator
+	url = https://github.com/Shenzhaolong1330/any_pose_skill
