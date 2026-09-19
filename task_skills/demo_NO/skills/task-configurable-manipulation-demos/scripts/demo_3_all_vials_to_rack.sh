@@ -1,9 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Copied from run_full_pick_tube_insert_rack.sh; low-level skills stay shared.
+DEMO_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$DEMO_SCRIPT_DIR/../../../../.." && pwd)"
+SCRIPT_DIR="$REPO_ROOT/task_skills/pick_tube_insert_rack/skills/task-pick-tube-insert-rack/scripts"
 TASK_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-REPO_ROOT="$(cd "$TASK_ROOT/../../../.." && pwd)"
+
+# Trusted shell settings. CLI options below continue to override these defaults.
+DEMO_CONFIG="${DEMO_CONFIG:-$DEMO_SCRIPT_DIR/../config/demo_3_all_vials_to_rack.env}"
+if [[ ! -f "$DEMO_CONFIG" ]]; then
+    printf 'ERROR: demo config does not exist: %s\n' "$DEMO_CONFIG" >&2
+    exit 2
+fi
+# shellcheck disable=SC1090
+source "$DEMO_CONFIG"
 
 RUNNER="$SCRIPT_DIR/task_pick_tube_insert_rack_runner.py"
 SELECT_AND_GRASP="$SCRIPT_DIR/locate_then_grasp_by_tail_side.py"
@@ -46,14 +57,16 @@ RESET_ARGS=()
 usage() {
     cat <<'EOF'
 Usage:
-  run_full_pick_tube_insert_rack.sh [safe-mode options]
-  run_full_pick_tube_insert_rack.sh --mode live --execute [options]
+  demo_3_all_vials_to_rack.sh [safe-mode options]
+  demo_3_all_vials_to_rack.sh --mode live --execute [options]
 
 Modes (default: dry_run):
   --mock                  Run the task harness with mock fixtures.
   --dry-run               Generate the task command plan; no hardware access.
   --from-artifacts        Run the task harness from supplied JSON artifacts.
   --mode MODE             mock, dry_run, from_artifacts, or live.
+
+Config defaults: config/demo_3_all_vials_to_rack.env (override via DEMO_CONFIG).
 
 Common options:
   --artifact-dir DIR      Trace/log directory.
@@ -200,7 +213,7 @@ if [[ "$EXECUTE" != "1" ]]; then
 fi
 STAMP="$(date +%Y%m%d_%H%M%S)"
 if [[ -z "$ARTIFACT_DIR" ]]; then
-    ARTIFACT_DIR="/tmp/agentic_skills_runs/full_pick_tube_insert_rack_$STAMP"
+    ARTIFACT_DIR="/tmp/agentic_skills_runs/demo_3_all_vials_to_rack_$STAMP"
 fi
 if [[ -z "$TUBE_RESULT_JSON" ]]; then
     TUBE_RESULT_JSON="$ARTIFACT_DIR/tube_detection.json"

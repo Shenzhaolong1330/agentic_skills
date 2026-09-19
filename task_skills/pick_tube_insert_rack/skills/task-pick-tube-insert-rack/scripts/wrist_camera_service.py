@@ -20,7 +20,8 @@ from typing import Any
 
 OBJECT_LOCATOR_ROOT = Path("/home/deepcybo/agentic_skills/atomic_skills/object_locator")
 sys.path.insert(0, str(OBJECT_LOCATOR_ROOT / "src"))
-from object_locator.realsense_camera import RealSenseCamera, list_realsense_devices  # noqa: E402
+from object_locator.realsense_camera import (RealSenseCamera, list_realsense_devices,
+                                            CameraInUseError, CameraResetCooldownError)  # noqa: E402
 
 
 SOCKET_ENV = "TASK_PICK_TUBE_WRIST_CAMERA_SOCKET"
@@ -91,8 +92,12 @@ def _camera_worker(
     # while the serial is absent from USB enumeration.
     recovery_stage = 0
     missing_logged = False
+    reset_used = False
+    awaiting_reconnect = False
     while not stop.is_set():
         if not _serial_is_available(state.serial):
+            awaiting_reconnect = False
+            reset_used = False
             message = f"RealSense serial_number={state.serial} is not USB-enumerated"
             with state.lock:
                 state.error = message
@@ -111,6 +116,10 @@ def _camera_worker(
             stop.wait(1.0)
             continue
 
+        if awaiting_reconnect:
+            stop.wait(1.0)
+            continue
+
         if missing_logged:
             print(
                 f"[realsense-cache] {state.side} re-enumerated; attempting clean pipeline reopen",
@@ -122,8 +131,10 @@ def _camera_worker(
 
         camera: RealSenseCamera | None = None
         use_hardware_reset = recovery_stage == 2
+        delay_sec = 0.0
         try:
             if use_hardware_reset:
+                reset_used = True
                 with state.lock:
                     state.reset_count += 1
                     reset_count = state.reset_count
@@ -151,6 +162,7 @@ def _camera_worker(
                 state.error = None
                 state.status = "streaming"
             recovery_stage = 0
+            reset_used = False  # Warmup succeeded: this is a new capture session.
             while not stop.is_set():
                 frame = camera.capture(timeout_ms=frame_timeout_ms, retries=1)
                 with state.lock:
@@ -159,7 +171,7 @@ def _camera_worker(
                     state.generation += 1
                     state.error = None
                     state.status = "streaming"
-        except Exception:
+        except Exception as exc:
             error = traceback.format_exc(limit=3)
             with state.lock:
                 state.error = error
@@ -168,7 +180,24 @@ def _camera_worker(
                 state.restart_count += 1
                 restart_count = state.restart_count
                 state.status = "recovering"
-            if _serial_is_available(state.serial):
+            if isinstance(exc, CameraInUseError) or 'device or resource busy' in str(exc).lower():
+                recovery_stage = 1
+                delay_sec = 2.0
+                with state.lock:
+                    state.status = "waiting_for_owner"
+            elif isinstance(exc, CameraResetCooldownError) or (reset_used and recovery_stage == 2):
+                awaiting_reconnect = True
+                with state.lock:
+                    state.status = "reconnect_required"
+                print(f"[realsense-cache] {state.side} recovery exhausted; reconnect camera or restart service after fixing USB", file=sys.stderr, flush=True)
+            elif not any(token in str(exc).lower() for token in (
+                'frame', 'xioctl', 'get_xu', 'set_xu', 'protocol error', 'timed out', 'device disconnected', 'no device'
+            )):
+                awaiting_reconnect = True
+                with state.lock:
+                    state.status = "capture_error_requires_attention"
+                print(f"[realsense-cache] {state.side} non-transient capture error; no reset: {exc}", file=sys.stderr, flush=True)
+            elif _serial_is_available(state.serial):
                 if recovery_stage in (0, 2):
                     recovery_stage = 1
                     next_action = "clean pipeline reopen"
@@ -182,7 +211,6 @@ def _camera_worker(
                     file=sys.stderr,
                     flush=True,
                 )
-                stop.wait(delay_sec)
             else:
                 # The next loop enters the quiet USB re-enumeration wait.
                 recovery_stage = 1
@@ -190,10 +218,16 @@ def _camera_worker(
             if camera is not None:
                 try:
                     camera.stop()
-                except Exception:
+                except Exception as exc:
                     # A USB disconnect can make pipeline.stop() fail too.  The
                     # worker must stay alive so it can wait for re-enumeration.
-                    pass
+                    awaiting_reconnect = True
+                    with state.lock:
+                        state.status = "reconnect_required"
+                    print(f"[realsense-cache] {state.side} stream release failed: {exc}; waiting for reconnect", file=sys.stderr, flush=True)
+        # Release SDK handles and the per-camera lock BEFORE any backoff.
+        if delay_sec:
+            stop.wait(delay_sec)
 
 
 def _snapshot(state: CameraState) -> dict[str, Any]:

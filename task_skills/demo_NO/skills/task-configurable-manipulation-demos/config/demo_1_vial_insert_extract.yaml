@@ -1,0 +1,86 @@
+# demo_序号_任务内容 配置；米为长度单位。请阅读 ../SKILL.md 的方向/孔位约定。
+# grasp_position: 1 = tail + 0.2*(head-tail)，2 = tail + 0.8*(head-tail)
+# vial 的 head 为盖子/口端，tail 为封闭尾端；Demo 2 由 front_definition 定义。
+# pick_arm: auto 按抓取端选手，也可以固定 left/right。
+# transition_json: null 复用旧标定；自定义路径相对本配置文件。
+# handover_transition_branch: active 或 partner；换物品/抓端时需核对交接标定。
+# drop_xyz: null 自动识别空桌面；[x,y,z] 是 base 下 TCP 释放坐标（已含释放高度）。
+# drop_height_m: 只用于自动桌面定位，在检测表面 z 上增加该高度。
+# insert: [行,列]，3行2列；extract 可写 [行,列] 或 左上/左下/右上/右下。
+# wrist_view 是各腕图像里逻辑第1行/第1列所在边，需与现场观察位方向一致。
+# initial_occupied 用于声明演示开始时预放在架上的 vial 孔位。
+demo: 1
+# 临时排查 RPC 丢回复：每次 grasp_handover 启动两端 strace，结束自动脱离。
+# 日志保存在本次 artifacts/*_rpc_trace；SSH/跟踪启动失败时不执行该动作。
+# 问题定位完后改为 null 关闭；仅跟踪服务端 ZeroMQ 网络线程，不重启服务。
+rpc_trace_ssh_host: null  # 需要双端跟踪时填写 prime-u7-03-franka
+grasp_position: 1
+pick_arm: auto
+count: 4
+grasp_z_offset_m: 0.01
+lift_m: 0.1
+extract_lift_m: 0.12
+drop_height_m: 0.1
+drop_xyz:
+  left: null
+  right: null
+drop_description: Select a clear empty tabletop area beside and well outside the RED
+  rack and outside the source pickup area. Exclude all objects, robot parts, table
+  edges and the rack. The whole drop area must be bare tabletop. Return found=false
+  if unavailable.
+insert_depth_m: 0.055
+hole_standoff_m: 0.08
+handover_transition_branch: active
+# 接收夹爪达到闭合阈值且新反馈稳定 0.5 秒后，再等 2 秒才松开原手。
+# 闭合确认单次超时 5 秒；确认失败时原手不松开。
+# 松开后原手水平向外侧避让（左臂 base +Y，右臂 base -Y），保持高度/姿态。
+# 交接后两手都不 go home；避让完成后持管手直接去插入。
+handover_retreat_distance_m: 0.20
+handover_receiver_stable_sec: 0.5
+handover_release_delay_sec: 2.0
+handover_close_timeout_sec: 5.0
+transition_json: null
+jaw_opening_axis: y
+jaw_perpendicular_turn: ccw
+extract_timing: after_all_inserts
+# 拔出前观察/转姿的最多纠偏次数；到位容差仍为 3 mm / 0.03 rad。
+extract_observe_max_correction_iters: 10
+initial_occupied: []
+wrist_view:
+  left:
+    row1_at: top
+    col1_at: left
+  right:
+    row1_at: top
+    col1_at: left
+cycles:
+- insert:
+  - 1
+  - 1
+  extract: 左上
+- insert:
+  - 3
+  - 1
+  extract: 左下
+- insert:
+  - 1
+  - 2
+  extract: 右上
+- insert:
+  - 3
+  - 2
+  extract: 右下
+
+# 抓取、转姿、提升、交接的 P2P 参数；与旧 demo 的速度/步长一致。
+# speed 单位分别是 m/s、rad/s；step 单位分别是 m、rad。
+# approach_* 单独控制夹取前的下探，不影响插孔下降速度。
+p2p:
+  rate_hz: 80
+  max_translation_speed: 0.12
+  max_rotation_speed: 0.6
+  max_translation_step: 0.003
+  max_rotation_step: 0.03
+  approach_max_translation_speed: 0.08
+  approach_max_rotation_speed: 0.4
+  approach_max_translation_step: 0.002
+  approach_max_rotation_step: 0.02

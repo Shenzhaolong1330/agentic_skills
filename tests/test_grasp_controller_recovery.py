@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 import numpy as np
 
@@ -85,6 +88,59 @@ def motion_args():
 
 
 class ControllerRecoveryTests(unittest.TestCase):
+    def test_compensation_exhaustion_does_not_reanchor_retry_or_recover(self):
+        class AtLimit(FakeMotionClient):
+            def dual_robot_move_to_ee_pose(self, left_target, right_target, **kwargs):
+                self.move_calls += 1
+                self.right = np.asarray([.0036137, 0, 0, 0, 0, .0284828])
+                return {'ok': False, 'stalled': {'reason': 'tracking_compensation_limit'}}
+        client = AtLimit()
+        args = motion_args()
+        args.position_tolerance_m = .003
+        args.rotation_tolerance_rad = .03
+        with redirect_stdout(io.StringIO()), self.assertRaisesRegex(RuntimeError, 'tracking_compensation_limit.*3.6137 mm'):
+            grasp.move_stage(client, 'stage1_test', np.zeros(6), np.zeros(6), args,
+                             recover_stalled_side='right_arm')
+        self.assertEqual(client.move_calls, 1)
+        self.assertEqual(client.reanchor_calls, 0)
+        self.assertEqual(client.recovery_calls, [])
+        # Same measured residual meets only the explicitly relaxed XY stage.
+        with redirect_stdout(io.StringIO()):
+            grasp.move_stage(AtLimit(), 'stage1_test', np.zeros(6), np.zeros(6), args,
+                             position_tolerance_m=.005, rotation_tolerance_rad=.05, settle_time_sec=.7)
+
+    def test_xy_and_lift_overrides_preserve_strict_descent(self):
+        client = Mock()
+        client.get_observation.return_value = {
+            'left_arm': {'end_pose': [0.] * 6}, 'right_arm': {'end_pose': [0.] * 6}}
+        def arrival(_client, _name, left, right, _args, **kwargs):
+            return left, right, {'ok': True}
+        with patch.object(grasp, 'DualFrankaRobotiqRpcClient', return_value=client), \
+             patch.object(grasp, 'reanchor'), \
+             patch.object(grasp, 'move_stage', side_effect=arrival) as move, redirect_stdout(io.StringIO()):
+            grasp.main(['--xyz', '[0.02,0,-0.1]', '--arm', 'right', '--execute', '--no-close',
+                        '--keep-current-rotation', '--no-return-transition',
+                        '--lift-after-grasp-m', '.12', '--lift-position-tolerance-m', '.005',
+                        '--lift-rotation-tolerance-rad', '.06',
+                        '--pregrasp-xy-position-tolerance-m', '.005',
+                        '--pregrasp-xy-rotation-tolerance-rad', '.05',
+                        '--pregrasp-xy-settle-time-sec', '.7'])
+        self.assertEqual(len(move.call_args_list), 3)
+        self.assertIn('move_z_to_target', move.call_args_list[1].args[1])
+        first = move.call_args_list[0]
+        self.assertEqual(first.kwargs['position_tolerance_m'], .005)
+        self.assertEqual(first.kwargs['rotation_tolerance_rad'], .05)
+        self.assertEqual(first.kwargs['settle_time_sec'], .7)
+        for call in move.call_args_list[1:2]:
+            args = call.args[4]
+            self.assertEqual(call.kwargs.get('position_tolerance_m') or args.position_tolerance_m, .003)
+            self.assertEqual(call.kwargs.get('rotation_tolerance_rad') or args.rotation_tolerance_rad, .03)
+            self.assertEqual(call.kwargs.get('settle_time_sec') or args.settle_time_sec, 2.)
+        lift = move.call_args_list[2]
+        self.assertEqual(lift.args[1], 'post_grasp_lift')
+        self.assertEqual(lift.kwargs['position_tolerance_m'], .005)
+        self.assertEqual(lift.kwargs['rotation_tolerance_rad'], .06)
+
     def test_rpc_client_exposes_server_recovery_method(self):
         calls = []
 

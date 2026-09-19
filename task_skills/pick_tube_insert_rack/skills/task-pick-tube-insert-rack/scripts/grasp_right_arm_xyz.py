@@ -185,6 +185,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--position_tolerance_m", "--position-tolerance-m", dest="position_tolerance_m", type=float, default=0.003)
     parser.add_argument("--rotation_tolerance_rad", "--rotation-tolerance-rad", dest="rotation_tolerance_rad", type=float, default=0.03)
+    parser.add_argument("--pregrasp-xy-position-tolerance-m", type=float,
+                        help="Stage1 XY positioning only; otherwise uses --position-tolerance-m.")
+    parser.add_argument("--pregrasp-xy-rotation-tolerance-rad", type=float,
+                        help="Stage1 XY positioning only; otherwise uses --rotation-tolerance-rad.")
+    parser.add_argument("--pregrasp-xy-settle-time-sec", type=float,
+                        help="Stage1 XY positioning only; otherwise uses --settle-time-sec.")
+    parser.add_argument("--lift-position-tolerance-m", type=float,
+                        help="Post-grasp lift only; otherwise uses --position-tolerance-m.")
+    parser.add_argument("--lift-rotation-tolerance-rad", type=float,
+                        help="Post-grasp lift only; otherwise uses --rotation-tolerance-rad.")
     parser.add_argument(
         "--transition-rotation-tolerance-rad",
         type=float,
@@ -283,12 +293,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Close-command retries after feedback does not reach --gripper-close-min-fraction.",
     )
     parser.add_argument("--after-close-sleep-sec", type=float, default=0.5)
+    parser.add_argument("--partner-gripper-stable-sec", type=float, default=0.5,
+                        help="Require fresh receiver position feedback stable for this duration before releasing the donor.")
+    parser.add_argument("--partner-gripper-close-timeout-sec", type=float, default=5.0)
     parser.add_argument(
         "--after-partner-close-sleep-sec",
         "--after-left-close-sleep-sec",
         dest="after_partner_close_sleep_sec",
         type=float,
-        default=0.5,
+        default=2.0,
     )
     parser.add_argument(
         "--after-active-open-sleep-sec",
@@ -298,11 +311,41 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.5,
     )
     parser.add_argument("--transition-json", type=Path, default=Path(__file__).resolve().with_name("transition.json"))
+    parser.add_argument(
+        "--transition-side",
+        choices=("left", "right"),
+        default=None,
+        help=(
+            "Transition state to load from transition.json. Defaults to the active grasp arm; "
+            "set this explicitly when the handover flow uses the partner-side transition state."
+        ),
+    )
     parser.add_argument("--no-return-transition", action="store_true", help="Do not move back to transition.json after grasp.")
     parser.add_argument(
         "--go-home-before-transition",
         action="store_true",
         help="Move both arms to the server home pose after grasping and before the transition; grippers are unchanged.",
+    )
+    post_transfer_motion = parser.add_mutually_exclusive_group()
+    post_transfer_motion.add_argument(
+        "--go-home-after-transfer",
+        action="store_true",
+        help="After the partner receives the object, move only the original active grasp arm to home.",
+    )
+    post_transfer_motion.add_argument(
+        "--retreat-after-transfer-m", type=float, default=0.0,
+        help="After release, translate only the donor outward in base Y (left +Y, right -Y), keeping height and rotation; no joint home.",
+    )
+    parser.add_argument(
+        "--go-home-after-grasp",
+        action="store_true",
+        help="Move both arms home after active gripper close confirmation, before any optional transition handling.",
+    )
+    parser.add_argument(
+        "--lift-after-grasp-m",
+        type=float,
+        default=0.0,
+        help="Lift the active arm upward in base-frame Z after grasp close confirmation, before home or transition.",
     )
     parser.add_argument("--pre-transition-home-duration-sec", type=float, default=5.0)
     parser.add_argument("--pre-transition-home-rate-hz", type=float, default=50.0)
@@ -390,6 +433,7 @@ def close_gripper_and_confirm(
     poll_sec: float,
     min_closed_fraction: float,
     retries: int,
+    stable_sec: float = 0.0,
 ) -> tuple[Any, dict[str, Any]]:
     """Send close and wait for physical position feedback before allowing later actions."""
     initial_state = gripper_state_from_observation(client.get_observation(), side)
@@ -399,17 +443,42 @@ def close_gripper_and_confirm(
     last_result: Any = None
 
     for attempt in range(1, retries + 2):
+        previous_stamp = final_state.get("stamp")
+        stable_since = None
+        stable_low = stable_high = None
         last_result = client.close_gripper(side)
         deadline = time.monotonic() + timeout_sec
         while True:
             final_state = gripper_state_from_observation(client.get_observation(), side)
             final_fraction = gripper_closed_fraction(final_state)
             enabled = final_state.get("enabled")
-            if (
+            now = time.monotonic()
+            closed = (
                 enabled is not False
                 and final_fraction is not None
                 and final_fraction >= min_closed_fraction
-            ):
+            )
+            if stable_sec > 0.0:
+                stamp = final_state.get("stamp")
+                fresh = stamp is not None and stamp != previous_stamp
+                previous_stamp = stamp
+                if not closed or not fresh:
+                    stable_since = None
+                elif stable_since is None:
+                    stable_since = now
+                    stable_low = stable_high = final_fraction
+                else:
+                    stable_low = min(stable_low, final_fraction)
+                    stable_high = max(stable_high, final_fraction)
+                    # A threshold crossing while the fingers still travel is
+                    # not a completed close. Bound total drift over the window.
+                    if stable_high - stable_low > 0.01:
+                        stable_since = now
+                        stable_low = stable_high = final_fraction
+                confirmed = closed and stable_since is not None and now - stable_since >= stable_sec
+            else:
+                confirmed = closed
+            if confirmed:
                 return last_result, {
                     "ok": True,
                     "side": side,
@@ -417,10 +486,10 @@ def close_gripper_and_confirm(
                     "min_closed_fraction": min_closed_fraction,
                     "initial_closed_fraction": initial_fraction,
                     "final_closed_fraction": final_fraction,
+                    "stable_sec": stable_sec,
                     "initial_state": gripper_state_summary(initial_state),
                     "final_state": gripper_state_summary(final_state),
                 }
-            now = time.monotonic()
             if now >= deadline:
                 break
             time.sleep(min(poll_sec, deadline - now))
@@ -434,7 +503,8 @@ def close_gripper_and_confirm(
         "final_closed_fraction": final_fraction,
         "initial_state": gripper_state_summary(initial_state),
         "final_state": gripper_state_summary(final_state),
-        "reason": "gripper feedback did not reach the minimum closed fraction",
+        "stable_sec": stable_sec,
+        "reason": "gripper feedback did not reach the closed threshold with the required fresh stable feedback",
     }
 
 
@@ -818,6 +888,16 @@ def move_stage(
                 print(f"{name}: accepting RPC ok=false because observed residual is within configured tolerance")
             return left_current, right_current, result
 
+        failure_detail = (
+            f"position_error={max(left_error['translation_norm_m'], right_error['translation_norm_m']) * 1000:.4f} mm; "
+            f"rotation_error={max(left_error['rotation_norm_rad'], right_error['rotation_norm_rad']):.4f} rad"
+        )
+        if (result.get("stalled") or {}).get("reason") == "tracking_compensation_limit":
+            # Re-entering P2P synchronizes away the compensation just accumulated.
+            # Do not repeat that whole cycle or recover a controller at this bound.
+            raise RuntimeError(f"{name} failed: tracking_compensation_limit; {failure_detail}; "
+                               "no full-target retry; no subsequent gripper commands")
+
         controller_recovered = False
         if controller_recovery_available:
             before = pose_for_side(left_before, right_before, recover_stalled_side)
@@ -875,35 +955,50 @@ def move_stage(
 
         raise RuntimeError(
             f"{name} failed after {attempt_number} P2P attempt(s); "
-            f"motion stopped before any subsequent gripper action "
-            f"(p2p_ok={result_ok}, residual_ok={residual_ok})"
+            f"no subsequent motion or gripper commands; robot stop unconfirmed "
+            f"(p2p_ok={result_ok}, residual_ok={residual_ok}); {failure_detail}"
         )
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    for name in ("pregrasp_xy_position_tolerance_m", "pregrasp_xy_rotation_tolerance_rad",
+                 "pregrasp_xy_settle_time_sec", "lift_position_tolerance_m", "lift_rotation_tolerance_rad"):
+        value = getattr(args, name)
+        if value is not None and (not math.isfinite(value) or value <= 0):
+            raise ValueError(f"--{name.replace('_', '-')} must be positive and finite")
     if not math.isfinite(args.grasp_arrival_observed_z_offset_m):
         raise ValueError("--grasp-arrival-observed-z-offset-m must be finite")
     if not math.isfinite(args.grasp_target_z_offset_m):
         raise ValueError("--grasp-target-z-offset-m must be finite")
+    if not math.isfinite(args.lift_after_grasp_m) or args.lift_after_grasp_m < 0.0:
+        raise ValueError("--lift-after-grasp-m must be a non-negative finite value")
     for name in (
         "controller_stall_translation_epsilon_m",
         "controller_stall_rotation_epsilon_rad",
         "controller_recovery_settle_time_sec",
         "gripper_close_timeout_sec",
         "gripper_close_poll_sec",
+        "partner_gripper_stable_sec",
+        "partner_gripper_close_timeout_sec",
+        "after_partner_close_sleep_sec",
+        "retreat_after_transfer_m",
     ):
         value = float(getattr(args, name))
         if not math.isfinite(value) or value < 0.0:
             raise ValueError(f"--{name.replace('_', '-')} must be a non-negative finite value")
     if args.gripper_close_poll_sec <= 0.0:
         raise ValueError("--gripper-close-poll-sec must be positive")
+    if args.partner_gripper_close_timeout_sec <= args.partner_gripper_stable_sec:
+        raise ValueError("--partner-gripper-close-timeout-sec must exceed --partner-gripper-stable-sec")
     if not math.isfinite(args.gripper_close_min_fraction) or not 0.0 <= args.gripper_close_min_fraction <= 1.0:
         raise ValueError("--gripper-close-min-fraction must be a finite value in [0, 1]")
     active_side = args.arm
     partner_side = other_side(active_side)
     active_label = short_side(active_side)
     partner_label = short_side(partner_side)
+    transition_side = args.transition_side or active_label
+    transition_side_arm = f"{transition_side}_arm"
 
     if args.result_json is not None:
         json_xyz, json_orientation_vector = load_target_from_result_json(
@@ -929,6 +1024,7 @@ def main(argv: list[str] | None = None) -> int:
             "planned_only": True,
             "active_arm": active_side,
             "partner_arm": partner_side,
+            "transition_side": transition_side_arm,
             "target_xyz": args.xyz.tolist() if hasattr(args.xyz, "tolist") else list(args.xyz),
             "raw_grasp_xyz": raw_grasp_xyz.tolist(),
             "grasp_target_z_offset_m": float(args.grasp_target_z_offset_m),
@@ -939,13 +1035,14 @@ def main(argv: list[str] | None = None) -> int:
             "grasp_arrival_observed_z_offset_m": float(args.grasp_arrival_observed_z_offset_m),
             "stages": [
                 "stage1_move_xy_keep_z",
-                "stage2_align_or_pitch_gripper",
+                "stage2_keep_current_rotation_skipped" if args.keep_current_rotation else "stage2_align_or_pitch_gripper",
                 "stage3_move_z_to_target",
                 "stage4_go_home_without_gripper_action" if args.go_home_before_transition else "stage4_go_home_skipped",
                 "stage4_return_transition" if not args.no_return_transition else "stage4_skipped",
             ],
             "would_close_gripper": not bool(args.no_close),
             "would_transfer_release": not bool(args.no_transfer_release or args.no_close),
+            "post_transfer_retreat_m": float(args.retreat_after_transfer_m),
             "would_stop_before_partner_close": bool(args.stop_before_partner_close),
             "would_stop_after_transfer_release": bool(args.stop_after_partner_close),
             "requires_execute_for_rpc": True,
@@ -998,6 +1095,9 @@ def main(argv: list[str] | None = None) -> int:
             left_target,
             right_target,
             args,
+            position_tolerance_m=args.pregrasp_xy_position_tolerance_m,
+            rotation_tolerance_rad=args.pregrasp_xy_rotation_tolerance_rad,
+            settle_time_sec=args.pregrasp_xy_settle_time_sec,
             recover_stalled_side=active_side,
         )
 
@@ -1022,16 +1122,22 @@ def main(argv: list[str] | None = None) -> int:
             print_pose("orientation_vector_base", args.orientation_vector)
             print("orientation alignment:", json.dumps(alignment, indent=None if args.compact else 2, ensure_ascii=False))
             stage2_name = "stage2_align_gripper_to_orientation"
-        stage2_active = np.array([args.xyz[0], args.xyz[1], active_current[2], *down_rotvec], dtype=float)
-        left_target, right_target = target_pair_for_active_side(active_side, stage2_active, partner_current)
-        left_current, right_current, _ = move_stage(
-            client,
-            f"{stage2_name}_{active_label}",
-            left_target,
-            right_target,
-            args,
-            recover_stalled_side=active_side,
-        )
+        if args.keep_current_rotation:
+            # XY was checked in stage1; no orientation change was requested.
+            # Re-running XY here would discard its stage-specific tolerance and
+            # repeat the same tracking corrections before the actual descent.
+            print(f"{stage2_name}_{active_label}: skipped; preserving measured rotation for descent")
+        else:
+            stage2_active = np.array([args.xyz[0], args.xyz[1], active_current[2], *down_rotvec], dtype=float)
+            left_target, right_target = target_pair_for_active_side(active_side, stage2_active, partner_current)
+            left_current, right_current, _ = move_stage(
+                client,
+                f"{stage2_name}_{active_label}",
+                left_target,
+                right_target,
+                args,
+                recover_stalled_side=active_side,
+            )
 
         if not args.skip_z:
             reanchor(client, enabled=not args.no_reanchor)
@@ -1100,12 +1206,33 @@ def main(argv: list[str] | None = None) -> int:
             if args.after_close_sleep_sec > 0:
                 time.sleep(args.after_close_sleep_sec)
 
-        if args.no_return_transition:
-            print("return transition skipped by --no-return-transition")
-            return 0
+        if args.lift_after_grasp_m > 0.0:
+            print("\n=== post_grasp_lift ===")
+            print(f"lifting {active_label} arm upward by {args.lift_after_grasp_m:.4f} m; gripper states are unchanged")
+            lift_left, lift_right = read_ee_poses(client)
+            if active_side == "left_arm":
+                lift_left = lift_left.copy()
+                lift_left[2] += args.lift_after_grasp_m
+            else:
+                lift_right = lift_right.copy()
+                lift_right[2] += args.lift_after_grasp_m
+            print_pose("lift_left_target", lift_left)
+            print_pose("lift_right_target", lift_right)
+            reanchor(client, enabled=not args.no_reanchor)
+            move_stage(
+                client,
+                "post_grasp_lift",
+                lift_left,
+                lift_right,
+                args,
+                position_tolerance_m=args.lift_position_tolerance_m,
+                rotation_tolerance_rad=args.lift_rotation_tolerance_rad,
+                recover_stalled_side=active_side,
+            )
 
-        if args.go_home_before_transition:
-            print("\n=== pre_transition_go_home ===")
+        if args.go_home_after_grasp or args.go_home_before_transition:
+            stage_name = "post_grasp_go_home" if args.go_home_after_grasp else "pre_transition_go_home"
+            print(f"\n=== {stage_name} ===")
             print("moving both arms home; gripper states are unchanged")
             home_result = client.go_home(
                 "both",
@@ -1117,11 +1244,19 @@ def main(argv: list[str] | None = None) -> int:
                 json.dumps(home_result, indent=None if args.compact else 2, ensure_ascii=False, default=str),
             )
             if isinstance(home_result, dict) and home_result.get("ok") is False:
-                raise RuntimeError(f"pre-transition go_home failed: {home_result}")
+                raise RuntimeError(f"{stage_name} failed: {home_result}")
 
-        transition_left, transition_right, transition_source = load_transition_targets(args.transition_json, active_side)
+        if args.no_return_transition:
+            print("return transition skipped by --no-return-transition")
+            return 0
+
+        transition_left, transition_right, transition_source = load_transition_targets(
+            args.transition_json,
+            transition_side_arm,
+        )
         print("\n=== transition_target ===")
         print("transition_json:", str(args.transition_json))
+        print("transition_side:", transition_side_arm)
         print("transition_source:", transition_source)
         print_pose("transition_left", transition_left)
         print_pose("transition_right", transition_right)
@@ -1149,10 +1284,11 @@ def main(argv: list[str] | None = None) -> int:
             partner_close_result, partner_close_confirmation = close_gripper_and_confirm(
                 client,
                 partner_side,
-                timeout_sec=args.gripper_close_timeout_sec,
+                timeout_sec=args.partner_gripper_close_timeout_sec,
                 poll_sec=args.gripper_close_poll_sec,
                 min_closed_fraction=args.gripper_close_min_fraction,
                 retries=args.gripper_close_retries,
+                stable_sec=args.partner_gripper_stable_sec,
             )
             print(
                 f"close_{partner_label}_gripper:",
@@ -1182,6 +1318,34 @@ def main(argv: list[str] | None = None) -> int:
             )
             if args.after_active_open_sleep_sec > 0:
                 time.sleep(args.after_active_open_sleep_sec)
+            if args.retreat_after_transfer_m > 0.0:
+                # Stay in Cartesian control. Joint home switches controllers and
+                # can leave an old equilibrium target active after the switch.
+                reanchor(client, enabled=True)
+                left_current, right_current = read_ee_poses(client)
+                donor_target = pose_for_side(left_current, right_current, active_side).copy()
+                donor_target[1] += (1.0 if active_side == "left_arm" else -1.0) * args.retreat_after_transfer_m
+                receiver_target = pose_for_side(left_current, right_current, partner_side).copy()
+                left_target, right_target = target_pair_for_active_side(active_side, donor_target, receiver_target)
+                move_stage(
+                    client, f"post_transfer_retreat_{active_label}", left_target, right_target, args,
+                    max_translation_speed=min(args.max_translation_speed, 0.04),
+                    max_translation_step=min(args.max_translation_step, 0.001),
+                )
+            if args.go_home_after_transfer:
+                print(f"\n=== post_transfer_go_home_{active_label} ===")
+                print(f"moving only {active_label} arm home after transfer; partner keeps the object")
+                home_result = client.go_home(
+                    active_side,
+                    args.pre_transition_home_duration_sec,
+                    args.pre_transition_home_rate_hz,
+                )
+                print(
+                    f"go_home_{active_label}_after_transfer:",
+                    json.dumps(home_result, indent=None if args.compact else 2, ensure_ascii=False, default=str),
+                )
+                if isinstance(home_result, dict) and home_result.get("ok") is False:
+                    raise RuntimeError(f"go_home_{active_label}_after_transfer failed: {home_result}")
             if args.stop_after_partner_close:
                 print(
                     f"stopped after close_{partner_label}_gripper and open_{active_label}_gripper "

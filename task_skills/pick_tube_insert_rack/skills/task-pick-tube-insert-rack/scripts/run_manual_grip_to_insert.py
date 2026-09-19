@@ -143,6 +143,35 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--wrist-perception-mode", choices=("cached-grid", "legacy-vlm"), default="legacy-vlm")
     parser.add_argument("--rack-grid-json", type=Path, default=None)
     parser.add_argument("--target-slot-id", default=None)
+    parser.add_argument(
+        "--jaw-perpendicular-to-rack",
+        action="store_true",
+        help="For a right-hand insertion, make the local jaw-opening axis perpendicular to the rack long axis.",
+    )
+    parser.add_argument(
+        "--jaw-opening-axis",
+        choices=("x", "y"),
+        default="y",
+        help="TCP local axis representing the gripper opening/closing direction (default: y).",
+    )
+    parser.add_argument(
+        "--jaw-perpendicular-turn",
+        choices=("ccw", "cw"),
+        default="ccw",
+        help="Signed 90-degree branch used for the jaw-to-rack orientation (default: ccw).",
+    )
+    parser.add_argument(
+        "--rack-axis-base",
+        type=skill.parse_json_vector3,
+        default=None,
+        help="Explicit rack long-axis direction in base frame, e.g. '[1, 0, 0]'.",
+    )
+    parser.add_argument(
+        "--rack-rgb",
+        type=Path,
+        default=None,
+        help="Initial RGB image used to estimate a rotated rack long axis.",
+    )
     parser.add_argument("--wrist-camera-socket", type=Path, default=None)
     parser.add_argument("--wrist-perception-report", type=Path, default=None)
 
@@ -355,6 +384,30 @@ def build_stage_commands(args: argparse.Namespace, *, holder_side: str) -> list[
             _str(args.left_hole_config),
             "--right-hole-config",
             _str(args.right_hole_config),
+            *(
+                ["--jaw-perpendicular-to-rack"]
+                if args.jaw_perpendicular_to_rack
+                else []
+            ),
+            "--jaw-opening-axis",
+            args.jaw_opening_axis,
+            "--jaw-perpendicular-turn",
+            args.jaw_perpendicular_turn,
+            *(
+                ["--rack-axis-base", json.dumps(args.rack_axis_base.tolist())]
+                if args.rack_axis_base is not None
+                else []
+            ),
+            *(
+                ["--rack-grid-json", _str(args.rack_grid_json)]
+                if args.rack_grid_json is not None
+                else []
+            ),
+            *(
+                ["--rack-rgb", _str(args.rack_rgb)]
+                if args.rack_rgb is not None
+                else []
+            ),
             "--roll-target-rad",
             _str(float(__import__("math").pi)),
             "--pitch-zero-rad",

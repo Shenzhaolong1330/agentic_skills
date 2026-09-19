@@ -151,6 +151,349 @@ def tcp_pitch_zero_rotvec(
     return R.from_euler("xyz", [roll, float(pitch_rad), float(rpy[2])]).as_rotvec()
 
 
+def _horizontal_unit(vector: np.ndarray, name: str) -> np.ndarray:
+    value = as_vector3(vector, name).copy()
+    value[2] = 0.0
+    norm = float(np.linalg.norm(value[:2]))
+    if norm <= 1e-9:
+        raise ValueError(f"{name} must have a usable base-frame xy direction: {vector!r}")
+    value[:2] /= norm
+    return value
+
+
+def _rack_axis_from_grid_payload(payload: Mapping[str, Any]) -> tuple[np.ndarray, dict[str, Any]]:
+    slots = payload.get("slots")
+    if not isinstance(slots, list):
+        raise ValueError("rack grid has no slots list")
+    by_index: dict[tuple[int, int], np.ndarray] = {}
+    for slot in slots:
+        if not isinstance(slot, Mapping):
+            continue
+        try:
+            row = int(slot["row"])
+            col = int(slot["col"])
+            point = as_vector3(slot["position_base_m"], f"rack_grid[{row},{col}].position_base_m")
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"invalid rack grid slot: {slot!r}") from exc
+        by_index[(row, col)] = point
+    if len(by_index) < 2:
+        raise ValueError("rack grid does not contain enough base-frame slots to infer an axis")
+
+    row_steps = [
+        by_index[(row + 1, col)] - by_index[(row, col)]
+        for row, col in by_index
+        if (row + 1, col) in by_index
+    ]
+    col_steps = [
+        by_index[(row, col + 1)] - by_index[(row, col)]
+        for row, col in by_index
+        if (row, col + 1) in by_index
+    ]
+    candidates: list[tuple[str, np.ndarray, float]] = []
+    if row_steps:
+        row_step = np.median(np.asarray(row_steps, dtype=float), axis=0)
+        row_span = float(np.linalg.norm(row_step[:2])) * max(
+            1,
+            max(row for row, _col in by_index) - min(row for row, _col in by_index),
+        )
+        candidates.append(("row", row_step, row_span))
+    if col_steps:
+        col_step = np.median(np.asarray(col_steps, dtype=float), axis=0)
+        col_span = float(np.linalg.norm(col_step[:2])) * max(
+            1,
+            max(col for _row, col in by_index) - min(col for _row, col in by_index),
+        )
+        candidates.append(("col", col_step, col_span))
+    if not candidates:
+        raise ValueError("rack grid has no adjacent base-frame slots")
+    axis_name, axis_step, axis_span = max(candidates, key=lambda item: item[2])
+    axis = _horizontal_unit(axis_step, f"rack_grid.{axis_name}_axis")
+    return axis, {
+        "source": "rack_grid_long_axis",
+        "axis_name": axis_name,
+        "axis_base": axis.tolist(),
+        "span_m": axis_span,
+        "slot_count": len(by_index),
+    }
+
+
+def _base_T_camera_from_config(config_path: Path) -> np.ndarray:
+    config = yaml.safe_load(config_path.expanduser().resolve().read_text(encoding="utf-8")) or {}
+    calibration = config.get("calibration") or {}
+    calibration_file = calibration.get("file")
+    active_camera = str(calibration.get("active_camera") or "head")
+    if not calibration_file:
+        raise ValueError(f"{config_path} has no calibration.file")
+    calibration_path = Path(str(calibration_file))
+    if not calibration_path.is_absolute():
+        calibration_path = config_path.expanduser().resolve().parent / calibration_path
+    raw = yaml.safe_load(calibration_path.read_text(encoding="utf-8")) or {}
+    camera = (raw.get("cameras") or {}).get(active_camera) or {}
+    transform = camera.get("base_T_camera")
+    if not isinstance(transform, Mapping) or "matrix" not in transform:
+        raise ValueError(f"calibration camera {active_camera!r} has no base_T_camera matrix")
+    matrix = np.asarray(transform["matrix"], dtype=float).reshape(4, 4)
+    if not np.all(np.isfinite(matrix)):
+        raise ValueError(f"base_T_camera for {active_camera!r} contains non-finite values")
+    return matrix
+
+
+def _pixel_ray_plane_base(
+    pixel: np.ndarray,
+    intrinsics: Mapping[str, Any],
+    base_T_camera: np.ndarray,
+    plane_z_base_m: float,
+) -> np.ndarray:
+    u, v = np.asarray(pixel, dtype=float).reshape(2)
+    ray_camera = np.array(
+        [
+            (u - float(intrinsics["ppx"])) / float(intrinsics["fx"]),
+            (v - float(intrinsics["ppy"])) / float(intrinsics["fy"]),
+            1.0,
+        ],
+        dtype=float,
+    )
+    transform = np.asarray(base_T_camera, dtype=float).reshape(4, 4)
+    origin = transform[:3, 3]
+    ray = transform[:3, :3] @ ray_camera
+    if abs(float(ray[2])) <= 1e-9:
+        raise ValueError("rack bbox ray is parallel to the configured rack plane")
+    scale = (float(plane_z_base_m) - origin[2]) / ray[2]
+    if not np.isfinite(scale) or scale <= 0.0:
+        raise ValueError("rack bbox ray does not intersect the rack plane in front of the camera")
+    return origin + scale * ray
+
+
+def _rack_axis_from_bbox_result(
+    rack_result: Mapping[str, Any],
+    *,
+    rack_config: Path,
+    rack_plane_z_base_m: float | None,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    detection = rack_result.get("detection")
+    bbox = detection.get("bbox") if isinstance(detection, Mapping) else None
+    if not isinstance(bbox, Mapping):
+        raise ValueError("cached rack result has no detection.bbox for rack-axis inference")
+    try:
+        x_min = float(bbox["x_min"])
+        y_min = float(bbox["y_min"])
+        x_max = float(bbox["x_max"])
+        y_max = float(bbox["y_max"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"invalid cached rack bbox: {bbox!r}") from exc
+    width = x_max - x_min
+    height = y_max - y_min
+    if width <= 1.0 or height <= 1.0:
+        raise ValueError(f"cached rack bbox is degenerate: {bbox!r}")
+    image_axis = np.array([1.0, 0.0]) if width >= height else np.array([0.0, 1.0])
+    center = np.array([(x_min + x_max) * 0.5, (y_min + y_max) * 0.5], dtype=float)
+    half_length = 0.5 * max(width, height)
+    intrinsics = rack_result.get("intrinsics")
+    if not isinstance(intrinsics, Mapping):
+        raise ValueError("cached rack result has no intrinsics for rack-axis inference")
+    position_base = rack_result.get("position_base")
+    if not isinstance(position_base, Mapping):
+        raise ValueError("cached rack result has no position_base for rack-axis inference")
+    plane_z = (
+        float(rack_plane_z_base_m)
+        if rack_plane_z_base_m is not None
+        else float(position_base["z_m"])
+    )
+    base_T_camera = _base_T_camera_from_config(rack_config)
+    point_a = _pixel_ray_plane_base(center - image_axis * half_length, intrinsics, base_T_camera, plane_z)
+    point_b = _pixel_ray_plane_base(center + image_axis * half_length, intrinsics, base_T_camera, plane_z)
+    axis = _horizontal_unit(point_b - point_a, "rack_bbox_long_axis")
+    return axis, {
+        "source": "cached_rack_bbox_long_axis",
+        "axis_base": axis.tolist(),
+        "image_axis": image_axis.tolist(),
+        "bbox": {"x_min": x_min, "y_min": y_min, "x_max": x_max, "y_max": y_max},
+        "bbox_long_side_px": max(width, height),
+        "rack_plane_z_base_m": plane_z,
+    }
+
+
+def _rack_axis_from_rgb_result(
+    rack_result: Mapping[str, Any],
+    *,
+    rack_rgb: Path,
+    rack_config: Path,
+    rack_plane_z_base_m: float | None,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    try:
+        import cv2
+    except ImportError as exc:
+        raise ValueError("OpenCV is unavailable for rack RGB axis inference") from exc
+    image = cv2.imread(str(rack_rgb.expanduser().resolve()), cv2.IMREAD_COLOR)
+    if image is None:
+        raise ValueError(f"could not read rack RGB image: {rack_rgb}")
+    detection = rack_result.get("detection")
+    bbox = detection.get("bbox") if isinstance(detection, Mapping) else None
+    intrinsics = rack_result.get("intrinsics")
+    position_base = rack_result.get("position_base")
+    if not isinstance(bbox, Mapping) or not isinstance(intrinsics, Mapping) or not isinstance(position_base, Mapping):
+        raise ValueError("cached rack result is missing bbox, intrinsics, or position_base for RGB axis inference")
+    x_min = max(0, int(np.floor(float(bbox["x_min"]))))
+    y_min = max(0, int(np.floor(float(bbox["y_min"]))))
+    x_max = min(image.shape[1] - 1, int(np.ceil(float(bbox["x_max"]))))
+    y_max = min(image.shape[0] - 1, int(np.ceil(float(bbox["y_max"]))))
+    if x_max <= x_min or y_max <= y_min:
+        raise ValueError(f"cached rack bbox is outside the RGB image: {bbox!r}")
+    roi = image[y_min : y_max + 1, x_min : x_max + 1]
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    red_mask = (
+        ((hsv[:, :, 0] <= 12) | (hsv[:, :, 0] >= 170))
+        & (hsv[:, :, 1] >= 50)
+        & (hsv[:, :, 2] >= 35)
+    )
+    ys, xs = np.nonzero(red_mask)
+    if len(xs) < max(200, int(0.08 * roi.shape[0] * roi.shape[1])):
+        raise ValueError("no sufficiently large red rack region in the cached RGB crop")
+    points = np.column_stack([xs, ys]).astype(float)
+    center_px = np.mean(points, axis=0) + np.array([x_min, y_min], dtype=float)
+    centered = points - np.mean(points, axis=0)
+    covariance = np.cov(centered, rowvar=False)
+    eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+    image_axis = np.asarray(eigenvectors[:, int(np.argmax(eigenvalues))], dtype=float)
+    image_axis /= float(np.linalg.norm(image_axis))
+    if image_axis[1] < 0.0:
+        image_axis = -image_axis
+    width = float(bbox["x_max"]) - float(bbox["x_min"])
+    height = float(bbox["y_max"]) - float(bbox["y_min"])
+    half_length = 0.5 * max(width, height)
+    plane_z = (
+        float(rack_plane_z_base_m)
+        if rack_plane_z_base_m is not None
+        else float(position_base["z_m"])
+    )
+    base_T_camera = _base_T_camera_from_config(rack_config)
+    point_a = _pixel_ray_plane_base(center_px - image_axis * half_length, intrinsics, base_T_camera, plane_z)
+    point_b = _pixel_ray_plane_base(center_px + image_axis * half_length, intrinsics, base_T_camera, plane_z)
+    axis = _horizontal_unit(point_b - point_a, "rack_rgb_long_axis")
+    return axis, {
+        "source": "cached_rack_rgb_color_pca",
+        "axis_base": axis.tolist(),
+        "image_axis": image_axis.tolist(),
+        "color": "red",
+        "color_pixel_count": int(len(xs)),
+        "rack_plane_z_base_m": plane_z,
+    }
+
+
+def resolve_rack_axis_base(
+    *,
+    explicit_axis: np.ndarray | None,
+    rack_grid_json: Path | None,
+    rack_result_json: Path | None,
+    rack_rgb: Path | None,
+    rack_config: Path,
+    rack_plane_z_base_m: float | None,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    if explicit_axis is not None:
+        axis = _horizontal_unit(explicit_axis, "rack_axis_base")
+        return axis, {"source": "explicit_cli", "axis_base": axis.tolist()}
+    if rack_grid_json is not None:
+        grid_path = rack_grid_json.expanduser().resolve()
+        if not grid_path.exists():
+            raise FileNotFoundError(f"rack grid JSON does not exist: {grid_path}")
+        return _rack_axis_from_grid_payload(load_result_json(grid_path))
+    if rack_result_json is not None:
+        rack_path = rack_result_json.expanduser().resolve()
+        if not rack_path.exists():
+            raise FileNotFoundError(f"cached rack result JSON does not exist: {rack_path}")
+        rack_result = load_result_json(rack_path)
+        if rack_rgb is not None:
+            rgb_path = rack_rgb.expanduser().resolve()
+            if not rgb_path.exists():
+                raise FileNotFoundError(f"rack RGB image does not exist: {rgb_path}")
+            try:
+                return _rack_axis_from_rgb_result(
+                    rack_result,
+                    rack_rgb=rgb_path,
+                    rack_config=rack_config,
+                    rack_plane_z_base_m=rack_plane_z_base_m,
+                )
+            except ValueError as exc:
+                axis, report = _rack_axis_from_bbox_result(
+                    rack_result,
+                    rack_config=rack_config,
+                    rack_plane_z_base_m=rack_plane_z_base_m,
+                )
+                report["rgb_axis_fallback_reason"] = str(exc)
+                return axis, report
+        return _rack_axis_from_bbox_result(
+            rack_result,
+            rack_config=rack_config,
+            rack_plane_z_base_m=rack_plane_z_base_m,
+        )
+    raise RuntimeError(
+        "rack-axis orientation requires --rack-axis-base, --rack-grid-json, "
+        "or cached --rack-result-json"
+    )
+
+
+def tcp_jaw_perpendicular_to_rack_rotvec(
+    holder_pose: np.ndarray,
+    *,
+    rack_axis_base: np.ndarray,
+    jaw_opening_axis: str,
+    perpendicular_turn: str,
+    pitch_rad: float = 0.0,
+    roll_rad: float | None = None,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    if jaw_opening_axis not in {"x", "y"}:
+        raise ValueError(f"jaw_opening_axis must be 'x' or 'y', got {jaw_opening_axis!r}")
+    if perpendicular_turn not in {"ccw", "cw"}:
+        raise ValueError(f"perpendicular_turn must be 'ccw' or 'cw', got {perpendicular_turn!r}")
+    pose = as_pose6(holder_pose, "holder_pose")
+    rack_axis = _horizontal_unit(rack_axis_base, "rack_axis_base")
+    rpy = R.from_rotvec(pose[3:]).as_euler("xyz")
+    roll = float(rpy[0]) if roll_rad is None else nearest_equivalent_angle(float(roll_rad), float(rpy[0]))
+    rack_yaw = float(np.arctan2(rack_axis[1], rack_axis[0]))
+    turn_sign = 1.0 if perpendicular_turn == "ccw" else -1.0
+    # The existing grasp policy uses local x to align the gripper body with
+    # the tube axis. For this Robotiq TCP, the finger opening/closing direction
+    # is therefore local y. The caller may override this calibrated convention.
+    # Select a deterministic +90/-90 branch instead of choosing whichever is
+    # closest to the current pose.
+    yaw_target = (
+        rack_yaw + turn_sign * 0.5 * np.pi
+        if jaw_opening_axis == "x"
+        else rack_yaw + (0.5 * (turn_sign + 1.0)) * np.pi
+    )
+    yaw = nearest_equivalent_angle(yaw_target, float(rpy[2]))
+    rotation = R.from_euler("xyz", [roll, float(pitch_rad), yaw])
+    matrix = rotation.as_matrix()
+    axis_index = 0 if jaw_opening_axis == "x" else 1
+    jaw_axis_xy = matrix[:2, axis_index]
+    jaw_axis_xy_norm = float(np.linalg.norm(jaw_axis_xy))
+    if jaw_axis_xy_norm <= 1e-9:
+        raise ValueError("selected jaw opening axis has no usable horizontal projection")
+    jaw_axis_xy = jaw_axis_xy / jaw_axis_xy_norm
+    perpendicularity = float(np.dot(jaw_axis_xy, rack_axis[:2]))
+    if abs(perpendicularity) > 0.05:
+        raise ValueError(
+            "computed jaw/rack orientation is not perpendicular: "
+            f"dot={perpendicularity:.6f}"
+        )
+    rotvec = rotation.as_rotvec()
+    return rotvec, {
+        "axis_source": "rack_axis_perpendicular",
+        "rack_axis_base": rack_axis.tolist(),
+        "rack_axis_yaw_rad": rack_yaw,
+        "jaw_opening_axis_local": jaw_opening_axis,
+        "jaw_opening_axis_base_xy": jaw_axis_xy.tolist(),
+        "jaw_rack_dot": perpendicularity,
+        "perpendicular_turn": perpendicular_turn,
+        "perpendicular_turn_deg": 90.0 if perpendicular_turn == "ccw" else -90.0,
+        "roll_target_rad": roll,
+        "pitch_rad": float(pitch_rad),
+        "yaw_rad": float(yaw),
+        "euler_xyz_rad": rotation.as_euler("xyz").tolist(),
+        "rotvec_rad": rotvec.tolist(),
+    }
+
+
 def pose6_to_matrix(pose6: np.ndarray) -> np.ndarray:
     pose = as_pose6(pose6, "pose6")
     matrix = np.eye(4, dtype=float)
@@ -441,16 +784,19 @@ def recover_object_locator_after_camera_reset(
     any_pose_dir: Path,
     config_path: Path,
     capture_ready_file: Path,
+    *,
+    extra_args: list[str] | None = None,
 ) -> tuple[PendingObjectLocator, dict[str, Any]]:
-    """Retry capture with forced hardware reset, tolerating delayed UVC release."""
-    recovery_sec = _capture_watchdog_seconds("REALSENSE_RESET_CAPTURE_TIMEOUT_SEC", 15.0)
+    """One clean reopen, then bounded reset recovery; never reset another owner."""
+    recovery_sec = _capture_watchdog_seconds("REALSENSE_RESET_CAPTURE_TIMEOUT_SEC", 30.0)
     cooldown_sec = _capture_watchdog_seconds("REALSENSE_RESET_COOLDOWN_SEC", 2.0)
-    max_attempts = _capture_watchdog_attempts("REALSENSE_RESET_MAX_ATTEMPTS", 3)
+    max_attempts = _capture_watchdog_attempts("REALSENSE_RESET_MAX_ATTEMPTS", 1)
     last_error: Exception | None = None
-    for attempt in range(1, max_attempts + 1):
+    for attempt in range(0, max_attempts + 1):
+        action = "clean reopen" if attempt == 0 else f"reset attempt {attempt}/{max_attempts}"
         print(
             f"[tube-insertion] waiting {cooldown_sec:.1f}s for RealSense USB handle release "
-            f"before reset attempt {attempt}/{max_attempts}",
+            f"before {action}",
             file=sys.stderr,
             flush=True,
         )
@@ -459,7 +805,7 @@ def recover_object_locator_after_camera_reset(
             any_pose_dir,
             config_path,
             capture_ready_file,
-            extra_args=["--reset-realsense"],
+            extra_args=[*(extra_args or []), *(["--reset-realsense"] if attempt else [])],
         )
         try:
             capture_status = wait_for_object_locator_capture(
@@ -470,41 +816,71 @@ def recover_object_locator_after_camera_reset(
             last_error = exc
             cancel_pending_object_locator(pending)
             print(
-                f"[tube-insertion] RealSense reset attempt {attempt}/{max_attempts} failed: {exc}",
+                f"[tube-insertion] RealSense {action} failed: {exc}",
                 file=sys.stderr,
                 flush=True,
             )
+            if not _recoverable_camera_capture_error(exc):
+                raise  # ownership, reset cooldown, bad config: no further recovery.
             continue
         print(
-            f"[tube-insertion] RealSense recovered on reset attempt {attempt}/{max_attempts}; "
+            f"[tube-insertion] RealSense recovered on {action}; "
             "continuing inference",
             file=sys.stderr,
             flush=True,
         )
-        return pending, capture_status
+        return pending, {**capture_status, "reset_attempted": attempt > 0, "clean_reopen_attempted": True}
     raise RuntimeError(
         f"RealSense did not recover after {max_attempts} forced reset attempt(s) "
         f"for config={config_path}: {last_error}"
     ) from last_error
 
 
-def run_object_locator(any_pose_dir: Path, config_path: Path) -> dict[str, Any]:
-    """Run locator with a camera-only watchdog and one forced-reset retry.
+def _recoverable_camera_capture_error(exc: Exception) -> bool:
+    if isinstance(exc, TimeoutError):
+        return True
+    message = str(exc).lower()
+    if any(token in message for token in ("already in use", "device or resource busy", "reset cooldown", "failed to release realsense")):
+        return False
+    control_error = any(token in message for token in ("get_xu(", "set_xu(", "xioctl(", "set_cur"))
+    transient = any(token in message for token in (
+        "connection timed out", "protocol error", "errno=110",
+    ))
+    return (control_error and transient) or "realsense frame did not arrive" in message
+
+
+def run_object_locator(any_pose_dir: Path, config_path: Path, *, debug_dir: Path | None = None,
+                       extra_args: list[str] | None = None) -> dict[str, Any]:
+    """Run locator with a camera-only watchdog and bounded reset recovery.
 
     The short watchdog covers only RGB-D capture. Once capture_ready is written,
     VLM/SAM inference may take its normal configured amount of time.
     """
-    watchdog_sec = _capture_watchdog_seconds("REALSENSE_CAPTURE_WATCHDOG_SEC", 3.0)
+    watchdog_sec = _capture_watchdog_seconds("REALSENSE_CAPTURE_WATCHDOG_SEC", 30.0)
     signal_dir = Path("/tmp/agentic_skills_runs/object_locator_capture_watchdog")
     signal_file = signal_dir / f"capture_ready_{os.getpid()}_{time.time_ns()}.json"
+    debug_args: list[str] = list(extra_args or [])
+    if debug_dir is not None:
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        stem = Path(config_path).stem
+        debug_args += [
+            "--output",
+            str(debug_dir / f"{stem}_bbox_arrow_panel.jpg"),
+            "--output-rgb",
+            str(debug_dir / f"{stem}_bbox_arrow_rgb.jpg"),
+            "--output-depth",
+            str(debug_dir / f"{stem}_bbox_arrow_depth.jpg"),
+        ]
 
     def start(*, reset_realsense: bool) -> PendingObjectLocator:
-        extra_args = ["--reset-realsense"] if reset_realsense else None
+        extra_args = list(debug_args)
+        if reset_realsense:
+            extra_args.append("--reset-realsense")
         return start_object_locator_after_capture_signal(
             any_pose_dir,
             config_path,
             signal_file,
-            extra_args=extra_args,
+            extra_args=extra_args or None,
         )
 
     total_started = time.monotonic()
@@ -515,13 +891,15 @@ def run_object_locator(any_pose_dir: Path, config_path: Path) -> dict[str, Any]:
     try:
         try:
             capture_status = wait_for_object_locator_capture(pending, timeout_sec=watchdog_sec)
-        except TimeoutError:
+        except (TimeoutError, RuntimeError) as exc:
+            if not _recoverable_camera_capture_error(exc):
+                raise
             reset_attempted = True
             reset_started = time.monotonic()
             cancel_pending_object_locator(pending)
             print(
-                f"[tube-insertion] RealSense produced no frame within {watchdog_sec:.1f}s; "
-                f"forcing camera reset and retry for config={config_path}",
+                f"[tube-insertion] RealSense capture failed before inference: {exc}; "
+                f"attempting clean reopen then bounded reset for config={config_path}",
                 file=sys.stderr,
                 flush=True,
             )
@@ -529,7 +907,9 @@ def run_object_locator(any_pose_dir: Path, config_path: Path) -> dict[str, Any]:
                 any_pose_dir,
                 config_path,
                 signal_file,
+                extra_args=debug_args,
             )
+            reset_attempted = bool(capture_status.get("reset_attempted", True))
         inference_started = time.monotonic()
         result = finish_pending_object_locator(pending)
         timings = {
@@ -542,6 +922,8 @@ def run_object_locator(any_pose_dir: Path, config_path: Path) -> dict[str, Any]:
         result["task_timings_sec"] = timings
         return result
     finally:
+        if pending.process.poll() is None:
+            cancel_pending_object_locator(pending)
         signal_file.unlink(missing_ok=True)
 
 
@@ -570,6 +952,7 @@ def start_object_locator_after_capture_signal(
         config_path,
         extra_args=invocation_args,
     )
+    env["OBJECT_LOCATOR_CAPTURE_WORKER"] = "1"
     process = subprocess.Popen(
         command,
         cwd=str(any_pose_dir),
@@ -712,20 +1095,23 @@ def move_side_to_home(
     # equilibrium target. Re-anchor both Cartesian targets before the next P2P
     # so the non-holder arm is not pulled back toward its pre-home pose.
     try:
-        anchor_observation = client.reset()
+        # Reset also reactivates grippers on the configured server. Target
+        # synchronization must preserve an object held by the other arm.
+        anchor_result = client.step(None)
+        anchor_observation = anchor_result["observation"]
         anchor_poses = {
             side: _pose_from_side_observation(anchor_observation, side_arm_key(side))
             for side in ("left", "right")
         }
         stage["cartesian_target_reanchor"] = {
             "ok": True,
-            "method": "rpc_reset_target_to_current",
+            "method": "rpc_step_none_target_to_current",
             "poses": anchor_poses,
         }
     except Exception as exc:
         stage["cartesian_target_reanchor"] = {
             "ok": False,
-            "method": "rpc_reset_target_to_current",
+            "method": "rpc_step_none_target_to_current",
             "error": str(exc),
         }
         failed_result = dict(home_result)
@@ -810,6 +1196,12 @@ def move_dual_absolute(
     if not execute:
         return plan
 
+    # Persist the intended stage before starting an RPC trajectory. Ctrl-C or a
+    # lost reply must not erase the only record of the commanded target.
+    args.artifact_dir.mkdir(parents=True, exist_ok=True)
+    with (args.artifact_dir / "motion_stages.jsonl").open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps({**plan, "event": "before_motion"}, ensure_ascii=False) + "\n")
+        stream.flush()
     result = client.dual_robot_move_to_ee_pose(
         left_target.tolist(),
         right_target.tolist(),
@@ -827,6 +1219,8 @@ def move_dual_absolute(
         max_correction_iters=args.max_correction_iters,
         max_steps=args.max_steps,
     )
+    with (args.artifact_dir / "motion_stages.jsonl").open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps({**plan, "event": "after_motion", "result": result}, ensure_ascii=False, default=str) + "\n")
     return {**plan, "result": result}
 
 
@@ -926,6 +1320,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--rack-config", type=Path, default=ANY_POSE_DIR / "config_rack_center_vlm.yaml")
     parser.add_argument(
+        "--rack-grid-json",
+        type=Path,
+        default=None,
+        help="Cached rack grid used to infer the rack long-axis direction for insertion orientation.",
+    )
+    parser.add_argument(
+        "--rack-rgb",
+        type=Path,
+        default=None,
+        help="Initial RGB image used to estimate a rotated rack long axis from its color region.",
+    )
+    parser.add_argument(
         "--rack-result-json",
         type=Path,
         default=None,
@@ -941,7 +1347,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--rack-capture-ready-timeout-sec",
         type=float,
-        default=3.0,
+        default=30.0,
         help="Head-camera no-frame watchdog before a forced RealSense reset (default: 3 seconds).",
     )
     parser.add_argument("--left-hole-config", type=Path, default=DEFAULT_HOLE_CONFIG["left"])
@@ -993,6 +1399,32 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--jaw-perpendicular-to-rack",
+        action="store_true",
+        help=(
+            "For the right holder arm, orient the selected local jaw-opening axis perpendicular "
+            "to the rack long axis before observation and insertion."
+        ),
+    )
+    parser.add_argument(
+        "--jaw-opening-axis",
+        choices=("x", "y"),
+        default="y",
+        help="TCP local axis that represents the gripper opening/closing direction (default: y).",
+    )
+    parser.add_argument(
+        "--jaw-perpendicular-turn",
+        choices=("ccw", "cw"),
+        default="ccw",
+        help="Choose the signed 90-degree jaw-to-rack turn (default: ccw, the opposite branch used previously).",
+    )
+    parser.add_argument(
+        "--rack-axis-base",
+        type=parse_json_vector3,
+        default=None,
+        help="Explicit rack long-axis direction in base frame, e.g. '[1, 0, 0]'.",
+    )
+    parser.add_argument(
         "--no-yield-non-holder-arm",
         action="store_false",
         dest="yield_non_holder_arm",
@@ -1030,6 +1462,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-align-tube-axis",
         action="store_true",
         help="Keep the current TCP orientation instead of aligning the detected tube axis to the hole axis.",
+    )
+    parser.add_argument(
+        "--direct-observation",
+        action="store_true",
+        help=(
+            "Move the holder directly to the rack observation position with the target vertical TCP "
+            "orientation; skip separate pre-observation and post-observation posture corrections."
+        ),
     )
     parser.add_argument("--execute", action="store_true", help="Allow P2P moves to observation and pre-insert poses.")
     parser.add_argument("--execute-insertion", action="store_true", help="Allow the final guarded insertion descent.")
@@ -1158,12 +1598,54 @@ def main(argv: list[str] | None = None) -> int:
                 tcp_to_tip_m=tcp_to_tip,
             )
         preinsert_tcp_rotvec = holder_pose[3:].copy()
+        rack_axis_base = None
+        rack_axis_report: dict[str, Any] | None = None
+        if args.jaw_perpendicular_to_rack and holder_side == "right":
+            if args.aligned_tcp_rotvec is not None or args.align_tube_axis or args.no_align_tube_axis:
+                raise RuntimeError(
+                    "--jaw-perpendicular-to-rack is incompatible with explicit tube-axis "
+                    "alignment or --no-align-tube-axis; use the rack-axis posture as the "
+                    "single insertion orientation policy"
+                )
+            rack_config_path = args.rack_config
+            if not rack_config_path.is_absolute():
+                rack_config_path = args.any_pose_dir / rack_config_path
+            rack_axis_base, rack_axis_report = resolve_rack_axis_base(
+                explicit_axis=args.rack_axis_base,
+                rack_grid_json=args.rack_grid_json,
+                rack_result_json=args.rack_result_json,
+                rack_rgb=args.rack_rgb,
+                rack_config=rack_config_path,
+                rack_plane_z_base_m=args.rack_plane_z_base_m,
+            )
         axis_alignment: dict[str, Any] = {
             "enabled": not bool(args.no_align_tube_axis),
             "axis_source": axis_source,
             "desired_tube_axis_base": desired_tube_axis_base.tolist(),
         }
-        if args.aligned_tcp_rotvec is not None:
+        if rack_axis_base is not None:
+            rack_roll_target = np.pi if args.roll_target_rad is None else args.roll_target_rad
+            preinsert_tcp_rotvec, jaw_alignment = tcp_jaw_perpendicular_to_rack_rotvec(
+                holder_pose,
+                rack_axis_base=rack_axis_base,
+                jaw_opening_axis=args.jaw_opening_axis,
+                perpendicular_turn=args.jaw_perpendicular_turn,
+                pitch_rad=args.pitch_zero_rad,
+                roll_rad=rack_roll_target,
+            )
+            axis_alignment.update(
+                {
+                    "enabled": True,
+                    "axis_source": "rack_axis_perpendicular",
+                    "rack_axis_inference": rack_axis_report,
+                    "jaw_alignment": jaw_alignment,
+                    "tcp_rotvec_before": holder_pose[3:].tolist(),
+                    "tcp_rotvec_after": preinsert_tcp_rotvec.tolist(),
+                    "euler_xyz_before": R.from_rotvec(holder_pose[3:]).as_euler("xyz").tolist(),
+                    "euler_xyz_after": R.from_rotvec(preinsert_tcp_rotvec).as_euler("xyz").tolist(),
+                }
+            )
+        elif args.aligned_tcp_rotvec is not None:
             preinsert_tcp_rotvec = np.asarray(args.aligned_tcp_rotvec, dtype=float).reshape(3)
             axis_alignment.update(
                 {
@@ -1215,6 +1697,16 @@ def main(argv: list[str] | None = None) -> int:
                 }
             )
         report["axis_alignment"] = axis_alignment
+        if rack_axis_report is not None:
+            print(
+                "[tube-insertion] rack-axis posture: "
+                f"source={rack_axis_report.get('source')} "
+                f"rack_axis_base={rack_axis_report.get('axis_base')} "
+                f"jaw_axis={args.jaw_opening_axis} "
+                f"jaw_rack_dot={axis_alignment['jaw_alignment'].get('jaw_rack_dot')}",
+                file=sys.stderr,
+                flush=True,
+            )
 
         cached_rack = args.rack_result_json is not None
         rack_concurrency: dict[str, Any] = {
@@ -1244,6 +1736,16 @@ def main(argv: list[str] | None = None) -> int:
             rack_capture_ready_file = args.artifact_dir / (
                 f"rack_capture_ready_{os.getpid()}_{time.time_ns()}.json"
             )
+            rack_debug_dir = args.artifact_dir / "debug_overlays"
+            rack_debug_dir.mkdir(parents=True, exist_ok=True)
+            rack_debug_args = [
+                "--output",
+                str(rack_debug_dir / "parallel_rack_bbox_arrow_panel.jpg"),
+                "--output-rgb",
+                str(rack_debug_dir / "parallel_rack_bbox_arrow_rgb.jpg"),
+                "--output-depth",
+                str(rack_debug_dir / "parallel_rack_bbox_arrow_depth.jpg"),
+            ]
             print(
                 "[tube-insertion] capturing head-camera rack frame before robot preparation",
                 file=sys.stderr,
@@ -1253,17 +1755,20 @@ def main(argv: list[str] | None = None) -> int:
                 args.any_pose_dir,
                 args.rack_config,
                 rack_capture_ready_file,
+                extra_args=rack_debug_args,
             )
             try:
                 capture_status = wait_for_object_locator_capture(
                     pending_rack_locator,
                     timeout_sec=args.rack_capture_ready_timeout_sec,
                 )
-            except TimeoutError:
+            except (TimeoutError, RuntimeError) as exc:
+                if not _recoverable_camera_capture_error(exc):
+                    raise
                 cancel_pending_object_locator(pending_rack_locator)
                 print(
-                    f"[tube-insertion] head RealSense produced no frame within "
-                    f"{args.rack_capture_ready_timeout_sec:.1f}s; forcing reset",
+                    f"[tube-insertion] head RealSense capture failed: {exc}; "
+                    "attempting clean reopen then bounded reset",
                     file=sys.stderr,
                     flush=True,
                 )
@@ -1271,6 +1776,7 @@ def main(argv: list[str] | None = None) -> int:
                     args.any_pose_dir,
                     args.rack_config,
                     rack_capture_ready_file,
+                    extra_args=rack_debug_args,
                 )
             rack_concurrency.update(
                 {
@@ -1329,33 +1835,47 @@ def main(argv: list[str] | None = None) -> int:
 
         observation, poses = read_ee_poses(client)
         holder_pose = poses[holder_side]
-        aligned_holder_pose = holder_pose.copy()
-        aligned_holder_pose[3:] = preinsert_tcp_rotvec
-        align_stage = move_dual_absolute(
-            client=client,
-            side=holder_side,
-            side_target=aligned_holder_pose,
-            all_current=poses,
-            args=args,
-            stage_name="align_holder_tcp_vertical",
-            execute=args.execute,
-        )
-        report["stages"].append(align_stage)
-        if not p2p_stage_succeeded(align_stage):
-            report["stopped_reason"] = "align_holder_tcp_vertical_failed"
-            print(json.dumps(report, indent=None if args.compact else 2, ensure_ascii=False, default=str))
-            return 3
+        if args.direct_observation:
+            report["stages"].append(
+                {
+                    "stage": "align_holder_tcp_vertical",
+                    "execute": False,
+                    "skipped": True,
+                    "reason": "direct observation target includes the vertical TCP orientation",
+                }
+            )
+        else:
+            aligned_holder_pose = holder_pose.copy()
+            aligned_holder_pose[3:] = preinsert_tcp_rotvec
+            align_stage = move_dual_absolute(
+                client=client,
+                side=holder_side,
+                side_target=aligned_holder_pose,
+                all_current=poses,
+                args=args,
+                stage_name="align_holder_tcp_vertical",
+                execute=args.execute,
+            )
+            report["stages"].append(align_stage)
+            if not p2p_stage_succeeded(align_stage):
+                report["stopped_reason"] = "align_holder_tcp_vertical_failed"
+                print(json.dumps(report, indent=None if args.compact else 2, ensure_ascii=False, default=str))
+                return 3
 
-        if args.execute:
-            observation, poses = read_ee_poses(client)
-            holder_pose = poses[holder_side]
-            axis_alignment["tcp_rotvec_after_align_actual"] = holder_pose[3:].tolist()
-            axis_alignment["posture_target_reused_after_align"] = True
+            if args.execute:
+                observation, poses = read_ee_poses(client)
+                holder_pose = poses[holder_side]
+                axis_alignment["tcp_rotvec_after_align_actual"] = holder_pose[3:].tolist()
+                axis_alignment["posture_target_reused_after_align"] = True
 
         if args.rack_result_json is not None:
             rack_result = load_result_json(args.rack_result_json)
         elif pending_rack_locator is None:
-            rack_result = run_object_locator(args.any_pose_dir, args.rack_config)
+            rack_result = run_object_locator(
+                args.any_pose_dir,
+                args.rack_config,
+                debug_dir=args.artifact_dir / "debug_overlays",
+            )
         else:
             post_preparation_wait_started = time.monotonic()
             rack_result = finish_pending_object_locator(pending_rack_locator)
@@ -1410,29 +1930,44 @@ def main(argv: list[str] | None = None) -> int:
             observation, poses = read_ee_poses(client)
             holder_pose = poses[holder_side]
             axis_alignment["tcp_rotvec_after_observe_before_correction_actual"] = holder_pose[3:].tolist()
-            post_observe_correction_pose = compute_post_observe_vertical_correction_pose(
-                current_pose=holder_pose,
-                tcp_orientation_rotvec=preinsert_tcp_rotvec,
-            )
-            post_observe_correction_stage = move_dual_absolute(
-                client=client,
-                side=holder_side,
-                side_target=post_observe_correction_pose,
-                all_current=poses,
-                args=args,
-                stage_name="correct_holder_tcp_vertical_after_observe",
-                execute=args.execute,
-            )
-            report["stages"].append(post_observe_correction_stage)
-            if not p2p_stage_succeeded(post_observe_correction_stage):
-                report["stopped_reason"] = "correct_holder_tcp_vertical_after_observe_failed"
-                print(json.dumps(report, indent=None if args.compact else 2, ensure_ascii=False, default=str))
-                return 3
+            if args.direct_observation:
+                report["stages"].append(
+                    {
+                        "stage": "correct_holder_tcp_vertical_after_observe",
+                        "execute": False,
+                        "skipped": True,
+                        "reason": "direct observation move already targets the vertical TCP orientation",
+                    }
+                )
+            else:
+                post_observe_correction_pose = compute_post_observe_vertical_correction_pose(
+                    current_pose=holder_pose,
+                    tcp_orientation_rotvec=preinsert_tcp_rotvec,
+                )
+                post_observe_correction_stage = move_dual_absolute(
+                    client=client,
+                    side=holder_side,
+                    side_target=post_observe_correction_pose,
+                    all_current=poses,
+                    args=args,
+                    stage_name="correct_holder_tcp_vertical_after_observe",
+                    execute=args.execute,
+                )
+                report["stages"].append(post_observe_correction_stage)
+                if not p2p_stage_succeeded(post_observe_correction_stage):
+                    report["stopped_reason"] = "correct_holder_tcp_vertical_after_observe_failed"
+                    print(json.dumps(report, indent=None if args.compact else 2, ensure_ascii=False, default=str))
+                    return 3
 
-            observation, poses = read_ee_poses(client)
-            holder_pose = poses[holder_side]
+                observation, poses = read_ee_poses(client)
+                holder_pose = poses[holder_side]
             axis_alignment["tcp_rotvec_after_observe_actual"] = holder_pose[3:].tolist()
             axis_alignment["posture_target_reused_after_observe"] = True
+            # The wrist camera is now at its actual observation pose. Refresh
+            # the runtime base_T_flange (TCP) transform before any wrist-camera
+            # result is converted to base coordinates.
+            write_base_T_flange_files(runtime_calibration_dir, observation)
+            report["runtime_calibration_pose_source"] = "post_observation_tcp"
 
         if args.stop_after_observe:
             report["hole"] = {"skipped": True, "reason": "stopped after observation stage by --stop-after-observe"}
@@ -1451,13 +1986,18 @@ def main(argv: list[str] | None = None) -> int:
         if args.execute:
             axis_alignment["tcp_rotvec_after_observe_actual"] = poses[holder_side][3:].tolist()
             axis_alignment["posture_target_reused_after_observe"] = True
+        # Keep both consumers current: wrist locators use the per-run runtime
+        # calibration, while the legacy hole flow still reads the repo copy.
+        write_base_T_flange_files(runtime_calibration_dir, observation)
         write_base_T_flange_files(args.any_pose_dir, observation)
+        report["runtime_calibration_pose_source"] = "post_observation_tcp"
         if args.hole_result_json is not None:
             hole_result = load_result_json(args.hole_result_json)
         else:
             hole_result = run_object_locator(
                 args.any_pose_dir,
                 args.left_hole_config if holder_side == "left" else args.right_hole_config,
+                debug_dir=args.artifact_dir / "debug_overlays",
             )
         hole_base = _require_position_base(hole_result, "hole")
         hole_base_for_motion = apply_rack_plane_z_for_motion(

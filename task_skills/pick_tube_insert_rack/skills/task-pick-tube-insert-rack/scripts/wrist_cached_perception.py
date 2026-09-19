@@ -4,19 +4,58 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+import sys
 import time
 from typing import Any, Mapping
 
 import cv2
 import numpy as np
 
+OBJECT_LOCATOR_ROOT = Path("/home/deepcybo/agentic_skills/atomic_skills/object_locator")
+sys.path.insert(0, str(OBJECT_LOCATOR_ROOT / "src"))
+
 from rack_grid import pixel_ray_plane_base
+from object_locator.visualization import draw_debug_panel, draw_detection
 
 
 class CachedPerceptionError(ValueError):
     def __init__(self, message: str, report: Mapping[str, Any] | None = None) -> None:
         super().__init__(message)
         self.report = dict(report or {})
+
+
+def _save_detection_overlays(
+    *,
+    output_dir: Path | None,
+    prefix: str,
+    image_bgr: np.ndarray,
+    depth_m: np.ndarray,
+    detection: Any,
+    position: Any | None = None,
+    orientation: Any | None = None,
+    min_depth_m: float = 0.05,
+    max_depth_m: float = 6.0,
+) -> dict[str, str]:
+    if output_dir is None:
+        return {}
+    output_dir.mkdir(parents=True, exist_ok=True)
+    rgb_path = output_dir / f"{prefix}_bbox_arrow_rgb.jpg"
+    panel_path = output_dir / f"{prefix}_bbox_arrow_panel.jpg"
+    rgb = draw_detection(image_bgr, detection, position, orientation, title=prefix)
+    panel = draw_debug_panel(
+        image_bgr,
+        depth_m,
+        detection,
+        position,
+        orientation,
+        min_depth_m=min_depth_m,
+        max_depth_m=max_depth_m,
+    )
+    if not cv2.imwrite(str(rgb_path), rgb):
+        raise RuntimeError(f"failed to save detection overlay: {rgb_path}")
+    if not cv2.imwrite(str(panel_path), panel):
+        raise RuntimeError(f"failed to save detection panel: {panel_path}")
+    return {"rgb": str(rgb_path), "panel": str(panel_path)}
 
 
 def locate_hole_with_vlm_sam_frame(
@@ -28,6 +67,7 @@ def locate_hole_with_vlm_sam_frame(
     sam_detector: Any,
     camera_timestamp_ms: float,
     raw_response_path: str | Path | None = None,
+    debug_output_dir: str | Path | None = None,
 ) -> tuple[dict[str, Any], dict[str, float]]:
     """Run the legacy empty-hole VLM+SAM logic on an already captured frame."""
     from object_locator.geometry import DepthEstimatorConfig, estimate_position_from_depth
@@ -73,6 +113,17 @@ def locate_hole_with_vlm_sam_frame(
         ),
     )
     timings["depth"] = time.monotonic() - started
+    debug_outputs = _save_detection_overlays(
+        output_dir=None if debug_output_dir is None else Path(debug_output_dir),
+        prefix="wrist_empty_hole",
+        image_bgr=image_bgr,
+        depth_m=np.asarray(depth_m, dtype=np.float32),
+        detection=refined,
+        position=position,
+        orientation=None,
+        min_depth_m=source.min_depth_m,
+        max_depth_m=source.max_depth_m,
+    )
     return {
         "run_id": f"persistent-frame-{time.time_ns()}",
         "target": config.target.name,
@@ -81,6 +132,7 @@ def locate_hole_with_vlm_sam_frame(
         "detection": refined.to_dict(),
         "position": position.to_dict(),
         "position_anchor": "bbox",
+        "debug_outputs": debug_outputs,
         "intrinsics": camera_intrinsics.to_dict(),
         "timestamp_ms": float(camera_timestamp_ms),
     }, timings

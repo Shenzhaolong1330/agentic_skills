@@ -57,6 +57,7 @@ from object_locator.transforms import (  # noqa: E402
     points_base_from_calibration,
     position_base_from_calibration,
 )
+from object_locator.visualization import draw_debug_panel, draw_detection  # noqa: E402
 from rack_grid import build_rack_grid, draw_overlay, save_grid  # noqa: E402
 from sam_cache_service import CachedSamRefiner, SOCKET_ENV  # noqa: E402
 from wrist_camera_service import WristCameraClient  # noqa: E402
@@ -120,6 +121,43 @@ def build_parser() -> argparse.ArgumentParser:
 
 def progress(message: str) -> None:
     print(f"[tube-inventory] {message}", file=sys.stderr, flush=True)
+
+
+def is_upright_target(config: Any) -> bool:
+    target_text = f"{config.target.name} {config.target.description}".lower()
+    return "upright" in target_text or "standing" in target_text or "vertical" in target_text
+
+
+def save_detection_overlays(
+    *,
+    output_dir: Path,
+    prefix: str,
+    image_bgr: np.ndarray,
+    depth_m: np.ndarray,
+    detection: DetectionResult,
+    position: Any | None = None,
+    orientation: Any | None = None,
+    min_depth_m: float = 0.05,
+    max_depth_m: float = 6.0,
+) -> dict[str, str]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    rgb_path = output_dir / f"{prefix}_bbox_arrow_rgb.jpg"
+    panel_path = output_dir / f"{prefix}_bbox_arrow_panel.jpg"
+    rgb = draw_detection(image_bgr, detection, position, orientation, title=prefix)
+    panel = draw_debug_panel(
+        image_bgr,
+        depth_m,
+        detection,
+        position,
+        orientation,
+        min_depth_m=min_depth_m,
+        max_depth_m=max_depth_m,
+    )
+    if not cv2.imwrite(str(rgb_path), rgb):
+        raise RuntimeError(f"failed to save detection overlay: {rgb_path}")
+    if not cv2.imwrite(str(panel_path), panel):
+        raise RuntimeError(f"failed to save detection panel: {panel_path}")
+    return {"rgb": str(rgb_path), "panel": str(panel_path)}
 
 
 def parse_multi_vlm_content(content: Any) -> list[dict[str, Any]]:
@@ -363,26 +401,52 @@ def detect_all_with_vlm(
         "required": ["tubes"],
         "additionalProperties": False,
     }
-    target_instruction = (
-        "Find only the leftmost complete loose test tube lying on the bare tabletop. "
-        "Return exactly one tube if a valid loose tube is visible; do not inventory the remaining tubes. "
-        if max_tubes == 1
-        else "Inventory every loose test tube lying on the bare tabletop. "
-    )
+    upright_target = is_upright_target(config)
+    if upright_target:
+        target_name = str(config.target.name).strip()
+        target_description = str(config.target.description).strip()
+        target_instruction = (
+            f"Find only the most visible {target_name}. {target_description} "
+            "Return exactly one tube if a valid upright tube is visible; do not inventory the remaining tubes. "
+            if max_tubes == 1
+            else f"Inventory every visible {target_name}. {target_description} "
+        )
+        exclusion_instruction = (
+            "Exclude empty rack holes, the rack body itself, horizontal tubes, "
+            "isolated shadows, robot parts, labels/overlays, and white equipment. "
+        )
+    else:
+        target_instruction = (
+            "Find only the leftmost complete loose test tube lying on the bare tabletop. "
+            "Return exactly one tube if a valid loose tube is visible; do not inventory the remaining tubes. "
+            if max_tubes == 1
+            else "Inventory every loose test tube lying on the bare tabletop. "
+        )
+        exclusion_instruction = (
+            "Exclude the black test-tube rack, every rack hole, tubes already inserted in the rack, "
+            "isolated caps, robot parts, shadows, labels/overlays, and white equipment. "
+        )
     ordering_instruction = (
         "Return the selected tube as the only item. "
         if max_tubes == 1
         else "Return tubes in left-to-right order by box center. "
     )
+    head_tail_instruction = (
+        "head_px is the topmost visible point of the tube and tail_px is the opposite lower visible end. "
+        if upright_target
+        else "head_px is the black cap/open rim center and tail_px is the opposite closed end. "
+    )
     prompt = (
         f"{target_instruction}The image size is {width}x{height}. "
-        "Return one tight box per complete loose tube, including partially transparent body pixels. "
-        "Exclude the black test-tube rack, every rack hole, tubes already inserted in the rack, "
-        "isolated caps, robot parts, shadows, labels/overlays, and white equipment. "
+        "Return one tight box per complete tube, including partially transparent body pixels. "
+        f"{exclusion_instruction}"
         "Do not merge nearby tubes. box_2d uses normalized 0-1000 coordinates ordered "
         "y1(top), x1(left), y2(bottom), x2(right). orientation points use original image pixels; "
-        "head_px is the black cap/open rim center and tail_px is the opposite closed end. "
-        f"{ordering_instruction}If none are visible, return an empty array."
+        f"{head_tail_instruction}"
+        f"{ordering_instruction}Return only one complete JSON object with a tubes array. "
+        'Each tube must have label, confidence, box_2d {y1,x1,y2,x2}, '
+        'orientation {head_px:{x,y},tail_px:{x,y}}, and notes. '
+        'If none are visible, return {"tubes":[]}.'
     )
     payload: dict[str, Any] = {
         "model": client.model,
@@ -410,17 +474,27 @@ def detect_all_with_vlm(
     }
     if client.require_parameters:
         payload["provider"] = {"require_parameters": True}
+    if not config.openrouter.use_json_schema:
+        payload.pop("response_format", None)
     schema_error = None
     try:
         response = client._post_payload(payload)
     except OpenRouterError as exc:
-        if not config.openrouter.retry_without_json_schema:
+        if (not config.openrouter.retry_without_json_schema or "response_format" not in payload
+                or exc.status_code not in (400, 422)):
             raise
         schema_error = str(exc)
         # Some providers accept image+JSON requests but reject array-shaped
         # response_format schemas. The prompt still requires one JSON object.
+        progress(f"inventory structured request rejected (HTTP {exc.status_code}); retrying the same image without JSON schema")
         payload.pop("response_format", None)
-        response = client._post_payload(payload)
+        try:
+            response = client._post_payload(payload)
+        except OpenRouterError as fallback_exc:
+            raise OpenRouterError(
+                f"Inventory fallback failed: {fallback_exc}; initial structured request error: {schema_error}",
+                status_code=fallback_exc.status_code,
+            ) from fallback_exc
     content, _finish_reason = _extract_message_content(response)
     if raw_response_path is not None:
         raw_response_path.parent.mkdir(parents=True, exist_ok=True)
@@ -628,6 +702,7 @@ def build_tube_result(
     config_path: Path,
     run_id: str,
     index: int,
+    debug_dir: Path | None = None,
 ) -> dict[str, Any]:
     depth_config = _depth_config(config)
     position = estimate_position_from_depth(frame.depth_m, frame.intrinsics, detection.bbox, depth_config)
@@ -659,6 +734,19 @@ def build_tube_result(
     bbox_center = points_base.get("bbox_center")
     if not isinstance(bbox_center, dict) or not isinstance(bbox_center.get("base"), dict):
         raise ValueError("required fallback point points_base.bbox_center.base is unavailable")
+    debug_outputs = {}
+    if debug_dir is not None:
+        debug_outputs = save_detection_overlays(
+            output_dir=debug_dir,
+            prefix=f"tube_{index:02d}_refined",
+            image_bgr=frame.color_bgr,
+            depth_m=frame.depth_m,
+            detection=detection,
+            position=position,
+            orientation=orientation,
+            min_depth_m=config.depth.min_depth_m,
+            max_depth_m=config.depth.max_depth_m,
+        )
     return {
         "target": config.target.name,
         "found": True,
@@ -670,6 +758,7 @@ def build_tube_result(
         "position_anchor": "bbox",
         "points_base": points_base,
         "orientation": orientation.to_dict() if orientation else None,
+        "debug_outputs": debug_outputs,
         "intrinsics": frame.intrinsics.to_dict(),
         "timestamp_ms": frame.timestamp_ms,
         "coordinate_frame": {
@@ -689,6 +778,7 @@ def locate_rack_from_initial_frame(
     config: Any,
     config_path: Path,
     raw_response_path: Path | None,
+    debug_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Locate the fixed rack from the already captured initial RGB-D frame."""
     client = OpenRouterVLMClient.from_env(
@@ -724,6 +814,19 @@ def locate_rack_from_initial_frame(
     )
     if not position_base.get("available"):
         raise RuntimeError(f"rack base-frame calibration unavailable: {position_base.get('reason')}")
+    debug_outputs = {}
+    if debug_dir is not None:
+        debug_outputs = save_detection_overlays(
+            output_dir=debug_dir,
+            prefix="rack_initial",
+            image_bgr=image_bgr,
+            depth_m=frame.depth_m,
+            detection=detection,
+            position=position,
+            orientation=None,
+            min_depth_m=config.depth.min_depth_m,
+            max_depth_m=config.depth.max_depth_m,
+        )
     return {
         "target": config.target.name,
         "found": True,
@@ -732,6 +835,7 @@ def locate_rack_from_initial_frame(
         "position": position.to_dict(),
         "position_anchor": "bbox",
         "position_base": position_base,
+        "debug_outputs": debug_outputs,
         "intrinsics": frame.intrinsics.to_dict(),
         "timestamp_ms": frame.timestamp_ms,
     }
@@ -793,6 +897,7 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("--min-axis-aspect-ratio must be >= 1")
     config_path = args.config.expanduser().resolve()
     config = load_config(config_path)
+    upright_target = is_upright_target(config)
     rack_config_path = args.rack_config.expanduser().resolve()
     rack_config = load_config(rack_config_path)
     detector_config = _detector_config(config, args)
@@ -862,6 +967,7 @@ def main(argv: list[str] | None = None) -> int:
         config=rack_config,
         config_path=rack_config_path,
         raw_response_path=args.save_rack_vlm_response,
+        debug_dir=args.output_dir.parent / "debug_overlays",
     )
     args.rack_result_json.parent.mkdir(parents=True, exist_ok=True)
     args.rack_result_json.write_text(
@@ -933,6 +1039,28 @@ def main(argv: list[str] | None = None) -> int:
     for source_index, proposal in enumerate(proposals, start=1):
         progress(f"refining candidate {source_index}/{len(proposals)} with SAM and depth")
         if isinstance(proposal, DetectionResult):
+            proposal_detection = proposal
+        else:
+            proposal_detection = DetectionResult(
+                found=True,
+                label=proposal.label,
+                confidence=proposal.score,
+                bbox=proposal.bbox,
+                notes="raw GroundingDINO proposal before SAM refinement",
+                source="grounded_sam-proposal",
+            )
+        proposal_debug = save_detection_overlays(
+            output_dir=args.output_dir.parent / "debug_overlays",
+            prefix=f"tube_candidate_{source_index:02d}_raw",
+            image_bgr=frame.color_bgr,
+            depth_m=frame.depth_m,
+            detection=proposal_detection,
+            position=None,
+            orientation=None,
+            min_depth_m=config.depth.min_depth_m,
+            max_depth_m=config.depth.max_depth_m,
+        )
+        if isinstance(proposal, DetectionResult):
             detection = detector.refine_detection_with_sam(frame.color_bgr, proposal)
             detection, fallback_rejection = restore_validated_vlm_orientation(
                 detection,
@@ -961,13 +1089,15 @@ def main(argv: list[str] | None = None) -> int:
                 config_path=config_path,
                 run_id=run_id,
                 index=len(tubes) + 1,
+                debug_dir=args.output_dir.parent / "debug_overlays",
             )
+            result.setdefault("debug_outputs", {})["raw_candidate"] = proposal_debug
             orientation_ok = bool(
                 result.get("orientation")
                 and result["orientation"].get("head_px")
                 and result["orientation"].get("tail_px")
             )
-            if not orientation_ok:
+            if not orientation_ok and not upright_target:
                 raise ValueError("head/tail pixel orientation is unavailable")
         except Exception as exc:
             rejected.append(
@@ -976,6 +1106,7 @@ def main(argv: list[str] | None = None) -> int:
                     "bbox": detection.bbox.to_dict(),
                     "confidence": detection.confidence,
                     "reason": str(exc),
+                    "debug_outputs": {"raw_candidate": proposal_debug},
                 }
             )
             progress(f"candidate {source_index} rejected: {exc}")

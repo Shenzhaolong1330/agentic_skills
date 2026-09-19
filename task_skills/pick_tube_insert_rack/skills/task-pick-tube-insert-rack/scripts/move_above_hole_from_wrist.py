@@ -1259,6 +1259,7 @@ def main(argv: list[str] | None = None) -> int:
                         sam_detector=sam_detector,
                         camera_timestamp_ms=frame["camera_timestamp_ms"],
                         raw_response_path=args.wrist_vlm_response,
+                        debug_output_dir=args.artifact_dir / "debug_overlays",
                     )
                     report["timings_sec"]["legacy_supplied_frame"] = supplied_frame_timings
                     report["wrist_camera_frame"] = {
@@ -1311,7 +1312,8 @@ def main(argv: list[str] | None = None) -> int:
             "hole_plane": hole_plane_report,
             "detection": hole_result.get("detection"),
             "position_camera": hole_result.get("position"),
-            "panel": hole_result.get("debug_outputs", {}).get("panel_history"),
+            "panel": hole_result.get("debug_outputs", {}).get("panel_history")
+            or hole_result.get("debug_outputs", {}).get("panel"),
         }
         _log(
             f"hole run_id={report['hole']['run_id']} "

@@ -366,6 +366,82 @@
       "side_effects": [
         "in live mode may open camera, move robot, control grippers, and reset robot through gated recovery"
       ]
+    },
+    {
+      "name": "task-configurable-manipulation-demos",
+      "layer": "task",
+      "path": "task_skills/demo_NO/skills/task-configurable-manipulation-demos/SKILL.md",
+      "description": "Numbered demos: vial insert/extract, extraction-only with jaw orientation and corner order, elongated-object handover, and copied original all-vial flow.",
+      "entrypoints": [
+        {
+          "name": "demo_1_vial_insert_extract",
+          "path": "task_skills/demo_NO/skills/task-configurable-manipulation-demos/scripts/demo_1_vial_insert_extract.sh",
+          "type": "shell",
+          "requires_hardware": true,
+          "opens_camera": true,
+          "connects_robot_rpc": true,
+          "moves_robot": true,
+          "controls_gripper": true,
+          "default_safe_to_run": true,
+          "allowed_as_recovery": false,
+          "execute_flag": "--execute",
+          "notes": "Default dry_run; hardware only with --mode live --execute, following the existing shell-wrapper gate; no operator token. Stops on failure without automatic reset."
+        },
+        {
+          "name": "demo_2_elongated_handover",
+          "path": "task_skills/demo_NO/skills/task-configurable-manipulation-demos/scripts/demo_2_elongated_handover.sh",
+          "type": "shell",
+          "requires_hardware": true,
+          "opens_camera": true,
+          "connects_robot_rpc": true,
+          "moves_robot": true,
+          "controls_gripper": true,
+          "default_safe_to_run": true,
+          "allowed_as_recovery": false,
+          "execute_flag": "--execute",
+          "notes": "Default dry_run; hardware only with --mode live --execute, following the existing shell-wrapper gate; no operator token. Stops on failure without automatic reset."
+        },
+        {
+          "name": "demo_3_all_vials_to_rack",
+          "path": "task_skills/demo_NO/skills/task-configurable-manipulation-demos/scripts/demo_3_all_vials_to_rack.sh",
+          "type": "shell",
+          "requires_hardware": true,
+          "opens_camera": true,
+          "connects_robot_rpc": true,
+          "moves_robot": true,
+          "controls_gripper": true,
+          "default_safe_to_run": true,
+          "allowed_as_recovery": false,
+          "execute_flag": "--execute",
+          "notes": "Copy of run_full_pick_tube_insert_rack.sh, using original skill resources. Default dry_run; live requires --mode live --execute. Preserves original reset-after-error policy."
+        },
+        {
+          "name": "demo_4_vial_extract",
+          "path": "task_skills/demo_NO/skills/task-configurable-manipulation-demos/scripts/demo_4_vial_extract.sh",
+          "type": "shell",
+          "requires_hardware": true,
+          "opens_camera": true,
+          "connects_robot_rpc": true,
+          "moves_robot": true,
+          "controls_gripper": true,
+          "default_safe_to_run": true,
+          "allowed_as_recovery": false,
+          "execute_flag": "--execute",
+          "notes": "Extraction only: four rack corners in configured order, jaw opening parallel/perpendicular to selected arm base X. Default dry_run; live requires --mode live --execute. No handover, insertion, joint home or automatic reset. Stops on failure."
+        }
+      ],
+      "dependencies": [
+        "task-pick-tube-insert-rack",
+        "atomic-gripper-franka-open-close",
+        "atomic-perception-locate-object-3d"
+      ],
+      "safety_gates": [
+        "dry_run and mock never access hardware; demo 3 invokes the original safe harness",
+        "live requires --mode live --execute"
+      ],
+      "side_effects": [
+        "live opens cameras, moves both arms and controls grippers"
+      ]
     }
   ]
 }

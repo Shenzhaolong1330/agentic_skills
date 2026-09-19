@@ -1,0 +1,58 @@
+# demo_序号_任务内容 配置；米为长度单位。请阅读 ../SKILL.md 的方向/孔位约定。
+# grasp_position: 1 = tail + 0.2*(head-tail)，2 = tail + 0.8*(head-tail)
+# vial 的 head 为盖子/口端，tail 为封闭尾端；Demo 2 由 front_definition 定义。
+# pick_arm: auto 按抓取端选手，也可以固定 left/right。
+# transition_json: null 复用旧标定；自定义路径相对本配置文件。
+# handover_transition_branch: active 或 partner；换物品/抓端时需核对交接标定。
+# drop_xyz: null 自动识别空桌面；[x,y,z] 是 base 下 TCP 释放坐标（已含释放高度）。
+# drop_height_m: 只用于自动桌面定位，在检测表面 z 上增加该高度。
+# count 是本次处理件数；after_handover=hold 时必须 count: 1。
+demo: 2
+grasp_position: 1
+pick_arm: auto
+count: 4
+grasp_z_offset_m: 0.01
+lift_m: 0.1
+extract_lift_m: 0.12
+drop_height_m: 0.1
+drop_xyz:
+  left: null
+  right: null
+drop_description: Select a clear empty tabletop area beside and well outside the RED
+  rack and outside the source pickup area. Exclude all objects, robot parts, table
+  edges and the rack. The whole drop area must be bare tabletop. Return found=false
+  if unavailable.
+insert_depth_m: 0.055
+hole_standoff_m: 0.08
+handover_transition_branch: active
+# 原手释放后沿 base Y 向外侧平移，左臂 +Y / 右臂 -Y；不回 home。
+handover_retreat_distance_m: 0.20
+# 接收夹爪反馈稳定后，再等 2 秒才松开原手；超时则保留夹持。
+handover_receiver_stable_sec: 0.5
+handover_release_delay_sec: 2.0
+handover_close_timeout_sec: 5.0
+transition_json: null
+jaw_opening_axis: y
+jaw_perpendicular_turn: ccw
+after_handover: drop
+object_description: Find exactly one complete loose elongated item lying flat in the
+  SOURCE pickup area (the central tabletop in front of the robot). Choose the leftmost
+  remaining item. Exclude the rack, robot parts, shadows and every item in the side
+  DROP area. If none remains, return found=false.
+front_definition: For an item with a visibly distinct functional tip or marked end,
+  that end is FRONT. For a symmetric item, define the endpoint with smaller image
+  x as FRONT; if tied, use smaller image y. The opposite endpoint is TAIL.
+
+# 抓取、转姿、提升、交接的 P2P 参数；与旧 demo 的速度/步长一致。
+# speed 单位分别是 m/s、rad/s；step 单位分别是 m、rad。
+# approach_* 单独控制夹取前的下探，不影响插孔下降速度。
+p2p:
+  rate_hz: 80
+  max_translation_speed: 0.12
+  max_rotation_speed: 0.6
+  max_translation_step: 0.003
+  max_rotation_step: 0.03
+  approach_max_translation_speed: 0.08
+  approach_max_rotation_speed: 0.4
+  approach_max_translation_step: 0.002
+  approach_max_rotation_step: 0.02

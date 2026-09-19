@@ -1,0 +1,80 @@
+# 只拔出红架四角的四支 vial，不做散物抓取、handover 或插入。
+# 3 行 × 2 列：左上[1,1] 左下[3,1] 右上[1,2] 右下[3,2]。
+demo: 4
+extract_arm: right  # left / right；四次均使用所选机械臂
+vlm_reasoning_effort: low  # 给最终定位 JSON 留出输出额度；截断时保留格式约束限次重试
+
+# 夹爪两指开合的连线相对于所选机械臂 base X 轴的方向：
+# 1 = 垂直于 X 轴（沿 base Y）；2 = 平行于 X 轴（沿 base X）。
+# 两种姿态均保持 TCP Z 轴朝下。不是相机图像 X 轴，也不是红架长轴。
+gripper_opening_direction: 2
+extract_order: [左上, 左下, 右上, 右下]  # 调整顺序；四个位置必须各出现一次
+
+# 夹爪开合轴在 TCP 局部坐标中的标定定义，沿用现有 Robotiq 配置。
+jaw_opening_axis: y
+grasp_z_offset_m: 0.01
+extract_lift_m: 0.12
+# 本轮首次头部识别作为固定红架参考，四次拔出期间不要移动架子。
+# 以下 Z 范围适用于当前桌面/标定；不是发现异常后把目标强行截断。
+rack_z_range_m: [-0.25, -0.10]
+extract_observe_height_m: 0.12
+extract_cap_max_xy_m: 0.10
+extract_cap_z_range_m: [-0.02, 0.12]  # 管盖相对红架参考高度
+# 最多 20 轮；接近累计补偿上限时缩小步长，无剩余调整空间则提前失败。
+extract_observe_max_correction_iters: 20
+# 仅拍照前转姿/观察位使用 5 mm / 0.06 rad（约 3.44 度）；拍照标定取实际位姿。
+extract_observe_position_tolerance_m: 0.005
+extract_observe_rotation_tolerance_rad: 0.06
+# 以下为初次轨迹及每轮纠偏后的固定等待；夹爪反馈确认独立保留。
+extract_observe_settle_time_sec: 0.5
+# 管盖上方的 stage1 横移：5 mm / 0.06 rad。
+extract_pregrasp_xy_position_tolerance_m: 0.005
+extract_pregrasp_xy_rotation_tolerance_rad: 0.06
+extract_pregrasp_xy_settle_time_sec: 0.3
+# 关键的下探夹取：3 mm / 0.03 rad（约 1.72 度）。
+extract_position_tolerance_m: 0.003
+extract_rotation_tolerance_rad: 0.03
+extract_approach_settle_time_sec: 0.6
+# 抓紧后的竖直拔出提升：5 mm / 0.06 rad。
+extract_lift_position_tolerance_m: 0.005
+extract_lift_rotation_tolerance_rad: 0.06
+extract_lift_settle_time_sec: 0.4
+# 移到右侧空桌面并落料：10 mm / 0.10 rad（约 5.73 度）。
+drop_position_tolerance_m: 0.010
+drop_rotation_tolerance_rad: 0.10
+drop_settle_time_sec: 0.3
+# 观察转姿/横移、拔出提升、右侧落料共享速度；旧版本漏传，实际用 0.04 m/s / 0.20 rad/s。
+# 单位：速度 m/s、rad/s；步长 m、rad。靠近管盖的下探仍用原来的较低速度。
+p2p:
+  rate_hz: 80
+  max_translation_speed: 0.10
+  max_rotation_speed: 0.50
+  max_translation_step: 0.002
+  max_rotation_step: 0.020
+  approach_max_translation_speed: 0.04
+  approach_max_rotation_speed: 0.20
+  approach_max_translation_step: 0.001
+  approach_max_rotation_step: 0.012
+drop_height_m: 0.10
+# 右侧 = base -Y（与原 demo 左右臂约定一致），不是“任意旁边”。
+# 每次重新识别右侧空桌面，坐标校验失败就停止，绝不退回前方或左边。
+drop_lateral_range_m: [0.12, 0.30]
+drop_max_fore_aft_m: 0.15
+drop_perception_retries: 1  # 选点未通过图像/坐标检查时，只重新识别，不重发运动
+# 显式 xyz 是 TCP 松爪点，仍需通过右侧位置/高度检查。
+# 保持拔管姿态，横移后下降松爪，不额外上升 10 cm、不 go home。
+drop_xyz:
+  left: null
+  right: null
+drop_description: Select a clear empty tabletop area strictly to the RIGHT of the RED
+  rack, about 12-30 cm away, at a similar front/back position. Never choose the front
+  or left side. Exclude all objects, previously dropped vials, robot parts, table
+  edges and the rack. The whole drop area must be bare tabletop. Return found=false
+  if unavailable.
+
+# 逻辑孔位在当前腕相机画面中的方向。架子旋转、切换机械臂或切换开合方向后
+# 必须核对；夹爪转 90 度时腕相机画面方向也会变化，不能直接照搬另一姿态。
+# row1_at 为架子“上”边，col1_at 为架子“左”边在图像中的位置。
+wrist_view:
+  left: {row1_at: top, col1_at: left}
+  right: {row1_at: top, col1_at: left}
