@@ -12,6 +12,8 @@ import json
 import math
 import sys
 import time
+import traceback
+from collections import deque
 from collections.abc import Mapping, Sequence
 from typing import Any, Optional
 
@@ -414,6 +416,59 @@ def _motion_action_from_delta(delta_pose: Sequence[float]) -> dict[str, dict[str
     }
 
 
+def _bounded_tracking_target(command, measured, goal, position_tolerance_m, rotation_tolerance_rad):
+    """Compensate tracking bias from the last CONFIRMED command, never stale state.
+
+    Bound each update and the total displacement from the requested endpoint.
+    These are command compensation limits, not relaxed arrival tolerances.
+    """
+    residual = _absolute_target_to_delta(measured, goal)
+    update = []
+    for values, tolerance, step_limit in ((residual[:3], position_tolerance_m, .003),
+                                           (residual[3:], rotation_tolerance_rad, .03)):
+        norm = math.sqrt(sum(v * v for v in values))
+        scale = 0.0 if norm <= tolerance else min(.6, step_limit / norm)
+        update.extend(v * scale for v in values)
+    limits = (.025, .20)
+    initial_bias = _motion_norms(_absolute_target_to_delta(goal, command))
+    report = {'max_translation_m': limits[0], 'max_rotation_rad': limits[1]}
+    if any(value > limit + 1e-9 for value, limit in zip(initial_bias, limits)):
+        return None, {**report, 'translation_m': initial_bias[0], 'rotation_rad': initial_bias[1]}
+
+    # Translation and rotation have independent budgets. Consume the remaining
+    # room along the requested correction, rather than rejecting a whole step
+    # (or expanding the budget) when just one component would cross its limit.
+    capped = []
+    for component, limit in enumerate(limits):
+        offset = 3 * component
+        requested = update[offset:offset + 3]
+
+        def bias_at(scale):
+            trial = update.copy()
+            trial[offset:offset + 3] = [v * scale for v in requested]
+            return _motion_norms(_absolute_target_to_delta(goal, _pose_from_delta(command, trial)))[component]
+
+        if bias_at(1.0) > limit:
+            low, high = 0.0, 1.0
+            for _ in range(40):
+                middle = (low + high) / 2
+                if bias_at(middle) <= limit:
+                    low = middle
+                else:
+                    high = middle
+            update[offset:offset + 3] = [v * low for v in requested]
+            capped.append(('translation', 'rotation')[component])
+
+    candidate = _pose_from_delta(command, update)
+    translation, rotation = _motion_norms(_absolute_target_to_delta(goal, candidate))
+    report.update(translation_m=translation, rotation_rad=rotation, capped_components=capped)
+    needs_correction = any(value > tolerance for value, tolerance in zip(
+        _motion_norms(residual), (position_tolerance_m, rotation_tolerance_rad)))
+    if needs_correction and max(_motion_norms(update)) <= 1e-9:
+        return None, report
+    return candidate, report
+
+
 def _looks_like_missing_rpc_method(exc: BaseException) -> bool:
     message = f'{type(exc).__name__}: {exc}'.lower()
     if 'dual_robot_move_to_ee_pose' not in message:
@@ -429,6 +484,111 @@ def _looks_like_missing_rpc_method(exc: BaseException) -> bool:
     return any(marker in message for marker in missing_method_markers)
 
 
+class _RpcEventTrace:
+    """Bounded, payload-free transport history, emitted only on RPC failure."""
+
+    def __init__(self, client):
+        self.records = deque(maxlen=64)
+        self.connections = deque(maxlen=64)
+        self.monitor = None
+        self.monitor_error = None
+        self.client = client
+        events = client._events
+        try:
+            # Observe disconnect/reconnect events without changing RPC retries,
+            # heartbeat settings, or the motion socket's identity.
+            self.monitor = events._socket.get_monitor_socket()
+        except Exception as exc:
+            self.monitor_error = type(exc).__name__
+        original_emit, original_recv = events.emit_event, events.recv
+
+        def emit(event, timeout=None):
+            self.drain_monitor()
+            self.record('enqueue_begin', event)
+            result = original_emit(event, timeout=timeout)
+            self.record('enqueue_return', event)
+            return result
+
+        def recv(timeout=None):
+            event = original_recv(timeout=timeout)
+            self.record('received', event)
+            return event
+
+        events.emit_event, events.recv = emit, recv
+
+    def drain_monitor(self):
+        if self.monitor is None:
+            return
+        try:
+            import zmq
+            from zmq.utils.monitor import parse_monitor_message
+            for _ in range(64):
+                try:
+                    parts = self.monitor.recv_multipart(flags=zmq.NOBLOCK)
+                except zmq.Again:
+                    break
+                event = parse_monitor_message(parts)
+                endpoint = event['endpoint']
+                self.connections.append({
+                    # This is when we drained the event, not its wire timestamp.
+                    'observed_monotonic_sec': round(time.monotonic(), 6),
+                    'event': getattr(event['event'], 'name', str(event['event'])),
+                    'value': int(event['value']),
+                    'endpoint': endpoint.decode(errors='replace') if isinstance(endpoint, bytes) else str(endpoint),
+                })
+        except Exception as exc:
+            self.monitor_error = type(exc).__name__
+
+    def close(self):
+        if self.monitor is not None:
+            try:
+                self.client._events._socket.disable_monitor()
+            except Exception:
+                pass
+            finally:
+                # zerorpc.gevent_zmq.Socket.close has no linger parameter.
+                self.monitor.close()
+                self.monitor = None
+
+    def record(self, direction, event):
+        # Diagnostics must not change the outcome of an RPC operation.
+        try:
+            header = event.header
+            self.records.append({
+                'monotonic_sec': round(time.monotonic(), 6),
+                'direction': direction,
+                'event': event.name,
+                'message_id': self.identifier(header.get('message_id')),
+                'response_to': self.identifier(header.get('response_to')),
+            })
+        except Exception:
+            pass
+
+    @staticmethod
+    def identifier(value):
+        return value.hex() if isinstance(value, bytes) else str(value) if value is not None else None
+
+    def snapshot(self):
+        self.drain_monitor()
+        events = self.client._events
+        multiplexer = self.client._multiplexer
+        workers = {}
+        for name, worker in (
+            ('sender', getattr(events._send, '_send_task', None)),
+            ('receiver', getattr(events._recv, '_recv_task', None)),
+            ('dispatcher', multiplexer._channel_dispatcher_task),
+        ):
+            frame = getattr(worker, 'gr_frame', None)
+            workers[name] = {
+                'dead': getattr(worker, 'dead', None),
+                'exception': str(getattr(worker, 'exception', None)),
+                'stack': traceback.format_stack(frame, limit=6) if frame is not None else [],
+            }
+        return {'events': list(self.records), 'workers': workers,
+                'connections': list(self.connections), 'monitor_error': self.monitor_error,
+                'active_channels': [self.identifier(key) for key in multiplexer._active_channels]}
+
+
 def _connect(server: str, timeout: float):
     try:
         import zerorpc
@@ -440,6 +600,7 @@ def _connect(server: str, timeout: float):
         ) from exc
 
     client = zerorpc.Client(timeout=timeout)
+    client.__dict__['_motion_event_trace'] = _RpcEventTrace(client)
     client.connect(server)
     return client
 
@@ -483,10 +644,28 @@ class DualFrankaRobotiqRpcClient:
         self._client = _connect(self.server, self.timeout)
 
     def _call(self, name: str, *args):
-        return getattr(self._client, name)(*args)
+        try:
+            return getattr(self._client, name)(*args)
+        except Exception as exc:
+            if type(exc).__name__ in ('LostRemote', 'TimeoutExpired'):
+                try:
+                    trace = vars(self._client).get('_motion_event_trace')
+                    if trace is not None:
+                        print('zerorpc_transport_failure: ' + json.dumps({
+                            'method': name, 'exception_type': type(exc).__name__,
+                            **trace.snapshot(),
+                        }), file=sys.stderr, flush=True)
+                except Exception:
+                    pass
+            raise
 
     def close(self) -> None:
-        self._client.close()
+        try:
+            trace = vars(self._client).get('_motion_event_trace')
+            if trace is not None:
+                trace.close()
+        finally:
+            self._client.close()
 
     def ping(self):
         return self._call('ping')
@@ -764,7 +943,39 @@ class DualFrankaRobotiqRpcClient:
             max_steps=max_steps,
         )
 
+        def synchronize_reference():
+            # Server step integrates deltas into its saved target, NOT measured
+            # pose. Re-anchor BOTH arms before a new motion call so a
+            # manual move/home/interruption cannot resurrect a stale target.
+            # This is a current-pose hold, never reset()/go_home()/gripper reset.
+            # Use the returned snapshot as the planning start, not a later pose.
+            response = self.step(None)
+            if (not isinstance(response, Mapping) or response.get('ok') is False
+                    or response.get('error') or (response.get('info') or {}).get('error')):
+                raise RuntimeError('P2P target synchronization failed; no trajectory sent')
+            snapshot = response.get('observation')
+            if not isinstance(snapshot, Mapping):
+                raise RuntimeError('P2P synchronization has no observation; no trajectory sent')
+            return (_pose_from_side_observation(snapshot, 'left_arm'),
+                    _pose_from_side_observation(snapshot, 'right_arm'))
+
+        left_start, right_start = synchronize_reference()
+        if delta:
+            left_target = _pose_from_delta(left_start, left_pose)
+            right_target = _pose_from_delta(right_start, right_pose)
+        trajectory, metadata = _plan_smooth_absolute_trajectory(
+            left_start, right_start, left_target, right_target,
+            duration_sec=duration_sec, rate_hz=rate_hz,
+            max_translation_speed=max_translation_speed, max_rotation_speed=max_rotation_speed,
+            max_translation_step=max_translation_step, max_rotation_step=max_rotation_step,
+            min_duration_sec=min_duration_sec, max_steps=max_steps,
+        )
+        print('p2p_trajectory_start: ' + json.dumps(metadata), file=sys.stderr, flush=True)
+
+        last_confirmed_step_count: int | None = None
+
         def stream(trajectory_items: list[dict[str, Any]], trajectory_metadata: Mapping[str, Any]) -> Any:
+            nonlocal last_confirmed_step_count
             result: Any = None
             deadline = time.monotonic()
             for waypoint in trajectory_items:
@@ -772,7 +983,27 @@ class DualFrankaRobotiqRpcClient:
                     'left_arm': _motion_action_from_delta(waypoint['left_delta']),
                     'right_arm': _motion_action_from_delta(waypoint['right_delta']),
                 }
-                result = self.step(action)
+                rpc_started = time.monotonic()
+                try:
+                    result = self.step(action)
+                except Exception as exc:
+                    # A missing reply does not mean the increment was rejected.
+                    # Record context, preserve the original exception, and never
+                    # probe/reconnect/replay a motion request here.
+                    diagnostic = {
+                        'method': 'step',
+                        'correction_index': trajectory_metadata.get('correction_index', 0),
+                        'waypoint': waypoint['index'],
+                        'trajectory_steps': trajectory_metadata['steps'],
+                        'rpc_elapsed_sec': round(time.monotonic() - rpc_started, 3),
+                        'last_confirmed_step_count': last_confirmed_step_count,
+                        'exception_type': type(exc).__name__,
+                        'motion_outcome': 'unconfirmed',
+                    }
+                    print('p2p_rpc_failure: ' + json.dumps(diagnostic), file=sys.stderr, flush=True)
+                    raise
+                if isinstance(result, Mapping) and 'step_count' in result:
+                    last_confirmed_step_count = result['step_count']
                 if sleep and waypoint['index'] < trajectory_metadata['steps']:
                     deadline += float(trajectory_metadata['period_sec'])
                     time.sleep(max(0.0, deadline - time.monotonic()))
@@ -781,6 +1012,9 @@ class DualFrankaRobotiqRpcClient:
         last_result: Any = None
         correction_reports: list[dict[str, Any]] = []
         last_result = stream(trajectory, metadata)
+        # All waypoints were acknowledged. Track the server's commanded endpoint
+        # separately from the measured endpoint during bounded feedback correction.
+        left_command, right_command = list(left_target), list(right_target)
 
         if sleep and settle_time_sec > 0.0:
             time.sleep(settle_time_sec)
@@ -835,11 +1069,20 @@ class DualFrankaRobotiqRpcClient:
             if correction_index >= max_correction_iters:
                 break
 
+            left_next, left_bias = _bounded_tracking_target(
+                left_command, left_current, left_target, position_tolerance_m, rotation_tolerance_rad)
+            right_next, right_bias = _bounded_tracking_target(
+                right_command, right_current, right_target, position_tolerance_m, rotation_tolerance_rad)
+            if left_next is None or right_next is None:
+                stalled_report = {'detected': True, 'reason': 'tracking_compensation_limit',
+                                  'left_bias': left_bias, 'right_bias': right_bias}
+                final_error['tracking_compensation_limit'] = stalled_report
+                break
             correction_trajectory, correction_metadata = _plan_smooth_absolute_trajectory(
-                left_current,
-                right_current,
-                left_target,
-                right_target,
+                left_command,
+                right_command,
+                left_next,
+                right_next,
                 duration_sec=None,
                 rate_hz=rate_hz,
                 max_translation_speed=max_translation_speed,
@@ -850,12 +1093,16 @@ class DualFrankaRobotiqRpcClient:
                 max_steps=max_steps,
             )
             correction_metadata['correction_index'] = correction_index + 1
+            correction_metadata['left_command_bias'] = left_bias
+            correction_metadata['right_command_bias'] = right_bias
+            print('p2p_correction_start: ' + json.dumps(correction_metadata), file=sys.stderr, flush=True)
             correction_reports[-1]['correction_trajectory'] = {
                 'steps': correction_metadata['steps'],
                 'duration_sec': correction_metadata['duration_sec'],
                 'period_sec': correction_metadata['period_sec'],
             }
             last_result = stream(correction_trajectory, correction_metadata)
+            left_command, right_command = left_next, right_next
             if sleep and settle_time_sec > 0.0:
                 time.sleep(settle_time_sec)
 

@@ -31,3 +31,12 @@
 3. 低层脚本只作为 manifest entrypoint，不从 Codex 直接拼接执行真机。
 4. 先审查 `command_plan.json` 和 trace，再考虑 live。
 5. reset 是 task runtime recovery state，不是 shell 脚本里的无条件前置动作。
+
+## 编号演示 demo_序号_任务内容
+
+`task-configurable-manipulation-demos`：见 [SKILL.md](task_skills/demo_NO/skills/task-configurable-manipulation-demos/SKILL.md)。
+`demo_1_vial_insert_extract.sh` / `demo_1_vial_insert_extract.yaml` 实现四支 vial 指定端抓取、交接、3行2列红架指定孔插入，全部插完后按序同手拔出并在侧边桌面释放。
+`demo_2_elongated_handover.sh` / `demo_2_elongated_handover.yaml` 实现长条物品指定端抓取和交接。
+`demo_3_all_vials_to_rack.sh` / `demo_3_all_vials_to_rack.env` 是旧版全部 vial 入架程序的副本，保留原参数和错误后 reset 策略。
+`demo_4_vial_extract.sh` / `demo_4_vial_extract.yaml` 只拔出架上四角 vial，可选开合方向平行/垂直于 base X，以及四角的拔出顺序。
+四者默认 dry_run；真机沿用原 shell wrapper 的 `--mode live --execute` 门控，不需要 operator token。Demo 1/2/4 失败即停止；Demo 3 的 mock/dry-run 调用原安全 harness。

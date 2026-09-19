@@ -143,15 +143,19 @@ the inventory; partial inventory requires the explicit
 `--locator-arg --allow-rejected-candidates` override.
 
 All task-level rack and wrist-hole `object-locator` calls use a camera capture
-watchdog. If no RGB-D capture-ready signal arrives within 3 seconds, the task
+watchdog. If no RGB-D capture-ready signal arrives within 30 seconds, the task
 terminates that locator process, waits for its USB handle to be released,
-hardware-resets only the RealSense selected by that locator config, and retries.
-Reset recovery waits 2 seconds for UVC handle release and permits up to 3 reset
-attempts; each attempt gets 15 seconds to produce a frame. VLM/SAM inference time
-starts after capture and is not limited by the 3-second watchdog. Advanced
+tries one clean reopen, then at most one hardware reset by default of only the
+selected RealSense. Recovery waits 2 seconds for UVC handle release; each attempt
+gets 30 seconds to produce a frame. Per-serial process locks prevent a second owner
+from opening/resetting the same camera; hardware resets are at least 60 seconds apart.
+Do not repeatedly set a preset that is already active. VLM/SAM inference time
+starts after capture and is not limited by the capture watchdog. Advanced
 overrides are available through `REALSENSE_CAPTURE_WATCHDOG_SEC`,
 `REALSENSE_RESET_COOLDOWN_SEC`, `REALSENSE_RESET_CAPTURE_TIMEOUT_SEC`, and
 `REALSENSE_RESET_MAX_ATTEMPTS`.
+See [RealSense operation guide](../../../../docs/realsense_operation.md) for ownership,
+bounded recovery, USB diagnostics, and local-only capture checks.
 
 Use a strict `0.035 rad` wrist P2P rotation tolerance, matching the vertical
 roll/pitch gate. Keep at most four additional in-place posture corrections and
@@ -187,6 +191,32 @@ Single-tube live shell wrapper entry, without operator-token `HardwareGate`:
   --mode live \
   --execute
 ```
+
+Reverse rack-to-table orange-cap flow:
+
+```bash
+/home/deepcybo/agentic_skills/task_skills/pick_tube_insert_rack/skills/task-pick-tube-insert-rack/scripts/run_pick_yellow_cap_to_table.sh \
+  --mode live \
+  --execute \
+  --holder-side right
+```
+
+This first locates the rack from the head camera, then moves only the selected
+arm directly to the rack observation position with the vertical TCP posture in
+the same P2P target. It then locates the orange cap from that wrist camera. The
+wrist config uses `depth.position_anchor: bbox_corners`; the four
+corner 3D points are averaged for `points_base.bbox_center`. `--place-xyz` is
+optional: by default a second head-camera VLM call selects an unobstructed
+blank tabletop area. The detected table surface z is raised by
+`--place-z-offset-m` (default 0.10 m) to obtain the TCP release height. Use
+`--place-xyz` only when overriding the VLM-selected point.
+
+After the active wrist arm grasps the cap, it lifts 10 cm, returns through the
+partner-side transition state, hands the cap to the other gripper, and the
+partner arm performs the table placement and release. The placement helper
+uses the locator's `points_base.bbox_center.base` 3D point, changes the
+partner TCP to the vertical-down posture before the XY move, and then descends
+to the z-offset release point.
 
 ## Auto Reset Recovery Policy
 
@@ -272,7 +302,8 @@ Artifacts are written under `artifact_dir`, default `/tmp/agentic_skills_runs/<r
 - Real grasp success still needs stronger gripper width/fraction and object-present validation.
 - Real handover lacks contact/force confirmation.
 - Real insertion still needs visual/force closed-loop confirmation.
-- Existing low-level grasp orientation aligns a gripper axis parallel to tube axis; exact yaw-perpendicular-to-body-normal semantics require further calibration.
+- The full insertion wrapper now orients the right holder's configured local jaw-opening axis perpendicular to the rack long axis. It derives that axis from the cached rack grid when available, otherwise from the cached rack bbox long edge; use --jaw-opening-axis y or --rack-axis-base '[x, y, z]' when the local TCP convention or rack direction needs an explicit override. The signed branch defaults to --jaw-perpendicular-turn ccw; use cw to select the opposite branch.
+- The actual Robotiq TCP local axis used for jaw opening must still be validated once against the robot's flange/TCP calibration; for the current grasp/TCP convention the default is local y, while local x is used to align the gripper body with the tube.
 - Multi-candidate empty-hole support is wrapped in task logic; native object_locator candidate output should be added later for live perception.
 - In the Python task runner, live health, reset recovery, tube localization, grasp/handover, and insertion subprocesses are dispatched by `CommandRunner` only after their manifest entrypoint passes `HardwareGate`. The single-flow shell wrapper is documented separately above and does not use the operator-token `HardwareGate`.
 - A successful live return still reports warnings for the current contact/force verification and retract-versus-full-home limitations.

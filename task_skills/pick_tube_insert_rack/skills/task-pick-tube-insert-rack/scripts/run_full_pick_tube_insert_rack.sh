@@ -19,7 +19,9 @@ ANY_POSE_ROOT="${ANY_POSE_ROOT:-$REPO_ROOT/atomic_skills/object_locator}"
 LOCATOR="${LOCATOR:-$ANY_POSE_ROOT/.venv/bin/object-locator}"
 LOCATOR_PYTHON="${LOCATOR_PYTHON:-$ANY_POSE_ROOT/.venv/bin/python}"
 TUBE_CONFIG="${TUBE_CONFIG:-$ANY_POSE_ROOT/config_test_tube_cleanup_leftmost_vlm_head.yaml}"
-RACK_CONFIG="${RACK_CONFIG:-$ANY_POSE_ROOT/config_rack_center_vlm.yaml}"
+RACK_CONFIG="${RACK_CONFIG:-$ANY_POSE_ROOT/config_rack_center_generic_vlm.yaml}"
+LEFT_HOLE_CONFIG="${LEFT_HOLE_CONFIG:-$ANY_POSE_ROOT/config_rack_empty_hole_left_wrist_generic_vlm.yaml}"
+RIGHT_HOLE_CONFIG="${RIGHT_HOLE_CONFIG:-$ANY_POSE_ROOT/config_rack_empty_hole_right_wrist_generic_vlm.yaml}"
 
 MODE="dry_run"
 EXECUTE=0
@@ -32,6 +34,8 @@ RACK_RESULT_JSON=""
 FULL_LOG_FILE=""
 INSERT_LOG_FILE=""
 WRIST_PERCEPTION_MODE="legacy-vlm"
+JAW_OPENING_AXIS="y"
+JAW_PERPENDICULAR_TURN="ccw"
 
 LOCATOR_ARGS=()
 GRASP_ARGS=()
@@ -68,6 +72,8 @@ Live flow options:
   --tube-result-json PATH
   --rack-result-json PATH
   --wrist-perception-mode MODE  legacy-vlm (live default) or experimental cached-grid.
+  --jaw-opening-axis AXIS       TCP local jaw-opening axis: x or y (default: y).
+  --jaw-perpendicular-turn TURN Signed 90-degree branch: ccw or cw (default: ccw).
   --full-log-file PATH
   --insert-log-file PATH
   --reset-script PATH      Full robot-reset wrapper used after a tube-stage error.
@@ -119,6 +125,16 @@ while [[ $# -gt 0 ]]; do
         --tube-result-json) require_value "$@"; TUBE_RESULT_JSON="$2"; shift 2 ;;
         --rack-result-json) require_value "$@"; RACK_RESULT_JSON="$2"; shift 2 ;;
         --wrist-perception-mode) require_value "$@"; WRIST_PERCEPTION_MODE="$2"; shift 2 ;;
+        --jaw-opening-axis)
+            require_value "$@"
+            JAW_OPENING_AXIS="$2"
+            shift 2
+            ;;
+        --jaw-perpendicular-turn)
+            require_value "$@"
+            JAW_PERPENDICULAR_TURN="$2"
+            shift 2
+            ;;
         --full-log-file) require_value "$@"; FULL_LOG_FILE="$2"; shift 2 ;;
         --insert-log-file) require_value "$@"; INSERT_LOG_FILE="$2"; shift 2 ;;
         --reset-script) require_value "$@"; ROBOT_RESET_SCRIPT="$2"; shift 2 ;;
@@ -142,6 +158,26 @@ case "$WRIST_PERCEPTION_MODE" in
     cached-grid|legacy-vlm) ;;
     *) printf 'ERROR: unsupported wrist perception mode: %s\n' "$WRIST_PERCEPTION_MODE" >&2; exit 2 ;;
 esac
+case "$JAW_OPENING_AXIS" in
+    x|y) ;;
+    *) printf 'ERROR: --jaw-opening-axis must be x or y\n' >&2; exit 2 ;;
+esac
+case "$JAW_PERPENDICULAR_TURN" in
+    ccw|cw) ;;
+    *) printf 'ERROR: --jaw-perpendicular-turn must be ccw or cw\n' >&2; exit 2 ;;
+esac
+
+# Prefer color-agnostic rack configs when they are installed, while retaining
+# compatibility with older checkouts that only contain the black-rack presets.
+if [[ "$RACK_CONFIG" == "$ANY_POSE_ROOT/config_rack_center_generic_vlm.yaml" && ! -e "$RACK_CONFIG" ]]; then
+    RACK_CONFIG="$ANY_POSE_ROOT/config_rack_center_vlm.yaml"
+fi
+if [[ "$LEFT_HOLE_CONFIG" == "$ANY_POSE_ROOT/config_rack_empty_hole_left_wrist_generic_vlm.yaml" && ! -e "$LEFT_HOLE_CONFIG" ]]; then
+    LEFT_HOLE_CONFIG="$ANY_POSE_ROOT/config_rack_empty_hole_left_wrist_vlm.yaml"
+fi
+if [[ "$RIGHT_HOLE_CONFIG" == "$ANY_POSE_ROOT/config_rack_empty_hole_right_wrist_generic_vlm.yaml" && ! -e "$RIGHT_HOLE_CONFIG" ]]; then
+    RIGHT_HOLE_CONFIG="$ANY_POSE_ROOT/config_rack_empty_hole_right_wrist_vlm.yaml"
+fi
 if [[ "$MODE" != "live" ]]; then
     if [[ "$EXECUTE" == "1" || "$STOP_AFTER_INVENTORY" == "1" ]]; then
         printf 'ERROR: execution and hardware gate flags are only valid with --mode live\n' >&2
@@ -201,7 +237,11 @@ printf '[full-flow] LIVE hardware flow\n'
 printf '[full-flow] artifact_dir=%s\n' "$ARTIFACT_DIR"
 printf '[full-flow] tube_inventory_json=%s\n' "$TUBE_RESULT_JSON"
 printf '[full-flow] cached_rack_json=%s\n' "$RACK_RESULT_JSON"
+printf '[full-flow] rack_config=%s\n' "$RACK_CONFIG"
+printf '[full-flow] left_hole_config=%s\n' "$LEFT_HOLE_CONFIG"
+printf '[full-flow] right_hole_config=%s\n' "$RIGHT_HOLE_CONFIG"
 printf '[full-flow] wrist_perception_mode=%s\n' "$WRIST_PERCEPTION_MODE"
+printf '[full-flow] right-holder jaw-opening policy=perpendicular_to_rack_long_axis, local_axis=%s, turn=%s\n' "$JAW_OPENING_AXIS" "$JAW_PERPENDICULAR_TURN"
 printf '[full-flow] reset policy: on grasp/handover or insertion error=%s\n' "$RESET_AFTER_TUBE_ERROR"
 
 if [[ -f "$ANY_POSE_ROOT/.env" ]]; then
@@ -474,7 +514,14 @@ for tube_array_index in "${!TUBE_RESULTS[@]}"; do
         python3 "$INSERT_FLOW"
         --execute
         --holder-side auto
+        --rack-config "$RACK_CONFIG"
         --rack-result-json "$RACK_RESULT_JSON"
+        --rack-rgb "$ARTIFACT_DIR/initial_tube_inventory_rgb.jpg"
+        --left-hole-config "$LEFT_HOLE_CONFIG"
+        --right-hole-config "$RIGHT_HOLE_CONFIG"
+        --jaw-perpendicular-to-rack
+        --jaw-opening-axis "$JAW_OPENING_AXIS"
+        --jaw-perpendicular-turn "$JAW_PERPENDICULAR_TURN"
         --wrist-perception-mode "$WRIST_PERCEPTION_MODE"
         --wrist-camera-socket "$WRIST_CAMERA_SOCKET"
         --log-file "$tube_insert_log"

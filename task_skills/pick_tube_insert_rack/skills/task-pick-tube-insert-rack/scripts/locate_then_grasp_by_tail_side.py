@@ -24,6 +24,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--result-base-frame", choices=("base", "baseright", "baseleft"), default="base")
     parser.add_argument("--right-y-sign", choices=("negative", "positive"), default="negative")
     parser.add_argument("--side-deadband-m", type=float, default=0.002)
+    parser.add_argument("--fixed-arm", choices=("left", "right"), help="Bypass tail-side selection and use this arm.")
     parser.add_argument("--grasp-arg", action="append", default=[])
     parser.add_argument("--preferred-grasp-point", default="tail_to_head_1_5")
     parser.add_argument("--fallback-grasp-point", default="bbox_center")
@@ -96,7 +97,15 @@ def main(argv: list[str] | None = None) -> int:
     if not result_json.exists():
         raise FileNotFoundError(f"result.json does not exist: {result_json}")
     payload = json.loads(result_json.read_text(encoding="utf-8"))
-    arm, side_value, side_source = choose_arm(payload, args.result_base_frame, args.right_y_sign, args.side_deadband_m)
+    if args.fixed_arm:
+        arm, side_value, side_source = args.fixed_arm, 0.0, "fixed_arm"
+    else:
+        arm, side_value, side_source = choose_arm(
+            payload,
+            args.result_base_frame,
+            args.right_y_sign,
+            args.side_deadband_m,
+        )
     grasp_point = args.preferred_grasp_point
     grasp_args = list(args.grasp_arg)
     if not point_available(payload, grasp_point, args.result_base_frame):

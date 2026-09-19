@@ -34,6 +34,7 @@ INSERT_LOG_FILE=""
 WRIST_PERCEPTION_MODE="legacy-vlm"
 
 LOCATOR_ARGS=()
+GRASP_SELECTOR_ARGS=()
 GRASP_ARGS=()
 INSERTION_ARGS=()
 RUNNER_ARGS=()
@@ -76,6 +77,8 @@ Live flow options:
   --reset-arg ARG          Pass one extra argument to robot-reset; repeat as needed.
   --no-reset-after-error   Do not reset after grasp/handover or insertion failure.
   --locator-arg ARG       Pass one argument to the one-frame multi-tube locator; repeat as needed.
+  --grasp-selector-arg ARG
+                          Pass one argument to locate_then_grasp_by_tail_side.py; repeat as needed.
   --grasp-arg ARG         Pass one argument through to grasp_right_arm_xyz.sh; repeat as needed.
   --insertion-arg ARG     Pass one argument to run_manual_grip_to_insert.py; repeat as needed.
 
@@ -126,6 +129,7 @@ while [[ $# -gt 0 ]]; do
         --reset-arg) require_value "$@"; RESET_ARGS+=("$2"); shift 2 ;;
         --no-reset-after-error) RESET_AFTER_TUBE_ERROR=0; shift ;;
         --locator-arg) require_value "$@"; LOCATOR_ARGS+=("$2"); shift 2 ;;
+        --grasp-selector-arg) require_value "$@"; GRASP_SELECTOR_ARGS+=("$2"); shift 2 ;;
         --grasp-arg) require_value "$@"; GRASP_ARGS+=("$2"); shift 2 ;;
         --insertion-arg) require_value "$@"; INSERTION_ARGS+=("$2"); shift 2 ;;
         --runner-arg) require_value "$@"; RUNNER_ARGS+=("$2"); shift 2 ;;
@@ -440,8 +444,9 @@ for tube_array_index in "${!TUBE_RESULTS[@]}"; do
         --execute
         --grasp-arg=--go-home-before-transition
     )
+    GRASP_CMD+=("${GRASP_SELECTOR_ARGS[@]}")
     for arg in "${GRASP_ARGS[@]}"; do
-        GRASP_CMD+=(--grasp-arg "$arg")
+        GRASP_CMD+=("--grasp-arg=$arg")
     done
     if "${GRASP_CMD[@]}"; then
         printf '[single-flow] tube %d/%d: grasp and handover completed\n' \
