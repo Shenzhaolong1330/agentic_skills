@@ -69,7 +69,7 @@ python3 -u "$SCRIPT_DIR/grasp_right_arm_xyz.py" \
     --grasp-arrival-observed-z-offset-m 0 \
     --rate-hz 80 \
     --position-tolerance-m 0.015 \
-    --rotation-tolerance-rad 0.05 \
+    --rotation-tolerance-rad 0.1 \
     --transition-rotation-tolerance-rad 0.06 \
     --compact \
     "${EXTRA_ARGS[@]}"
