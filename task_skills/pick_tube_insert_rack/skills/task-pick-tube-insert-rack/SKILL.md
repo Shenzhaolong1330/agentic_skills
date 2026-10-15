@@ -96,8 +96,11 @@ compensation within the stage. It returns immediately when all four measured
 position/rotation errors pass. It never restarts the whole target after the
 continuous budget is exhausted.
 
-The console explicitly selects 3 mm / 0.03 rad arrival tolerances, two seconds
-settling per round, and the existing 25 mm / 0.20 rad compensation caps.
+The console explicitly selects 3 mm / 0.10 rad arrival tolerances, honoring the
+user-selected rotation limit, and two seconds
+settling per round with the existing 25 mm / 0.20 rad compensation caps.
+The separate precision probe defaults to 0.03 rad for stricter research; failing
+that stricter test must not be reported as a pass.
 `p2p_correction_progress` logs the nominal-goal residuals, historical best and
 plateau/improvement status on every round. A plateau warns and spends the
 remaining correction budget. A component outside arrival tolerance that grows

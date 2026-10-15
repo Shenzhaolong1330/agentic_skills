@@ -74,7 +74,9 @@ budget exhaustion still prevent out-of-tolerance completion.
 The task entry point is
 [task-pick-tube-insert-rack](../../../../task_skills/pick_tube_insert_rack/skills/task-pick-tube-insert-rack/SKILL.md#continuous-correction-used-by-the-console):
 `--p2p-continuous-corrections --p2p-retries 9`. The generic console explicitly uses
-3 mm / 0.03 rad arrival tolerances and 25 mm / 0.20 rad compensation caps.
+3 mm / 0.10 rad arrival tolerances (the user-selected rotation limit) and
+25 mm / 0.20 rad compensation caps. The isolated precision probe defaults to the
+stricter 0.03 rad research target and reports that result separately.
 
 Existing callers retain `stall_policy="stop"`. The standalone atomic CLI still
 makes one call. Legacy task outer retries remain available without the new flag;
