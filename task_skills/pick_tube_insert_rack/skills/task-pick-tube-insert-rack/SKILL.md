@@ -86,19 +86,74 @@ loop without an automatic reset or advancing to another cached tube. The default
 `--reset-after-error` explicitly enables the legacy full-reset-and-advance policy.
 Full reset opens both grippers and returns both arms Home.
 
-### Continuous correction used by the console
+### Continuous feedback P2P used by the console
 
-The generic console calls the Python grasp script directly with
-`--p2p-continuous-corrections --p2p-retries 9`. This uses **one atomic call**:
+The console defaults to `FRANKA_P2P_CONTROLLER=continuous_servo` for free-space
+P2P subprocesses, including grasp, handover alignment and rack observation or
+hole approach. It runs a real timed feedback loop targeting **20 Hz**, using one fresh
+native observation after each acknowledged command; it does not wait for a
+settle interval after each correction. Contact insertion and Home/reset retain
+their existing procedures. The `p2p_controller_selected` timeline event records
+which route each subprocess actually receives.
+
+The nominal goal stays fixed. An initial nominal approach, when needed, starts
+from the existing saved command with the caller's trajectory limits. The slow
+feedback phase preserves and continuously updates bounded compensation at most
+**2 mm/s / 0.01 rad/s**, with bounded acceleration and command steps. It uses at
+most **25 mm / 0.20 rad** compensation around the goal and respects tighter
+caller limits. It does not synchronize with `step(None)` or restart the whole
+target through an outer retry loop.
+
+The console grasp profile requests **3 mm / 0.10 rad** arrival. The continuous
+controller uses the smaller of each caller tolerance and these caps, so a wrist
+stage requesting 0.035 rad remains at 0.035 rad. Native measured pose must first
+enter tolerance, command velocity must brake to zero, and fresh stationary
+feedback must then remain within tolerance for at least 0.5 seconds, followed by
+an independent final read. Existing saved compensation is retained at arrival.
+No subsequent descent, gripper or handover is allowed on an unverified result.
+
+The slow servo allows **30 seconds of sending** and the final read-only hold
+allows **6 seconds**. `max_steps` (default 3000) additionally bounds the combined
+nominal and servo command count. The nominal approach, perception and other task
+stages are outside the 30-second servo budget. Legacy `--p2p-retries` and
+`--settle-time-sec` do not add correction rounds to this controller.
+
+Each command requires a valid raw ACK followed by fresh, healthy native
+diagnostics, source-bound torso poses, an unchanged server session, the exact
+next command count and matching saved targets. Faults, missing/stale feedback,
+unexpected commands, bound/time exhaustion and uncertain RPC results fail
+without replay or automatic retry. The grasp adapter requires both `ok=true`
+and `controller="continuous_servo"`; a measured pose alone cannot turn a failed
+call into success. Controller recovery, synthetic observed-Z offsets and
+`--continue-on-tolerance-miss` cannot be combined with this mode.
+
+Standalone scripts remain `segmented` when the environment is unset. Select the
+new mode with `FRANKA_P2P_CONTROLLER=continuous_servo`, atomic CLI
+`--controller continuous_servo`, or Python API `controller="continuous_servo"`;
+an explicit atomic API/CLI choice overrides the environment. To roll the console
+back, set `"p2p_controller": "segmented"` in
+`/home/deepcybo/agent_ws/robot_agent_lab/configs/runtime.json` before a new task.
+See the [atomic controller contract](../../../../atomic_skills/dual_franka_p2p/skills/atomic-motion-franka-move-to-pose/SKILL.md#continuous-feedback-controller).
+
+The integration and its offline tests do not establish complete live task
+success. Local precision probes have a narrower scope; report a full
+grasp/handover/insertion run as physically verified only from its own evidence.
+
+### Legacy segmented correction within one call
+
+With `FRANKA_P2P_CONTROLLER=segmented`, the retained task flag
+`--p2p-continuous-corrections --p2p-retries 9` uses **one atomic call** with
+discrete correction rounds; its name does not select the 20 Hz feedback mode.
+The generic console retains these flags for rollback compatibility:
 one initial trajectory and at most nine subsequent bounded correction rounds.
 It synchronizes the command reference only once and preserves accumulated
 compensation within the stage. It returns immediately when all four measured
 position/rotation errors pass. It never restarts the whole target after the
-continuous budget is exhausted.
+correction budget is exhausted.
 
-The console explicitly selects 3 mm / 0.10 rad arrival tolerances, honoring the
-user-selected rotation limit, and two seconds
-settling per round with the existing 25 mm / 0.20 rad compensation caps.
+The console's retained segmented profile selects 3 mm / 0.10 rad arrival
+tolerances, honoring the user-selected rotation limit, and two seconds settling
+per round with the existing 25 mm / 0.20 rad compensation caps.
 The separate precision probe defaults to 0.03 rad for stricter research; failing
 that stricter test must not be reported as a pass.
 `p2p_correction_progress` logs the nominal-goal residuals, historical best and
@@ -115,13 +170,14 @@ The atomic client also checks session identity and saved-target continuity.
 Faults, unexpected commands, missing feedback and uncertain RPC outcomes stop
 without replay. Reaching the correction or compensation limit while still
 outside tolerance prevents subsequent descent, gripper or handover stages.
-Continuous mode cannot restart controllers or apply a synthetic observed-Z
+This legacy one-call mode cannot restart controllers or apply a synthetic observed-Z
 arrival offset. Existing standalone/shell callers remain on their legacy policy
-unless they explicitly select the new flag.
+unless they explicitly select this flag or the separate controller environment.
 
-### Bounded same-target P2P retries
+### Legacy bounded same-target P2P retries
 
-The shared grasp shell defaults to `--p2p-retries 9`: each motion stage may call
+With `segmented` and without `--p2p-continuous-corrections`, the shared grasp
+shell defaults to `--p2p-retries 9`: each motion stage may call
 P2P at most **10 times total**, including any explicitly enabled controller-recovery
 retry. It returns immediately once all four measured pose errors pass their
 tolerances; ten is a ceiling, not a required number of calls. Direct Python calls
@@ -167,6 +223,8 @@ both arms' residuals and the normalized convergence score. Native telemetry, whe
 present, must be at most 250 ms old and report idle/move without active errors;
 older pose-only servers still require the existing external health preflight
 and cannot use warning-based stall retries.
+
+### Shared grasp and perception checks
 
 Grasping now waits for fresh closure feedback stable for 0.5 seconds before lifting.
 The shared grasp shell sets `--transition-position-tolerance-m 0.005` for the

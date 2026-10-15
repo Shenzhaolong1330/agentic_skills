@@ -55,13 +55,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rotation-tolerance-rad", type=float, default=0.03)
     parser.add_argument("--max-correction-iters", type=int, default=2)
     parser.add_argument("--max-steps", type=int, default=3000)
+    parser.add_argument("--controller", choices=("segmented", "continuous_servo"),
+                        help="Override FRANKA_P2P_CONTROLLER for this call; default remains segmented outside the console.")
     parser.add_argument("--execute", action="store_true", help="Send motion command. Without this, only print plan.")
     parser.add_argument("--compact", action="store_true")
     return parser
 
 
-def _pose_from_side_observation(rpc_module: Any, observation: dict[str, Any], side: str) -> list[float]:
-    return list(map(float, rpc_module._pose_from_side_observation(observation, side)))
+def _pose_from_side_observation(rpc_module: Any, observation: dict[str, Any], side: str, controller=None) -> list[float]:
+    return list(map(float, rpc_module._pose_from_side_observation(observation, side, controller=controller)))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -87,8 +89,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     try:
         obs = client.get_observation()
-        left_current = _pose_from_side_observation(rpc, obs, "left_arm")
-        right_current = _pose_from_side_observation(rpc, obs, "right_arm")
+        left_current = _pose_from_side_observation(rpc, obs, "left_arm", args.controller)
+        right_current = _pose_from_side_observation(rpc, obs, "right_arm", args.controller)
         left_target = args.left_pose or left_current
         right_target = args.right_pose or right_current
         report: dict[str, Any] = {
@@ -114,10 +116,11 @@ def main(argv: list[str] | None = None) -> int:
                 rotation_tolerance_rad=args.rotation_tolerance_rad,
                 max_correction_iters=args.max_correction_iters,
                 max_steps=args.max_steps,
+                controller=args.controller,
             )
             final_obs = client.get_observation()
-            report["left_final"] = _pose_from_side_observation(rpc, final_obs, "left_arm")
-            report["right_final"] = _pose_from_side_observation(rpc, final_obs, "right_arm")
+            report["left_final"] = _pose_from_side_observation(rpc, final_obs, "left_arm", args.controller)
+            report["right_final"] = _pose_from_side_observation(rpc, final_obs, "right_arm", args.controller)
         print(json.dumps(report, indent=None if args.compact else 2, ensure_ascii=False, default=str))
         return 0
     finally:

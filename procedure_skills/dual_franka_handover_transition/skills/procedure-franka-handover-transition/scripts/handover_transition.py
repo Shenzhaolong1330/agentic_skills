@@ -122,6 +122,9 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(report, indent=None if args.compact else 2, ensure_ascii=False, default=str))
         return 0
 
+    controller = os.environ.get('FRANKA_P2P_CONTROLLER', 'segmented')
+    if controller not in ('segmented', 'continuous_servo'):
+        raise ValueError('Invalid FRANKA_P2P_CONTROLLER')
     rpc = _load_rpc_client(args.client_path.expanduser())
     client = rpc.DualFrankaRobotiqRpcClient(
         ip=args.server_host,
@@ -129,8 +132,9 @@ def main(argv: list[str] | None = None) -> int:
         timeout=args.rpc_timeout_sec,
     )
     try:
-        client.step(None)
-        time.sleep(0.2)
+        if os.environ.get('FRANKA_P2P_CONTROLLER') != 'continuous_servo':
+            client.step(None)
+            time.sleep(0.2)
         report["move_result"] = client.dual_robot_move_to_ee_pose(
             left_target,
             right_target,

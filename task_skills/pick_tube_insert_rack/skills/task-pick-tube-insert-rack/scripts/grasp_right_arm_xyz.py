@@ -840,7 +840,10 @@ def load_transition_targets(path: Path, active_side: str) -> tuple[np.ndarray, n
 
 
 def reanchor(client: DualFrankaRobotiqRpcClient, enabled: bool) -> None:
-    if not enabled:
+    mode = os.environ.get('FRANKA_P2P_CONTROLLER', 'segmented')
+    if mode not in ('segmented', 'continuous_servo'):
+        raise ValueError('P2P controller must be segmented or continuous_servo')
+    if not enabled or mode == 'continuous_servo':
         return
     client.step(None)
     time.sleep(0.2)
@@ -916,14 +919,17 @@ def move_stage(
     )
     regular_retries_remaining = int(getattr(args, "p2p_retries", 1))
     min_progress = float(getattr(args, "p2p_retry_min_progress_ratio", 0.02))
-    continuous = bool(getattr(args, "p2p_continuous_corrections", False))
+    servo = os.environ.get('FRANKA_P2P_CONTROLLER') == 'continuous_servo'
+    continuous = bool(getattr(args, "p2p_continuous_corrections", False) or servo)
     warn_and_retry_stall = bool(getattr(args, "warn_and_retry_stall", False) or continuous)
     if continuous and getattr(args, "recover_stalled_controller", False):
         raise ValueError("Continuous P2P does not restart a controller inside a correction session")
-    if continuous and regular_retries_remaining > 9:
+    if continuous and not servo and regular_retries_remaining > 9:
         raise ValueError("Continuous P2P allows at most 9 corrections after the first trajectory (10 rounds)")
     if continuous and effective_arrival_observed_z_offset_m != 0:
         raise ValueError("Continuous P2P verifies the measured pose directly; observed-z offsets are unsupported")
+    if servo and getattr(args, 'continue_on_tolerance_miss', False):
+        raise ValueError('Continuous servo cannot allow out-of-tolerance progression')
     if regular_retries_remaining < 0 or not math.isfinite(min_progress) or not 0 < min_progress < 1:
         raise ValueError("P2P retries must be non-negative and minimum progress ratio must be in (0, 1)")
     if any(not math.isfinite(t) or t <= 0 for t in
@@ -969,7 +975,7 @@ def move_stage(
             "correction_guard": correction_guard,
         }
         print("p2p correction policy:", json.dumps({
-            "mode": "continuous_bounded", "max_rounds": max_possible_attempts,
+            "mode": "continuous_servo" if servo else "continuous_bounded", "max_rounds": None if servo else max_possible_attempts,
             "max_corrections": regular_retries_remaining, "preserve_bias_within_stage": True,
             "position_deadband_m": .0005, "rotation_deadband_rad": .005,
         }), flush=True)
@@ -1052,6 +1058,8 @@ def move_stage(
         print("left residual:", json.dumps(left_error, indent=None if args.compact else 2, ensure_ascii=False))
         print("right residual:", json.dumps(right_error, indent=None if args.compact else 2, ensure_ascii=False))
         result_ok = bool(result.get("ok"))
+        if servo and (not result_ok or result.get('controller') != 'continuous_servo'):
+            raise RuntimeError(f'{name}: continuous servo did not verify stable arrival; no retry or next stage')
         score = residual_score(left_current, right_current)
         print("p2p_attempt_result:", json.dumps({
             "stage": name, "attempt": attempt_number, "max_attempts": max_possible_attempts,

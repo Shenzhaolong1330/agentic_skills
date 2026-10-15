@@ -155,6 +155,9 @@ def _move_with_failure_release(
             stage=stage,
         )
     except Exception as exc:
+        # An uncertain servo outcome must never trigger a release or recovery motion.
+        if os.environ.get("FRANKA_P2P_CONTROLLER") == "continuous_servo":
+            raise
         if not (args.execute and args.release_on_motion_failure):
             raise
         release_report: dict[str, Any] = {
@@ -322,6 +325,12 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(report, indent=None if args.compact else 2, ensure_ascii=False))
         return 0
 
+    controller = os.environ.get('FRANKA_P2P_CONTROLLER', 'segmented')
+    if controller not in ('segmented', 'continuous_servo'):
+        raise ValueError('Invalid FRANKA_P2P_CONTROLLER')
+    if controller == 'continuous_servo' and any((args.continue_on_tolerance_miss,
+            args.release_on_motion_failure, args.go_home_after_motion_failure)):
+        raise ValueError('Continuous servo cannot bypass arrival or run release/home after failure')
     rpc = _load_rpc_module()
     client = rpc.DualFrankaRobotiqRpcClient(
         ip=args.server_host,
@@ -330,7 +339,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     try:
         report["ping"] = client.ping()
-        client.step(None)
+        if os.environ.get('FRANKA_P2P_CONTROLLER') != 'continuous_servo':
+            client.step(None)
         observation = client.get_observation()
         left_current = _pose_from_observation(rpc, observation, "left")
         right_current = _pose_from_observation(rpc, observation, "right")
@@ -358,7 +368,8 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
 
-        client.step(None)
+        if os.environ.get('FRANKA_P2P_CONTROLLER') != 'continuous_servo':
+            client.step(None)
         observation = client.get_observation()
         left_current = _pose_from_observation(rpc, observation, "left")
         right_current = _pose_from_observation(rpc, observation, "right")
@@ -387,7 +398,8 @@ def main(argv: list[str] | None = None) -> int:
             time.sleep(args.release_sleep_sec)
 
         if args.retract_distance_m > 0:
-            client.step(None)
+            if os.environ.get('FRANKA_P2P_CONTROLLER') != 'continuous_servo':
+                client.step(None)
             observation = client.get_observation()
             left_current = _pose_from_observation(rpc, observation, "left")
             right_current = _pose_from_observation(rpc, observation, "right")

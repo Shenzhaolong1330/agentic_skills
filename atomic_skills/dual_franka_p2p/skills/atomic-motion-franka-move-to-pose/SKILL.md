@@ -40,13 +40,85 @@ python3 /home/deepcybo/agent_ws/agentic_skills/atomic_skills/dual_franka_p2p/ski
   --execute
 ```
 
-If only one arm pose is passed, the other arm holds its current end-effector pose.
+If only one arm pose is passed, the other arm's current measured pose is used as
+its nominal goal. In continuous mode, an already-arrived stationary arm keeps
+its existing saved command compensation and receives explicit zero increments.
 
-## Continuous correction and legacy retries
+## Select the P2P controller
 
-For the console grasp path, keep one atomic call alive for the entire correction
-budget. The initial trajectory plus `max_correction_iters=9` permits at most ten
-trajectory/measurement rounds. Return as soon as both arms pass position and
+Standalone scripts and Python callers default to `segmented` when
+`FRANKA_P2P_CONTROLLER` is unset. Select `continuous_servo` using one of:
+
+- Python API: `client.dual_robot_move_to_ee_pose(..., controller="continuous_servo")`.
+- Atomic CLI: add `--controller continuous_servo` to `scripts/move_to_pose.py`.
+- Child-process environment: `FRANKA_P2P_CONTROLLER=continuous_servo`.
+
+An explicit API/CLI controller overrides the environment. Only `segmented` and
+`continuous_servo` are valid. Continuous mode requires `smooth=True` and real
+timed dispatch; it rejects `smooth=False` and `sleep=False`.
+
+The console selects `continuous_servo` by default for free-space P2P subprocesses
+through this environment variable. To roll those commands back to the retained
+implementation, set `"p2p_controller": "segmented"` in
+`/home/deepcybo/agent_ws/robot_agent_lab/configs/runtime.json` before a new console
+task. The console routes contact insertion and Home/reset procedures through
+their existing policies; changing the free-space P2P controller does not replace
+those procedures. The `p2p_controller_selected` event records the actual route.
+
+## Continuous feedback controller
+
+`continuous_servo` runs a timed outer feedback loop targeting 20 Hz for console
+calls (at least 50 ms between dispatches; a lower requested rate is respected). Each successful
+raw `step` acknowledgement is followed by one fresh native observation before
+the next proposal. There is no per-correction settling pause, `step(None)`
+reanchor, or outer same-target retry. The nominal goal stays fixed and command
+compensation starts from the server's confirmed saved target.
+
+If that saved target is outside the goal's compensation limits, a quintic nominal
+approach first moves the saved command toward the goal using the caller's speed
+and step limits. The slow feedback phase then uses at most **2 mm/s** translation
+and **0.01 rad/s** rotation, with bounded acceleration and command steps. Its
+fixed compensation limits are at most **25 mm / 0.20 rad** around the nominal
+goal. Smaller caller limits are retained. The controller never treats reaching
+a compensation limit as arrival.
+
+Arrival uses the actual source-bound native torso pose. Effective tolerances are
+`min(caller_position_tolerance, 0.003 m)` and
+`min(caller_rotation_tolerance, 0.10 rad)`: this mode can tighten a caller's
+tolerance but cannot loosen it. Once the measured pose first enters tolerance,
+the command smoothly brakes and retains its compensation. Completion then
+requires a stationary hold lasting at least 0.5 seconds plus a fresh final
+verification. Losing tolerance after braking fails; the integrator does not
+restart automatically.
+
+The slow servo has a **30-second sending budget**; the final read-only hold has
+a **6-second limit**. `max_steps` (default 3000) also bounds the total number of
+nominal and servo commands. These are ceilings, not a promise to converge or a
+30-second limit for the entire task. Legacy `max_correction_iters` and
+`settle_time_sec` do not create repeated correction rounds in this mode.
+
+Both arms must provide fresh source-bound native poses, complete healthy native
+diagnostics and advancing timestamps/sequences. Every command verifies the raw
+ACK, unchanged server session, exact next command count, and matching saved
+targets before committing the internal proposal. Missing feedback, faults,
+unexpected commands, limits and uncertain RPC outcomes raise without replay or
+an automatic retry. Existing caller feedback guards still run; the legacy
+`correction_guard` is called only after verified final arrival in this mode.
+Events `p2p_servo_start`, `p2p_servo_progress`, `p2p_servo_arrived` and
+`p2p_servo_failed` expose the selected controller, errors, bounds and timing.
+
+This is an integrated continuous outer-loop candidate. Offline tests and local
+precision probes do not establish that a complete grasp/handover/insertion task
+has been verified with this controller. Resource ownership, independent
+controller receipt checks and physical task verification remain caller duties.
+
+## Legacy segmented correction and retries
+
+The following behavior applies to `controller="segmented"`. The task flag
+`--p2p-continuous-corrections` retains its older meaning: one atomic call with
+discrete trajectory/measurement/settle rounds. It does **not** select the new
+20 Hz feedback controller. The initial trajectory plus `max_correction_iters=9`
+permits at most ten trajectory/measurement rounds. Return as soon as both arms pass position and
 rotation tolerances. Keep the nominal goal fixed and accumulate only bounded
 command compensation; a new atomic call synchronizes to measured pose and loses
 that compensation.
@@ -72,14 +144,16 @@ inside the same call; faults, significant divergence, compensation limits or
 budget exhaustion still prevent out-of-tolerance completion.
 
 The task entry point is
-[task-pick-tube-insert-rack](../../../../task_skills/pick_tube_insert_rack/skills/task-pick-tube-insert-rack/SKILL.md#continuous-correction-used-by-the-console):
-`--p2p-continuous-corrections --p2p-retries 9`. The generic console explicitly uses
+[task-pick-tube-insert-rack](../../../../task_skills/pick_tube_insert_rack/skills/task-pick-tube-insert-rack/SKILL.md#legacy-segmented-correction-within-one-call):
+`--p2p-continuous-corrections --p2p-retries 9`. These flags remain available when
+the console is rolled back to `segmented`. The console grasp profile uses
 3 mm / 0.10 rad arrival tolerances (the user-selected rotation limit) and
 25 mm / 0.20 rad compensation caps. The isolated precision probe defaults to the
 stricter 0.03 rad research target and reports that result separately.
 
 Existing callers retain `stall_policy="stop"`. The standalone atomic CLI still
-makes one call. Legacy task outer retries remain available without the new flag;
+makes one call. Legacy task outer retries remain available without
+`--p2p-continuous-corrections`;
 each new call synchronizes its saved reference and starts compensation again.
 Never repeat a relative delta or replay an RPC whose outcome is unknown.
 

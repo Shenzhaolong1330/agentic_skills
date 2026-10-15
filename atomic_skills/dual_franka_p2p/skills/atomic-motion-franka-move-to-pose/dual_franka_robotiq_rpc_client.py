@@ -8,14 +8,42 @@ only has Python and zerorpc installed.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import math
+import os
+from pathlib import Path
 import sys
 import time
 import traceback
 from collections import deque
 from collections.abc import Mapping, Sequence
 from typing import Any, Optional
+
+
+def p2p_controller_mode(controller: Optional[str] = None) -> str:
+    """Explicit per-call selection wins; legacy callers remain segmented."""
+    mode = controller if controller is not None else os.environ.get('FRANKA_P2P_CONTROLLER', 'segmented')
+    if mode not in ('segmented', 'continuous_servo'):
+        raise ValueError('P2P controller must be segmented or continuous_servo')
+    return mode
+
+
+def _continuous_p2p_module():
+    name = '_franka_skill_continuous_p2p'
+    path = Path(__file__).with_name('continuous_p2p.py')
+    loaded = sys.modules.get(name)
+    if loaded is not None and Path(loaded.__file__).resolve() == path.resolve():
+        return loaded
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(name, None)
+        raise
+    return module
 
 
 def _json_loads(value: str) -> Any:
@@ -124,8 +152,21 @@ def _quat_multiply_xyzw(
     )
 
 
-def _pose_from_side_observation(observation: Mapping[str, Any], side: str) -> list[float]:
+def _pose_from_side_observation(observation: Mapping[str, Any], side: str, *, controller: Optional[str] = None) -> list[float]:
     side_state = _as_mapping(observation.get(side))
+    if p2p_controller_mode(controller) == 'continuous_servo':
+        native = _as_mapping(side_state.get('native_robot_state'))
+        pose = _as_mapping(native.get('torso_eef_pose'))
+        if (pose.get('schema') != 'aoe.franka-source-bound-pose.v1' or pose.get('frame') != 'torso'
+                or type(native.get('sequence')) is not int or native['sequence'] <= 0
+                or type(pose.get('source_sequence')) is not int
+                or pose.get('source_sequence') != native['sequence']):
+            raise RuntimeError(f'{side}: continuous servo requires source-bound native torso pose')
+        position = _as_float_vector(pose.get('position'), 3, f'{side}.native.position')
+        quaternion = _as_float_vector(pose.get('orientation_xyzw'), 4, f'{side}.native.quaternion')
+        if abs(math.sqrt(sum(v * v for v in quaternion)) - 1.) > 1e-5:
+            raise RuntimeError(f'{side}: native quaternion is not normalized')
+        return position + _quat_to_rotvec(quaternion)
     robot_state = _as_mapping(side_state.get('robot_state')) or side_state
 
     if 'end_pose' in side_state:
@@ -824,6 +865,7 @@ class DualFrankaRobotiqRpcClient:
         feedback_guard=None,
         correction_guard=None,
         feedback_mode: str = 'step_reply',
+        controller: Optional[str] = None,
     ):
         """Move both end-effectors through the server Cartesian pose API.
 
@@ -850,6 +892,26 @@ class DualFrankaRobotiqRpcClient:
         """
         left_pose = _as_float_vector(left_delta, 6, 'left_delta')
         right_pose = _as_float_vector(right_delta, 6, 'right_delta')
+        if p2p_controller_mode(controller) == 'continuous_servo':
+            if smooth is False:
+                raise ValueError('continuous_servo cannot use the legacy single-RPC motion path')
+            return _continuous_p2p_module().run(
+                self, left_pose, right_pose, delta=delta, wait=wait,
+                duration_sec=duration_sec, rate_hz=rate_hz,
+                max_translation_speed=max_translation_speed, max_rotation_speed=max_rotation_speed,
+                max_translation_step=max_translation_step, max_rotation_step=max_rotation_step,
+                min_duration_sec=min_duration_sec, max_steps=max_steps, sleep=sleep,
+                settle_time_sec=settle_time_sec, position_tolerance_m=position_tolerance_m,
+                rotation_tolerance_rad=rotation_tolerance_rad, max_correction_iters=max_correction_iters,
+                max_tracking_translation_bias_m=max_tracking_translation_bias_m,
+                max_tracking_rotation_bias_rad=max_tracking_rotation_bias_rad,
+                stall_detection_side=stall_detection_side,
+                stall_translation_epsilon_m=stall_translation_epsilon_m,
+                stall_rotation_epsilon_rad=stall_rotation_epsilon_rad,
+                max_stalled_correction_iters=max_stalled_correction_iters,
+                stall_policy=stall_policy, feedback_guard=feedback_guard,
+                correction_guard=correction_guard, feedback_mode=feedback_mode,
+            )
         if smooth is None:
             smooth = not bool(delta)
         if stall_policy not in ('stop', 'warn'):
@@ -1011,8 +1073,8 @@ class DualFrankaRobotiqRpcClient:
             raise RuntimeError(f'Unexpected observation payload: {type(observation)!r}')
         check_feedback(observation)
 
-        left_start = _pose_from_side_observation(observation, 'left_arm')
-        right_start = _pose_from_side_observation(observation, 'right_arm')
+        left_start = _pose_from_side_observation(observation, 'left_arm', controller='segmented')
+        right_start = _pose_from_side_observation(observation, 'right_arm', controller='segmented')
         if delta:
             left_target = _pose_from_delta(left_start, left_pose)
             right_target = _pose_from_delta(right_start, right_pose)
@@ -1083,8 +1145,8 @@ class DualFrankaRobotiqRpcClient:
             if not isinstance(snapshot, Mapping):
                 raise RuntimeError('P2P synchronization has no observation; no trajectory sent')
             check_feedback(snapshot, stepped=True, response=response)
-            return (_pose_from_side_observation(snapshot, 'left_arm'),
-                    _pose_from_side_observation(snapshot, 'right_arm'))
+            return (_pose_from_side_observation(snapshot, 'left_arm', controller='segmented'),
+                    _pose_from_side_observation(snapshot, 'right_arm', controller='segmented'))
 
         left_start, right_start = synchronize_reference()
         if delta:
@@ -1181,8 +1243,8 @@ class DualFrankaRobotiqRpcClient:
             if not isinstance(current_observation, Mapping):
                 raise RuntimeError(f'Unexpected observation payload: {type(current_observation)!r}')
             check_feedback(current_observation, expected_targets=confirmed_targets)
-            left_current = _pose_from_side_observation(current_observation, 'left_arm')
-            right_current = _pose_from_side_observation(current_observation, 'right_arm')
+            left_current = _pose_from_side_observation(current_observation, 'left_arm', controller='segmented')
+            right_current = _pose_from_side_observation(current_observation, 'right_arm', controller='segmented')
             final_error = _pose_error_report(left_current, right_current, left_target, right_target)
             final_error['correction_index'] = correction_index
             correction_reports.append(final_error)
@@ -1304,8 +1366,8 @@ class DualFrankaRobotiqRpcClient:
             if not isinstance(observation, Mapping):
                 raise RuntimeError(f'Unexpected observation payload: {type(observation)!r}')
 
-            left_current_pose = _pose_from_side_observation(observation, 'left_arm')
-            right_current_pose = _pose_from_side_observation(observation, 'right_arm')
+            left_current_pose = _pose_from_side_observation(observation, 'left_arm', controller='segmented')
+            right_current_pose = _pose_from_side_observation(observation, 'right_arm', controller='segmented')
             left_delta = _absolute_target_to_delta(left_current_pose, left_delta)
             right_delta = _absolute_target_to_delta(right_current_pose, right_delta)
 
