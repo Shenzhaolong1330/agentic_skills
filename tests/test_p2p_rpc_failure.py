@@ -41,6 +41,40 @@ class AppliedThenLostClient(rpc.DualFrankaRobotiqRpcClient):
 
 
 class RpcFailureTests(unittest.TestCase):
+    def test_rejected_or_missing_step_reply_stops_stream_without_replay(self):
+        replies = (
+            {'ok': False, 'step_count': 999},
+            {'error': 'controller rejected motion'},
+            {'info': {'error': 'controller rejected motion'}},
+            None, [], 'missing reply', False,
+        )
+        for reply in replies:
+            for fail_at, correction, waypoint in ((1, 0, 1), (2, 0, 2), (3, 1, 1)):
+                with self.subTest(reply=reply, fail_at=fail_at):
+                    client = AppliedThenLostClient(fail_at=-1)
+                    original_step = client.step
+
+                    def step(action=None):
+                        accepted = original_step(action)
+                        return reply if action is not None and client.applied == fail_at else accepted
+
+                    client.step = step
+                    trajectory = [dict(index=i, left_delta=[0.] * 6, right_delta=[0.] * 6) for i in (1, 2)]
+                    metadata = dict(steps=2, duration_sec=1., period_sec=.5)
+                    output = io.StringIO()
+                    with patch.object(rpc, '_plan_smooth_absolute_trajectory', return_value=(trajectory, metadata)), redirect_stderr(output):
+                        with self.assertRaisesRegex(RuntimeError, 'no further trajectory sent'):
+                            client.dual_robot_move_to_ee_pose(
+                                [.1, 0., 0., 0., 0., 0.], [0.] * 6,
+                                delta=False, smooth=True, sleep=False, max_correction_iters=1,
+                            )
+                    self.assertEqual(client.applied, fail_at)
+                    record = json.loads(next(line.removeprefix('p2p_rpc_failure: ') for line in output.getvalue().splitlines() if line.startswith('p2p_rpc_failure: ')))
+                    self.assertEqual(record['correction_index'], correction)
+                    self.assertEqual(record['waypoint'], waypoint)
+                    self.assertEqual(record['last_confirmed_step_count'], 100 + fail_at - 1 if fail_at > 1 else None)
+                    self.assertEqual(record['motion_outcome'], 'unconfirmed')
+
     def test_connection_monitor_records_disconnect_without_consuming_rpc_reply(self):
         import zmq
         class Monitor:

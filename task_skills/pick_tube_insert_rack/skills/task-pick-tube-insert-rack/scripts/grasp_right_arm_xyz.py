@@ -44,6 +44,12 @@ DualFrankaRobotiqRpcClient = franka_rpc.DualFrankaRobotiqRpcClient
 _absolute_target_to_delta = franka_rpc._absolute_target_to_delta
 _pose_from_side_observation = franka_rpc._pose_from_side_observation
 
+_PROGRESS_SPEC = importlib.util.spec_from_file_location(
+    "p2p_progress_grasp", Path(__file__).with_name("p2p_progress.py"))
+_PROGRESS_MODULE = importlib.util.module_from_spec(_PROGRESS_SPEC)
+_PROGRESS_SPEC.loader.exec_module(_PROGRESS_MODULE)
+P2PProgressGuard = _PROGRESS_MODULE.P2PProgressGuard
+
 np.set_printoptions(precision=6, suppress=True)
 
 
@@ -200,12 +206,49 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         help="Stage4-only rotation tolerance. Defaults to --rotation-tolerance-rad when omitted.",
     )
+    parser.add_argument("--transition-position-tolerance-m", type=float,
+                        help="Stage4 handover position tolerance; defaults to the general tolerance.")
     parser.add_argument("--max_correction_iters", "--max-correction-iters", dest="max_correction_iters", type=int, default=2)
+    parser.add_argument(
+        "--max-tracking-translation-bias-m",
+        type=float,
+        default=0.025,
+        help="Maximum cumulative translation command bias used by bounded tracking correction.",
+    )
+    parser.add_argument(
+        "--max-tracking-rotation-bias-rad",
+        type=float,
+        default=0.20,
+        help="Maximum cumulative rotation command bias used by bounded tracking correction.",
+    )
+    parser.add_argument(
+        "--continue-on-tolerance-miss",
+        action="store_true",
+        help=(
+            "HIGH RISK: after exhausting correction iterations or bounded tracking bias, "
+            "continue to later gripper and motion stages despite the measured pose miss."
+        ),
+    )
     parser.add_argument(
         "--p2p-retries",
         type=parse_nonnegative_int,
-        default=1,
-        help="Full same-target P2P retries after an attempt finishes outside the configured pose tolerances.",
+        default=2,
+        help="Additional same-target P2P calls per stage (default 2: at most 3 calls total, including recovery).",
+    )
+    parser.add_argument(
+        "--p2p-retry-min-progress-ratio", type=float, default=0.02,
+        help="Required relative reduction of the worst tolerance-normalized residual before another P2P call.",
+    )
+    parser.add_argument(
+        "--warn-and-retry-stall", action=argparse.BooleanOptionalAction, default=False,
+        help=("Warn and retry the same target within the P2P budget after stall or insufficient progress, "
+              "only with fresh native health on both arms and no increasing residual. Never skips arrival checks."),
+    )
+    parser.add_argument(
+        "--p2p-continuous-corrections", action="store_true",
+        help=("Use one synchronized P2P session per stage, keeping bounded command bias. "
+              "--p2p-retries counts correction rounds after the first trajectory; 9 means at most 10 rounds. "
+              "Stalls warn, fresh native health is required, and arrival tolerances still apply."),
     )
     parser.add_argument(
         "--recover-stalled-controller",
@@ -215,6 +258,8 @@ def build_parser() -> argparse.ArgumentParser:
             "produces essentially no observed motion, then retry the same absolute target."
         ),
     )
+    parser.add_argument("--detect-stalled-motion", action="store_true",
+                        help="Detect persistent lack of motion without enabling controller recovery.")
     parser.add_argument(
         "--controller-stall-translation-epsilon-m",
         type=float,
@@ -293,6 +338,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Close-command retries after feedback does not reach --gripper-close-min-fraction.",
     )
     parser.add_argument("--after-close-sleep-sec", type=float, default=0.5)
+    parser.add_argument("--gripper-close-stable-sec", type=float, default=0.5)
+    parser.add_argument("--handover-result-json", type=Path)
     parser.add_argument("--partner-gripper-stable-sec", type=float, default=0.5,
                         help="Require fresh receiver position feedback stable for this duration before releasing the donor.")
     parser.add_argument("--partner-gripper-close-timeout-sec", type=float, default=5.0)
@@ -373,10 +420,56 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def read_ee_poses(client: DualFrankaRobotiqRpcClient) -> tuple[np.ndarray, np.ndarray]:
+def check_motion_observation(obs: Any, *, require_native: bool = False) -> None:
+    """Reject reported faults; explicit warning mode also requires complete native health."""
+    if not isinstance(obs, dict):
+        raise RuntimeError("Invalid motion observation; no P2P retry")
+    for side in ("left_arm", "right_arm"):
+        state = obs.get(side)
+        if not isinstance(state, dict):
+            raise RuntimeError(f"Missing {side} observation; no P2P retry")
+        if require_native:
+            native = state.get("native_robot_state")
+            if not isinstance(native, dict):
+                raise RuntimeError(f"Missing {side} native diagnostics; warning retry requires verified health")
+            errors = native.get("current_errors")
+            if (not isinstance(errors, dict) or not errors
+                    or any(value is not False for value in errors.values())
+                    or native.get("sensor_clock_progressing") is not True
+                    or type(native.get("robot_mode")) not in (int, str)
+                    or native["robot_mode"] not in (1, 2, "idle", "move", "moving")):
+                raise RuntimeError(f"Unverified {side} native health; no warning retry")
+        for key in ("robot_state", "native_robot_state"):
+            diagnostics = state.get(key)
+            if diagnostics is None:
+                continue
+            if not isinstance(diagnostics, dict):
+                raise RuntimeError(f"Invalid {side}.{key}; no P2P retry")
+            mode = diagnostics.get("robot_mode")
+            if mode is not None and mode not in (1, 2, "idle", "move", "moving"):
+                raise RuntimeError(f"Unsafe {side} robot_mode={mode}; no P2P retry")
+            errors = diagnostics.get("current_errors", {})
+            active = any(errors.values()) if isinstance(errors, dict) else bool(errors)
+            if active:
+                raise RuntimeError(f"Active {side} current_errors; no P2P retry")
+            for collision in ("joint_collision", "cartesian_collision"):
+                if any(diagnostics.get(collision, [])):
+                    raise RuntimeError(f"Reported {side} {collision}; no P2P retry")
+            if key == "native_robot_state":
+                age = diagnostics.get("age_ns")
+                if (type(age) not in (int, float) or not math.isfinite(age)
+                        or not 0 <= age <= 250_000_000
+                        or diagnostics.get("sensor_clock_progressing") is False):
+                    raise RuntimeError(f"Stale {side} native feedback; no P2P retry")
+
+
+def read_ee_poses(client: DualFrankaRobotiqRpcClient, *, require_native: bool = False) -> tuple[np.ndarray, np.ndarray]:
     obs = client.get_observation()
+    check_motion_observation(obs, require_native=require_native)
     left = np.asarray(_pose_from_side_observation(obs, "left_arm"), dtype=float)
     right = np.asarray(_pose_from_side_observation(obs, "right_arm"), dtype=float)
+    if any(pose.shape != (6,) or not np.all(np.isfinite(pose)) for pose in (left, right)):
+        raise RuntimeError("Non-finite or invalid measured pose; no P2P retry")
     return left, right
 
 
@@ -510,6 +603,31 @@ def close_gripper_and_confirm(
 
 def print_pose(name: str, pose: np.ndarray) -> None:
     print(f"{name}: {np.array2string(np.asarray(pose), precision=6, suppress_small=True)}")
+
+
+def wait_gripper_open(client, side, *, timeout_sec=5.0, poll_sec=0.1):
+    """Require fresh open feedback before donor retreat or insertion."""
+    initial = gripper_state_from_observation(client.get_observation(), side)
+    previous_stamp = initial.get("stamp")
+    stable_since = None
+    deadline = time.monotonic() + timeout_sec
+    while True:
+        state = gripper_state_from_observation(client.get_observation(), side)
+        fraction = gripper_closed_fraction(state)
+        now = time.monotonic()
+        stamp = state.get("stamp")
+        if (state.get("enabled") is not False and fraction is not None and fraction <= 0.1
+                and stamp is not None and stamp != previous_stamp):
+            if stable_since is None:
+                stable_since = now
+            if now - stable_since >= 0.3:
+                return {"ok": True, "side": side, "closed_fraction": fraction}
+        else:
+            stable_since = None
+        previous_stamp = stamp
+        if now >= deadline:
+            raise RuntimeError(f"{side} open feedback not confirmed; no retreat or insertion")
+        time.sleep(min(poll_sec, deadline - now))
 
 
 def short_side(side: str) -> str:
@@ -797,24 +915,75 @@ def move_stage(
         f"settle={effective_settle_time_sec:.2f} s",
     )
     regular_retries_remaining = int(getattr(args, "p2p_retries", 1))
+    min_progress = float(getattr(args, "p2p_retry_min_progress_ratio", 0.02))
+    continuous = bool(getattr(args, "p2p_continuous_corrections", False))
+    warn_and_retry_stall = bool(getattr(args, "warn_and_retry_stall", False) or continuous)
+    if continuous and getattr(args, "recover_stalled_controller", False):
+        raise ValueError("Continuous P2P does not restart a controller inside a correction session")
+    if continuous and regular_retries_remaining > 9:
+        raise ValueError("Continuous P2P allows at most 9 corrections after the first trajectory (10 rounds)")
+    if continuous and effective_arrival_observed_z_offset_m != 0:
+        raise ValueError("Continuous P2P verifies the measured pose directly; observed-z offsets are unsupported")
+    if regular_retries_remaining < 0 or not math.isfinite(min_progress) or not 0 < min_progress < 1:
+        raise ValueError("P2P retries must be non-negative and minimum progress ratio must be in (0, 1)")
+    if any(not math.isfinite(t) or t <= 0 for t in
+           (effective_position_tolerance_m, effective_rotation_tolerance_rad)):
+        raise ValueError("P2P pose tolerances must be positive and finite")
+
+    def residual_score(left: np.ndarray, right: np.ndarray) -> float:
+        poses = {"left_arm": left.copy(), "right_arm": right.copy()}
+        if arrival_observed_z_offset_side is not None:
+            poses[arrival_observed_z_offset_side][2] += effective_arrival_observed_z_offset_m
+        errors = (pose_error(poses["left_arm"], left_target),
+                  pose_error(poses["right_arm"], right_target))
+        return max(max(error["translation_norm_m"] / effective_position_tolerance_m,
+                       error["rotation_norm_rad"] / effective_rotation_tolerance_rad) for error in errors)
+
     controller_recovery_available = bool(
         getattr(args, "recover_stalled_controller", False) and recover_stalled_side is not None
+        and not warn_and_retry_stall
     )
     stall_detection_enabled = bool(
-        getattr(args, "recover_stalled_controller", False)
+        (getattr(args, "recover_stalled_controller", False) or getattr(args, "detect_stalled_motion", False)
+         or warn_and_retry_stall)
         and recover_stalled_side is not None
         and int(args.max_stalled_correction_iters) > 0
     )
-    max_possible_attempts = 1 + regular_retries_remaining + int(controller_recovery_available)
-    attempt_index = 0
+    max_possible_attempts = 1 + regular_retries_remaining
+    previous_score = None
+    correction_options = {}
+    if continuous:
+        progress = P2PProgressGuard(effective_position_tolerance_m, effective_rotation_tolerance_rad)
 
-    while True:
+        def correction_guard(report):
+            decision = progress.observe(report)
+            print("p2p_correction_progress: " + json.dumps({
+                "stage": name, "correction_index": report.get("correction_index"),
+                "max_rounds": max_possible_attempts, **decision,
+            }), flush=True)
+
+        correction_options = {
+            "stall_policy": "warn",
+            "feedback_mode": "read_after_step",
+            "feedback_guard": lambda observation: check_motion_observation(observation, require_native=True),
+            "correction_guard": correction_guard,
+        }
+        print("p2p correction policy:", json.dumps({
+            "mode": "continuous_bounded", "max_rounds": max_possible_attempts,
+            "max_corrections": regular_retries_remaining, "preserve_bias_within_stage": True,
+            "position_deadband_m": .0005, "rotation_deadband_rad": .005,
+        }), flush=True)
+
+    for attempt_index in range(1 if continuous else max_possible_attempts):
         attempt_number = attempt_index + 1
-        if attempt_index > 0:
-            reanchor(client, enabled=not bool(getattr(args, "no_reanchor", False)))
-        print(f"p2p attempt: {attempt_number}/up-to-{max_possible_attempts}")
+        # The atomic P2P client synchronizes both saved command targets to its
+        # current-pose snapshot on every call. Do not duplicate that reset here.
+        print(f"p2p attempt: {attempt_number}/up-to-{1 if continuous else max_possible_attempts}")
 
-        left_before, right_before = read_ee_poses(client)
+        left_before, right_before = read_ee_poses(
+            client, require_native=continuous or (warn_and_retry_stall and attempt_index > 0))
+        if previous_score is None:
+            previous_score = residual_score(left_before, right_before)
 
         result = client.dual_robot_move_to_ee_pose(
             left_target.tolist(),
@@ -830,7 +999,9 @@ def move_stage(
             settle_time_sec=effective_settle_time_sec,
             position_tolerance_m=effective_position_tolerance_m,
             rotation_tolerance_rad=effective_rotation_tolerance_rad,
-            max_correction_iters=args.max_correction_iters,
+            max_correction_iters=regular_retries_remaining if continuous else args.max_correction_iters,
+            max_tracking_translation_bias_m=args.max_tracking_translation_bias_m,
+            max_tracking_rotation_bias_rad=args.max_tracking_rotation_bias_rad,
             max_steps=args.max_steps,
             stall_detection_side=recover_stalled_side if stall_detection_enabled else None,
             stall_translation_epsilon_m=float(args.controller_stall_translation_epsilon_m),
@@ -838,8 +1009,12 @@ def move_stage(
             max_stalled_correction_iters=(
                 int(args.max_stalled_correction_iters) if stall_detection_enabled else 0
             ),
+            **correction_options,
         )
-        left_current, right_current = read_ee_poses(client)
+        if (not isinstance(result, dict) or result.get("error")
+                or (result.get("info") or {}).get("error")):
+            raise RuntimeError(f"{name}: failed P2P reply; no retry or subsequent gripper commands")
+        left_current, right_current = read_ee_poses(client, require_native=warn_and_retry_stall)
         left_arrival = left_current.copy()
         right_arrival = right_current.copy()
         if arrival_observed_z_offset_side == "left_arm":
@@ -877,6 +1052,23 @@ def move_stage(
         print("left residual:", json.dumps(left_error, indent=None if args.compact else 2, ensure_ascii=False))
         print("right residual:", json.dumps(right_error, indent=None if args.compact else 2, ensure_ascii=False))
         result_ok = bool(result.get("ok"))
+        score = residual_score(left_current, right_current)
+        print("p2p_attempt_result:", json.dumps({
+            "stage": name, "attempt": attempt_number, "max_attempts": max_possible_attempts,
+            "left_error": left_error, "right_error": right_error,
+            "previous_normalized_error": previous_score, "normalized_error": score,
+        }), flush=True)
+        stalled_reason = (result.get("stalled") or {}).get("reason")
+        final_error = result.get("final_error") or {}
+        motion_stalled = bool((final_error.get("stall_detection") or {}).get("detected")
+                              or ((result.get("stalled") or {}).get("detected")
+                                  and stalled_reason != "tracking_compensation_limit"))
+        if stalled_reason not in (None, "tracking_compensation_limit"):
+            raise RuntimeError(f"{name}: unexpected P2P stop reason={stalled_reason}; no retry")
+        if (motion_stalled and not warn_and_retry_stall
+                and not getattr(args, "recover_stalled_controller", False)):
+            raise RuntimeError(f"{name} failed: persistent_motion_stall; "
+                               "no controller recovery, full-target retry or subsequent gripper commands")
         residual_ok = (
             left_error["translation_norm_m"] <= effective_position_tolerance_m
             and left_error["rotation_norm_rad"] <= effective_rotation_tolerance_rad
@@ -892,14 +1084,36 @@ def move_stage(
             f"position_error={max(left_error['translation_norm_m'], right_error['translation_norm_m']) * 1000:.4f} mm; "
             f"rotation_error={max(left_error['rotation_norm_rad'], right_error['rotation_norm_rad']):.4f} rad"
         )
-        if (result.get("stalled") or {}).get("reason") == "tracking_compensation_limit":
-            # Re-entering P2P synchronizes away the compensation just accumulated.
-            # Do not repeat that whole cycle or recover a controller at this bound.
-            raise RuntimeError(f"{name} failed: tracking_compensation_limit; {failure_detail}; "
-                               "no full-target retry; no subsequent gripper commands")
-
+        if continuous:
+            rounds = len(result.get("corrections") or [])
+            raise RuntimeError(
+                f"{name} failed after {rounds}/{max_possible_attempts} continuous P2P rounds; "
+                f"reason={stalled_reason or 'tolerance_miss'}; {failure_detail}; "
+                "bounded bias retained, no whole-target restart or subsequent gripper commands")
+        correction_index = final_error.get("correction_index")
+        correction_budget_exhausted = (
+            isinstance(correction_index, int)
+            and correction_index >= int(args.max_correction_iters)
+        )
+        allowed_miss = (
+            bool(args.continue_on_tolerance_miss)
+            and not warn_and_retry_stall
+            and max_possible_attempts == 1
+            and not motion_stalled
+            and (stalled_reason == "tracking_compensation_limit" or correction_budget_exhausted)
+        )
+        if allowed_miss:
+            reason = stalled_reason or "max_correction_iters"
+            print(
+                f"WARNING: {name} continuing after tolerance miss by explicit configuration; "
+                f"reason={reason}; {failure_detail}; subsequent gripper and motion commands remain enabled",
+                file=sys.stderr,
+                flush=True,
+            )
+            return left_current, right_current, result
         controller_recovered = False
-        if controller_recovery_available:
+        if (controller_recovery_available and regular_retries_remaining > 0
+                and stalled_reason != "tracking_compensation_limit"):
             before = pose_for_side(left_before, right_before, recover_stalled_side)
             after = pose_for_side(left_current, right_current, recover_stalled_side)
             observed_motion = pose_error(before, after)
@@ -937,24 +1151,49 @@ def move_stage(
                     time.sleep(recovery_settle)
 
         if controller_recovered:
+            regular_retries_remaining -= 1
+            previous_score = score
             print(
                 f"{name}: retrying the same absolute target after controller recovery; "
                 f"regular retries still available={regular_retries_remaining}"
             )
-            attempt_index += 1
             continue
 
         if regular_retries_remaining > 0:
+            # Restarting P2P discards its old bounded bias. Only measured
+            # convergence normally permits another call. Explicit warning mode
+            # can spend its remaining budget on a plateau, never a growing error.
+            insufficient_progress = score > previous_score * (1.0 - min_progress)
+            score_noise_margin = max(.0005 / effective_position_tolerance_m,
+                                     .005 / effective_rotation_tolerance_rad)
+            if warn_and_retry_stall and score > previous_score + score_noise_margin:
+                raise RuntimeError(
+                    f"{name} failed: p2p_error_increased; normalized error {previous_score:.6f} -> {score:.6f}; "
+                    "no full-target retry or subsequent gripper commands")
+            if insufficient_progress and not warn_and_retry_stall:
+                raise RuntimeError(
+                    f"{name} failed: p2p_no_convergence ({stalled_reason or 'tolerance_miss'}); "
+                    f"normalized error {previous_score:.6f} -> {score:.6f}; {failure_detail}; "
+                    "no full-target retry or subsequent gripper commands"
+                )
+            if warn_and_retry_stall and (motion_stalled or insufficient_progress):
+                warning = {"event": "p2p_stall_retry", "stage": name, "attempt": attempt_number,
+                           "max_attempts": max_possible_attempts,
+                           "reason": "persistent_motion_stall" if motion_stalled else "insufficient_progress",
+                           "previous_normalized_error": previous_score, "normalized_error": score,
+                           "remaining_attempts": regular_retries_remaining}
+                print("WARNING: p2p_stall_retry: " + json.dumps(warning), file=sys.stderr, flush=True)
             regular_retries_remaining -= 1
+            previous_score = score
             print(
                 f"{name}: residual exceeds tolerance after P2P attempt {attempt_number}; "
                 "retrying the same absolute target from the latest pose"
             )
-            attempt_index += 1
             continue
 
         raise RuntimeError(
             f"{name} failed after {attempt_number} P2P attempt(s); "
+            f"reason={stalled_reason or 'tolerance_miss'}; "
             f"no subsequent motion or gripper commands; robot stop unconfirmed "
             f"(p2p_ok={result_ok}, residual_ok={residual_ok}); {failure_detail}"
         )
@@ -962,6 +1201,8 @@ def move_stage(
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if not math.isfinite(args.p2p_retry_min_progress_ratio) or not 0 < args.p2p_retry_min_progress_ratio < 1:
+        raise ValueError("--p2p-retry-min-progress-ratio must be in (0, 1)")
     for name in ("pregrasp_xy_position_tolerance_m", "pregrasp_xy_rotation_tolerance_rad",
                  "pregrasp_xy_settle_time_sec", "lift_position_tolerance_m", "lift_rotation_tolerance_rad"):
         value = getattr(args, name)
@@ -971,6 +1212,10 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("--grasp-arrival-observed-z-offset-m must be finite")
     if not math.isfinite(args.grasp_target_z_offset_m):
         raise ValueError("--grasp-target-z-offset-m must be finite")
+    for name in ("max_tracking_translation_bias_m", "max_tracking_rotation_bias_rad"):
+        value = getattr(args, name)
+        if not math.isfinite(value) or value <= 0.0:
+            raise ValueError(f"--{name.replace('_', '-')} must be positive and finite")
     if not math.isfinite(args.lift_after_grasp_m) or args.lift_after_grasp_m < 0.0:
         raise ValueError("--lift-after-grasp-m must be a non-negative finite value")
     for name in (
@@ -980,6 +1225,7 @@ def main(argv: list[str] | None = None) -> int:
         "gripper_close_timeout_sec",
         "gripper_close_poll_sec",
         "partner_gripper_stable_sec",
+        "gripper_close_stable_sec",
         "partner_gripper_close_timeout_sec",
         "after_partner_close_sleep_sec",
         "retreat_after_transfer_m",
@@ -1189,6 +1435,7 @@ def main(argv: list[str] | None = None) -> int:
                 poll_sec=args.gripper_close_poll_sec,
                 min_closed_fraction=args.gripper_close_min_fraction,
                 retries=args.gripper_close_retries,
+                stable_sec=args.gripper_close_stable_sec,
             )
             print(
                 f"close_{active_label}_gripper:",
@@ -1268,6 +1515,7 @@ def main(argv: list[str] | None = None) -> int:
             transition_right,
             args,
             rotation_tolerance_rad=args.transition_rotation_tolerance_rad,
+            position_tolerance_m=args.transition_position_tolerance_m,
         )
 
         if args.no_close:
@@ -1312,6 +1560,8 @@ def main(argv: list[str] | None = None) -> int:
                 time.sleep(args.after_partner_close_sleep_sec)
 
             active_open_result = client.open_gripper(active_side)
+            open_confirmation = wait_gripper_open(client, active_side)
+            print("donor_open_confirmation:", json.dumps(open_confirmation))
             print(
                 f"open_{active_label}_gripper:",
                 json.dumps(active_open_result, indent=None if args.compact else 2, ensure_ascii=False, default=str),
@@ -1346,6 +1596,15 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 if isinstance(home_result, dict) and home_result.get("ok") is False:
                     raise RuntimeError(f"go_home_{active_label}_after_transfer failed: {home_result}")
+            if args.handover_result_json is not None:
+                path = args.handover_result_json
+                path.parent.mkdir(parents=True, exist_ok=True)
+                temporary = path.with_suffix(path.suffix + ".tmp")
+                temporary.write_text(json.dumps({"handover_complete": True,
+                    "receiver": partner_label, "donor": active_label,
+                    "receiver_close_confirmation": partner_close_confirmation,
+                    "donor_open_confirmation": open_confirmation}), encoding="utf-8")
+                temporary.replace(path)
             if args.stop_after_partner_close:
                 print(
                     f"stopped after close_{partner_label}_gripper and open_{active_label}_gripper "

@@ -116,6 +116,25 @@ class TargetReferenceTests(unittest.TestCase):
         self.assertLessEqual(bias['rotation_rad'], .20)
         self.assertEqual(bias['capped_components'], ['rotation'])
 
+    def test_custom_tracking_bias_limits_are_honored(self):
+        goal = [0.] * 6
+        measured = [-.02, 0., 0., 0., 0., -.4]
+        command = [.049, 0., 0., 0., 0., .99]
+        candidate, bias = rpc._bounded_tracking_target(
+            command,
+            measured,
+            goal,
+            .005,
+            .03,
+            max_translation_bias_m=.05,
+            max_rotation_bias_rad=1.0,
+        )
+        self.assertIsNotNone(candidate)
+        self.assertLessEqual(bias['translation_m'], .05)
+        self.assertLessEqual(bias['rotation_rad'], 1.0)
+        self.assertEqual(bias['max_translation_m'], .05)
+        self.assertEqual(bias['max_rotation_rad'], 1.0)
+
     def test_saturated_rotation_still_allows_translation_then_stops_when_no_room(self):
         goal = [0.] * 6
         measured = [-.015, 0., 0., 0., 0., -.137]

@@ -416,7 +416,15 @@ def _motion_action_from_delta(delta_pose: Sequence[float]) -> dict[str, dict[str
     }
 
 
-def _bounded_tracking_target(command, measured, goal, position_tolerance_m, rotation_tolerance_rad):
+def _bounded_tracking_target(
+    command,
+    measured,
+    goal,
+    position_tolerance_m,
+    rotation_tolerance_rad,
+    max_translation_bias_m=.025,
+    max_rotation_bias_rad=.20,
+):
     """Compensate tracking bias from the last CONFIRMED command, never stale state.
 
     Bound each update and the total displacement from the requested endpoint.
@@ -429,7 +437,10 @@ def _bounded_tracking_target(command, measured, goal, position_tolerance_m, rota
         norm = math.sqrt(sum(v * v for v in values))
         scale = 0.0 if norm <= tolerance else min(.6, step_limit / norm)
         update.extend(v * scale for v in values)
-    limits = (.025, .20)
+    limits = (
+        _positive_float(max_translation_bias_m, 'max_translation_bias_m'),
+        _positive_float(max_rotation_bias_rad, 'max_rotation_bias_rad'),
+    )
     initial_bias = _motion_norms(_absolute_target_to_delta(goal, command))
     report = {'max_translation_m': limits[0], 'max_rotation_rad': limits[1]}
     if any(value > limit + 1e-9 for value, limit in zip(initial_bias, limits)):
@@ -803,10 +814,16 @@ class DualFrankaRobotiqRpcClient:
         position_tolerance_m: float = 0.0015,
         rotation_tolerance_rad: float = 0.01,
         max_correction_iters: int = 1,
+        max_tracking_translation_bias_m: float = 0.025,
+        max_tracking_rotation_bias_rad: float = 0.20,
         stall_detection_side: Optional[str] = None,
         stall_translation_epsilon_m: float = 0.0005,
         stall_rotation_epsilon_rad: float = 0.005,
         max_stalled_correction_iters: int = 0,
+        stall_policy: str = 'stop',
+        feedback_guard=None,
+        correction_guard=None,
+        feedback_mode: str = 'step_reply',
     ):
         """Move both end-effectors through the server Cartesian pose API.
 
@@ -818,11 +835,37 @@ class DualFrankaRobotiqRpcClient:
         linearly interpolated in torso frame, orientation uses quaternion slerp,
         and path progress follows a quintic S-curve. Set ``smooth=False`` for
         the old single-RPC behavior.
+
+        ``stall_policy='warn'`` keeps bounded corrections in this single call,
+        without re-synchronizing away accumulated command bias. It requires a
+        ``feedback_guard(observation)`` that raises on unsafe or missing health
+        evidence. The guard runs on every observation, including step replies.
+        ``correction_guard(final_error)`` runs on every correction observation,
+        including arrival and exhaustion, before any further command or return.
+        Guard exceptions propagate immediately; no command is retried.
+        ``feedback_mode='read_after_step'`` explicitly supports servers whose
+        step replies lack native telemetry: after validating a successful step,
+        read one complete observation and require the same acknowledged count.
+        A failed read never retries the preceding command.
         """
         left_pose = _as_float_vector(left_delta, 6, 'left_delta')
         right_pose = _as_float_vector(right_delta, 6, 'right_delta')
         if smooth is None:
             smooth = not bool(delta)
+        if stall_policy not in ('stop', 'warn'):
+            raise ValueError("stall_policy must be 'stop' or 'warn'")
+        if feedback_mode not in ('step_reply', 'read_after_step'):
+            raise ValueError("feedback_mode must be 'step_reply' or 'read_after_step'")
+        for name, guard in (('feedback_guard', feedback_guard), ('correction_guard', correction_guard)):
+            if guard is not None and not callable(guard):
+                raise ValueError(f'{name} must be callable or None')
+        if stall_policy == 'warn' and feedback_guard is None:
+            raise ValueError("stall_policy='warn' requires feedback_guard")
+        if feedback_mode == 'read_after_step' and feedback_guard is None:
+            raise ValueError("feedback_mode='read_after_step' requires feedback_guard")
+        if not smooth and (stall_policy != 'stop' or feedback_guard is not None
+                           or correction_guard is not None or feedback_mode != 'step_reply'):
+            raise ValueError('P2P feedback guards and stall warnings require smooth=True')
         if smooth:
             return self._smooth_dual_robot_move_to_ee_pose(
                 left_pose,
@@ -842,10 +885,16 @@ class DualFrankaRobotiqRpcClient:
                 position_tolerance_m=position_tolerance_m,
                 rotation_tolerance_rad=rotation_tolerance_rad,
                 max_correction_iters=max_correction_iters,
+                max_tracking_translation_bias_m=max_tracking_translation_bias_m,
+                max_tracking_rotation_bias_rad=max_tracking_rotation_bias_rad,
                 stall_detection_side=stall_detection_side,
                 stall_translation_epsilon_m=stall_translation_epsilon_m,
                 stall_rotation_epsilon_rad=stall_rotation_epsilon_rad,
                 max_stalled_correction_iters=max_stalled_correction_iters,
+                stall_policy=stall_policy,
+                feedback_guard=feedback_guard,
+                correction_guard=correction_guard,
+                feedback_mode=feedback_mode,
             )
 
         try:
@@ -881,17 +930,86 @@ class DualFrankaRobotiqRpcClient:
         position_tolerance_m: float,
         rotation_tolerance_rad: float,
         max_correction_iters: int,
+        max_tracking_translation_bias_m: float,
+        max_tracking_rotation_bias_rad: float,
         stall_detection_side: Optional[str],
         stall_translation_epsilon_m: float,
         stall_rotation_epsilon_rad: float,
         max_stalled_correction_iters: int,
+        stall_policy: str,
+        feedback_guard,
+        correction_guard,
+        feedback_mode: str,
     ):
         # Smooth trajectory streaming is synchronous by design; ``wait`` is kept
         # for API compatibility with older callers.
         del wait
+        command_session = None
+        command_step_count = None
+        confirmed_targets = None
+        verify_commands = stall_policy == 'warn' or feedback_mode == 'read_after_step'
+
+        def check_feedback(snapshot, *, stepped=False, response=None, expected_targets=None):
+            """Validate every observed command against this call's last reply.
+
+            Saved targets are an RPC consistency check, not proof of physical
+            tracking or ROS delivery; the caller's guard owns physical health.
+            Synchronization establishes the saved-target reference. Subsequent
+            increments must preserve it, with only numerical rounding allowed.
+            """
+            nonlocal command_session, command_step_count, confirmed_targets
+            if not isinstance(snapshot, Mapping):
+                raise RuntimeError('P2P feedback has no observation')
+            if feedback_guard is not None:
+                feedback_guard(snapshot)
+            if not verify_commands:
+                return
+            state = _as_mapping(snapshot.get('command_target_state'))
+            session = state.get('server_session_id')
+            count = state.get('step_count')
+            if (state.get('available') is not True or not isinstance(session, str) or not session
+                    or type(count) is not int or count < 0):
+                raise RuntimeError('P2P command_target_state is missing or invalid')
+            if command_session is not None and session != command_session:
+                raise RuntimeError('P2P command target server session changed')
+            if command_step_count is not None and count != command_step_count + int(stepped):
+                raise RuntimeError('P2P command target step_count is not continuous')
+            if stepped and (type(response.get('step_count')) is not int or response['step_count'] != count):
+                raise RuntimeError('P2P step_count differs between reply and observation')
+            if stepped and response.get('done') is True:
+                raise RuntimeError('P2P step reported done; no further trajectory sent')
+            targets = {}
+            for side in ('left_arm', 'right_arm'):
+                arm = _as_mapping(_as_mapping(state.get('arms')).get(side))
+                if arm.get('frame') != 'torso':
+                    raise RuntimeError(f'P2P command target frame is invalid for {side}')
+                position = _as_float_vector(arm.get('position_m'), 3, f'{side}.command.position_m')
+                quat = _as_float_vector(arm.get('quaternion_xyzw'), 4, f'{side}.command.quaternion_xyzw')
+                targets[side] = position + _quat_to_rotvec(quat)
+                if expected_targets is not None:
+                    translation, rotation = _motion_norms(_absolute_target_to_delta(expected_targets[side], targets[side]))
+                    if translation > 1e-6 or rotation > 1e-6:
+                        raise RuntimeError(f'P2P saved command target changed unexpectedly for {side}')
+            command_session, command_step_count = session, count
+            confirmed_targets = targets
+
+        def step_feedback(response):
+            if feedback_mode == 'step_reply':
+                return response.get('observation')
+            # The caller first rejects missing/error replies. Check the raw ack
+            # before reading: a healthy later snapshot cannot hide a failed or
+            # terminal command, or a skipped/duplicated command counter.
+            count = response.get('step_count')
+            if response.get('done') is True:
+                raise RuntimeError('P2P step reported done; no further trajectory sent')
+            if type(count) is not int or count != command_step_count + 1:
+                raise RuntimeError('P2P step reply count is invalid or not continuous')
+            return self.get_observation()
+
         observation = self.get_observation()
         if not isinstance(observation, Mapping):
             raise RuntimeError(f'Unexpected observation payload: {type(observation)!r}')
+        check_feedback(observation)
 
         left_start = _pose_from_side_observation(observation, 'left_arm')
         right_start = _pose_from_side_observation(observation, 'right_arm')
@@ -908,6 +1026,14 @@ class DualFrankaRobotiqRpcClient:
         max_correction_iters = int(max_correction_iters)
         if max_correction_iters < 0:
             raise ValueError(f'max_correction_iters must be non-negative, got {max_correction_iters!r}.')
+        max_tracking_translation_bias_m = _positive_float(
+            max_tracking_translation_bias_m,
+            'max_tracking_translation_bias_m',
+        )
+        max_tracking_rotation_bias_rad = _positive_float(
+            max_tracking_rotation_bias_rad,
+            'max_tracking_rotation_bias_rad',
+        )
         if stall_detection_side not in (None, 'left_arm', 'right_arm'):
             raise ValueError(
                 "stall_detection_side must be None, 'left_arm', or 'right_arm', "
@@ -953,9 +1079,10 @@ class DualFrankaRobotiqRpcClient:
             if (not isinstance(response, Mapping) or response.get('ok') is False
                     or response.get('error') or (response.get('info') or {}).get('error')):
                 raise RuntimeError('P2P target synchronization failed; no trajectory sent')
-            snapshot = response.get('observation')
+            snapshot = step_feedback(response)
             if not isinstance(snapshot, Mapping):
                 raise RuntimeError('P2P synchronization has no observation; no trajectory sent')
+            check_feedback(snapshot, stepped=True, response=response)
             return (_pose_from_side_observation(snapshot, 'left_arm'),
                     _pose_from_side_observation(snapshot, 'right_arm'))
 
@@ -963,6 +1090,15 @@ class DualFrankaRobotiqRpcClient:
         if delta:
             left_target = _pose_from_delta(left_start, left_pose)
             right_target = _pose_from_delta(right_start, right_pose)
+        if stall_policy == 'warn':
+            # A read-after-step measurement is later than the server's hold
+            # reference. Integrate from the confirmed SAVED target so that the
+            # actual commanded endpoint equals the nominal target, without a
+            # hidden (saved - measured) offset consuming the bias budget.
+            # Delta targets above remain relative to the synchronized measured
+            # snapshot; measured feedback still controls all arrival checks.
+            left_start = list(confirmed_targets['left_arm'])
+            right_start = list(confirmed_targets['right_arm'])
         trajectory, metadata = _plan_smooth_absolute_trajectory(
             left_start, right_start, left_target, right_target,
             duration_sec=duration_sec, rate_hz=rate_hz,
@@ -983,9 +1119,23 @@ class DualFrankaRobotiqRpcClient:
                     'left_arm': _motion_action_from_delta(waypoint['left_delta']),
                     'right_arm': _motion_action_from_delta(waypoint['right_delta']),
                 }
+                expected_targets = None
+                if verify_commands:
+                    expected_targets = {
+                        side: _pose_from_delta(confirmed_targets[side], waypoint[key])
+                        for side, key in (('left_arm', 'left_delta'), ('right_arm', 'right_delta'))
+                    }
                 rpc_started = time.monotonic()
                 try:
                     result = self.step(action)
+                    if not isinstance(result, Mapping):
+                        raise RuntimeError('P2P step returned no valid reply; no further trajectory sent')
+                    if (result.get('ok') is False or result.get('error')
+                            or _as_mapping(result.get('info')).get('error')):
+                        raise RuntimeError('P2P step reported an error; no further trajectory sent')
+                    if feedback_guard is not None or verify_commands:
+                        check_feedback(step_feedback(result), stepped=True, response=result,
+                                       expected_targets=expected_targets)
                 except Exception as exc:
                     # A missing reply does not mean the increment was rejected.
                     # Record context, preserve the original exception, and never
@@ -1030,11 +1180,14 @@ class DualFrankaRobotiqRpcClient:
             current_observation = self.get_observation()
             if not isinstance(current_observation, Mapping):
                 raise RuntimeError(f'Unexpected observation payload: {type(current_observation)!r}')
+            check_feedback(current_observation, expected_targets=confirmed_targets)
             left_current = _pose_from_side_observation(current_observation, 'left_arm')
             right_current = _pose_from_side_observation(current_observation, 'right_arm')
             final_error = _pose_error_report(left_current, right_current, left_target, right_target)
             final_error['correction_index'] = correction_index
             correction_reports.append(final_error)
+            if correction_guard is not None:
+                correction_guard(final_error)
             if _pose_error_within_tolerance(final_error, position_tolerance_m, rotation_tolerance_rad):
                 break
             if (
@@ -1065,14 +1218,30 @@ class DualFrankaRobotiqRpcClient:
                 final_error['stall_detection'] = stalled_report
                 previous_stall_pose = current_stall_pose
                 if stalled_report['detected']:
-                    break
+                    if stall_policy == 'stop':
+                        break
+                    print('p2p_stall_warning: ' + json.dumps(stalled_report), file=sys.stderr, flush=True)
             if correction_index >= max_correction_iters:
                 break
 
             left_next, left_bias = _bounded_tracking_target(
-                left_command, left_current, left_target, position_tolerance_m, rotation_tolerance_rad)
+                left_command,
+                left_current,
+                left_target,
+                position_tolerance_m,
+                rotation_tolerance_rad,
+                max_tracking_translation_bias_m,
+                max_tracking_rotation_bias_rad,
+            )
             right_next, right_bias = _bounded_tracking_target(
-                right_command, right_current, right_target, position_tolerance_m, rotation_tolerance_rad)
+                right_command,
+                right_current,
+                right_target,
+                position_tolerance_m,
+                rotation_tolerance_rad,
+                max_tracking_translation_bias_m,
+                max_tracking_rotation_bias_rad,
+            )
             if left_next is None or right_next is None:
                 stalled_report = {'detected': True, 'reason': 'tracking_compensation_limit',
                                   'left_bias': left_bias, 'right_bias': right_bias}

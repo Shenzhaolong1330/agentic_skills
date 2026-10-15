@@ -88,7 +88,22 @@ def motion_args():
 
 
 class ControllerRecoveryTests(unittest.TestCase):
-    def test_compensation_exhaustion_does_not_reanchor_retry_or_recover(self):
+    def test_persistent_stall_never_uses_tolerance_continuation_or_recovery(self):
+        client = FakeMotionClient()
+        client.dual_robot_move_to_ee_pose = Mock(return_value={
+            "ok": False, "final_error": {"correction_index": 15,
+                "stall_detection": {"detected": True}}})
+        args = grasp.build_parser().parse_args([
+            '--xyz', '[0,0,0]', '--detect-stalled-motion', '--max-stalled-correction-iters', '3',
+            '--p2p-retries', '0', '--max-correction-iters', '15', '--continue-on-tolerance-miss'])
+        with redirect_stdout(io.StringIO()), self.assertRaisesRegex(RuntimeError, 'persistent_motion_stall'):
+            grasp.move_stage(client, 'stage1', np.array([.1, 0, 0, 0, 0, 0]),
+                             np.zeros(6), args, recover_stalled_side='left_arm')
+        self.assertEqual(client.recovery_calls, [])
+        client.dual_robot_move_to_ee_pose.assert_called_once()
+        self.assertEqual(client.dual_robot_move_to_ee_pose.call_args.kwargs['max_stalled_correction_iters'], 3)
+
+    def test_compensation_exhaustion_with_zero_retries_does_not_reanchor_or_recover(self):
         class AtLimit(FakeMotionClient):
             def dual_robot_move_to_ee_pose(self, left_target, right_target, **kwargs):
                 self.move_calls += 1
@@ -96,6 +111,7 @@ class ControllerRecoveryTests(unittest.TestCase):
                 return {'ok': False, 'stalled': {'reason': 'tracking_compensation_limit'}}
         client = AtLimit()
         args = motion_args()
+        args.p2p_retries = 0
         args.position_tolerance_m = .003
         args.rotation_tolerance_rad = .03
         with redirect_stdout(io.StringIO()), self.assertRaisesRegex(RuntimeError, 'tracking_compensation_limit.*3.6137 mm'):
@@ -108,6 +124,61 @@ class ControllerRecoveryTests(unittest.TestCase):
         with redirect_stdout(io.StringIO()):
             grasp.move_stage(AtLimit(), 'stage1_test', np.zeros(6), np.zeros(6), args,
                              position_tolerance_m=.005, rotation_tolerance_rad=.05, settle_time_sec=.7)
+
+    def test_explicit_tolerance_miss_continuation_returns_without_retry(self):
+        class AtLimit(FakeMotionClient):
+            def dual_robot_move_to_ee_pose(self, left_target, right_target, **kwargs):
+                self.move_calls += 1
+                self.move_kwargs.append(dict(kwargs))
+                self.left = np.asarray([.012, 0, 0, 0, 0, .25])
+                return {
+                    'ok': False,
+                    'stalled': {'reason': 'tracking_compensation_limit'},
+                    'final_error': {'correction_index': 9},
+                }
+
+        client = AtLimit()
+        args = motion_args()
+        args.p2p_retries = 0
+        args.max_correction_iters = 15
+        args.max_tracking_translation_bias_m = .05
+        args.max_tracking_rotation_bias_rad = 1.0
+        args.continue_on_tolerance_miss = True
+        with redirect_stdout(io.StringIO()), patch('sys.stderr', new=io.StringIO()) as stderr:
+            left, _, result = grasp.move_stage(
+                client,
+                'stage3_test',
+                np.zeros(6),
+                np.zeros(6),
+                args,
+                recover_stalled_side='left_arm',
+            )
+        self.assertFalse(result['ok'])
+        self.assertAlmostEqual(left[0], .012)
+        self.assertEqual(client.move_calls, 1)
+        self.assertEqual(client.move_kwargs[0]['max_correction_iters'], 15)
+        self.assertEqual(client.move_kwargs[0]['max_tracking_translation_bias_m'], .05)
+        self.assertEqual(client.move_kwargs[0]['max_tracking_rotation_bias_rad'], 1.0)
+        self.assertIn('subsequent gripper and motion commands remain enabled', stderr.getvalue())
+
+    def test_explicit_max_correction_exhaustion_continues_without_full_retry(self):
+        class Exhausted(FakeMotionClient):
+            def dual_robot_move_to_ee_pose(self, left_target, right_target, **kwargs):
+                self.move_calls += 1
+                self.left = np.asarray([.006, 0, 0, 0, 0, 0])
+                return {'ok': False, 'final_error': {'correction_index': 15}}
+
+        client = Exhausted()
+        args = motion_args()
+        args.p2p_retries = 0
+        args.position_tolerance_m = .005
+        args.max_correction_iters = 15
+        args.continue_on_tolerance_miss = True
+        with redirect_stdout(io.StringIO()), patch('sys.stderr', new=io.StringIO()) as stderr:
+            _, _, result = grasp.move_stage(client, 'stage3_test', np.zeros(6), np.zeros(6), args)
+        self.assertFalse(result['ok'])
+        self.assertEqual(client.move_calls, 1)
+        self.assertIn('reason=max_correction_iters', stderr.getvalue())
 
     def test_xy_and_lift_overrides_preserve_strict_descent(self):
         client = Mock()

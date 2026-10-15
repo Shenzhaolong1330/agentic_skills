@@ -80,21 +80,102 @@ A failed grasp/handover or insertion triggers the configured full robot reset
 before the wrapper exits with failure accounting; there is no "next tube" to
 continue to.
 
-During a multi-tube live run, a nonzero insertion subprocess is recorded in its
-per-tube log and does not terminate the left-to-right loop; the wrapper processes
-the remaining cached tubes and reports the aggregate failure count at the end.
-If the insertion P2P misses final-pose tolerance but reaches the requested
-downward depth and confirms gripper release plus retract/home cleanup, it is
-reported as `completed_with_insert_tolerance_warning` rather than a stopped task.
+During a multi-tube live run, a failed grasp/handover or insertion now stops the
+loop without an automatic reset or advancing to another cached tube. The default
+`--no-reset-after-error` also stops; it no longer means continuing without reset.
+`--reset-after-error` explicitly enables the legacy full-reset-and-advance policy.
+Full reset opens both grippers and returns both arms Home.
 
-By default, a nonzero grasp/handover or insertion subprocess triggers the
-existing full `procedure-robot-reset-home` workflow before the loop advances to
-the next cached tube. Full reset opens both grippers and returns both arms Home,
-so a held tube may be released; each attempt is saved as
-`reset_after_tube_NN_<stage>.log`. The loop resumes only after reset returns
-success. A failed reset stops further robot commands. Use
-`--no-reset-after-error` only when an operator is providing another recovery
-path.
+### Continuous correction used by the console
+
+The generic console calls the Python grasp script directly with
+`--p2p-continuous-corrections --p2p-retries 9`. This uses **one atomic call**:
+one initial trajectory and at most nine subsequent bounded correction rounds.
+It synchronizes the command reference only once and preserves accumulated
+compensation within the stage. It returns immediately when all four measured
+position/rotation errors pass. It never restarts the whole target after the
+continuous budget is exhausted.
+
+The console explicitly selects 3 mm / 0.03 rad arrival tolerances, two seconds
+settling per round, and the existing 25 mm / 0.20 rad compensation caps.
+`p2p_correction_progress` logs the nominal-goal residuals, historical best and
+plateau/improvement status on every round. A plateau warns and spends the
+remaining correction budget. A component outside arrival tolerance that grows
+more than 0.5 mm or 0.005 rad above its historical best stops the stage; this
+noise margin does not count as arrival or allow accumulated small divergence.
+
+Every feedback packet must have fresh, healthy native diagnostics. This mode
+selects `feedback_mode="read_after_step"` because the field server returns raw
+observations from `step`; one read-only observation after each acknowledged
+command supplies native health. Its count must equal the acknowledged command.
+The atomic client also checks session identity and saved-target continuity.
+Faults, unexpected commands, missing feedback and uncertain RPC outcomes stop
+without replay. Reaching the correction or compensation limit while still
+outside tolerance prevents subsequent descent, gripper or handover stages.
+Continuous mode cannot restart controllers or apply a synthetic observed-Z
+arrival offset. Existing standalone/shell callers remain on their legacy policy
+unless they explicitly select the new flag.
+
+### Bounded same-target P2P retries
+
+The shared grasp shell defaults to `--p2p-retries 9`: each motion stage may call
+P2P at most **10 times total**, including any explicitly enabled controller-recovery
+retry. It returns immediately once all four measured pose errors pass their
+tolerances; ten is a ceiling, not a required number of calls. Direct Python calls
+retain the compatible default `--p2p-retries 2` (**3 calls total**). Pass
+`--p2p-retries 0` for a single call. Through the tail-side launcher, use
+`--grasp-arg=--p2p-retries --grasp-arg=9` to explicitly select the ten-call ceiling.
+The older full-task live bridge uses this shell. The generic console grasp adapter
+uses the continuous policy above through direct Python invocation.
+
+After each completed call, read both measured poses and compare all four position
+and rotation errors with the original stage tolerances. Proceed only when all
+four pass. The shared shell enables `--warn-and-retry-stall`: a stalled call, or
+less than 2% progress without increasing error, emits `WARNING: p2p_stall_retry:`
+and can retry the **same absolute target** within the remaining budget. This
+requires fresh native diagnostics for both arms, explicitly reporting a healthy
+robot mode, no active errors and a progressing sensor clock. Missing diagnostics
+are not evidence of health. Each retry rechecks feedback before sending motion.
+
+Without this flag, direct Python calls keep the stricter existing policy: the
+worst `error / tolerance` must decrease by at least 2% relative to the previous
+attempt (the first call uses its initial measured poses as the baseline).
+Configure that threshold with `--p2p-retry-min-progress-ratio 0.02`.
+In warning mode, an increase exceeding the normalized 0.5 mm / 0.005 rad noise
+margin still stops the legacy outer loop. Reported robot/collision faults, stale or missing required
+feedback, and RPC errors still stop the stage. Reaching the call limit without
+arrival also stops; a warning never authorizes subsequent gripper or motion
+stages at an out-of-tolerance pose.
+
+This also permits a new call after `tracking_compensation_limit` under the same
+retry policy. Each atomic P2P call synchronizes its command reference
+to the latest pose; its previous compensation is not carried over. Keep the same
+target, speeds, step sizes, tolerances, and 25 mm / 0.20 rad compensation limits.
+Repeated calls are a bounded convergence attempt, not a guarantee of success.
+
+The normal shell keeps controller recovery disabled. Single-arm stages detect
+three consecutive low-motion observations inside each call; the dual-arm handover
+uses the outer loop's measured convergence check after each call.
+Explicit legacy `--recover-stalled-controller`
+remains separate and consumes the same total call budget. Legacy
+`--continue-on-tolerance-miss` is honored only with `--p2p-retries 0`; it cannot
+turn exhaustion of this retry loop into success. Logs print each attempt number,
+both arms' residuals and the normalized convergence score. Native telemetry, when
+present, must be at most 250 ms old and report idle/move without active errors;
+older pose-only servers still require the existing external health preflight
+and cannot use warning-based stall retries.
+
+Grasping now waits for fresh closure feedback stable for 0.5 seconds before lifting.
+The shared grasp shell sets `--transition-position-tolerance-m 0.005` for the
+handover pose separately from the general position tolerance. The 00:27 and 00:34
+runs on 2026-09-20 both accepted roughly 11–13 mm residuals under the previous
+15 mm stage4 tolerance; their calibration targets were identical. Rotation tolerance
+remains 0.06 rad. The bounded retry policy also applies to the handover motion.
+After transfer, donor opening must be confirmed (closed fraction at most 0.1 for
+0.3 seconds of fresh feedback) before retreat or insertion. The full multi-tube
+wrapper passes the receiver from `handover_tube_N.json` to insertion explicitly;
+it no longer guesses the holder from two transient gripper positions. A missing
+handover report or unconfirmed opening stops insertion.
 
 The live wrapper also starts one task-local persistent `facebook/sam-vit-base`
 service before the initial capture. Model loading overlaps the initial camera/VLM
