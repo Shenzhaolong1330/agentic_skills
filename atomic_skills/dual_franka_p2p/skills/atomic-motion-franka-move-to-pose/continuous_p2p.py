@@ -13,6 +13,7 @@ from dataclasses import asdict
 import importlib.util
 import json
 import math
+import os
 from pathlib import Path
 import sys
 import time
@@ -31,6 +32,8 @@ geometry = _neighbor('continuous_pose_servo.py', '_franka_atomic_continuous_geom
 legacy = _neighbor('dual_franka_robotiq_rpc_client.py', '_franka_atomic_p2p_geometry')
 Pose = geometry.Pose
 SIDES = ('left_arm', 'right_arm')
+SERVO_BUDGET_S = 30.
+TRANSLATION_LIMIT_ENV = 'FRANKA_P2P_TRANSLATION_BIAS_LIMIT_M'
 NATIVE_ERROR_FIELDS = frozenset('''joint_position_limits_violation cartesian_position_limits_violation
 self_collision_avoidance_violation joint_velocity_violation cartesian_velocity_violation
 force_control_safety_violation joint_reflex cartesian_reflex max_goal_pose_deviation_violation
@@ -101,6 +104,19 @@ class _Run:
         self.max_steps = options.get('max_steps', 3000)
         if type(self.max_steps) is not int or self.max_steps <= 0:
             raise ValueError('max_steps must be a positive integer')
+        translation_limit = options.get('max_tracking_translation_bias_m', .025)
+        env_limit = os.environ.get(TRANSLATION_LIMIT_ENV)
+        if env_limit is not None:
+            if env_limit != 'none':
+                raise ValueError(f'{TRANSLATION_LIMIT_ENV} must be absent or exactly "none"')
+            translation_limit = None
+        if translation_limit is not None:
+            translation_limit = _positive(translation_limit, 'translation bias')
+        self.translation_limit_source = 'environment' if env_limit is not None else 'argument_or_default'
+        # This selects the approach profile by physical distance. It never
+        # limits compensation, clips a target or resets the saved command.
+        self.nominal_approach_distance_m = _positive(options.get('nominal_approach_distance_m', .025),
+                                                    'nominal approach distance')
         self.config = geometry.ServoConfig(
             translation_integral_gain_per_s=.3, rotation_integral_gain_per_s=.3,
             max_translation_speed_m_s=min(.002, _positive(options.get('max_translation_speed', .05), 'translation speed')),
@@ -108,16 +124,19 @@ class _Run:
             max_translation_step_m=self._step('max_translation_step', .00025),
             max_rotation_step_rad=self._step('max_rotation_step', .002),
             max_translation_acceleration_m_s2=.005, max_rotation_acceleration_rad_s2=.02,
-            max_translation_bias_m=min(.025, _positive(options.get('max_tracking_translation_bias_m', .025), 'translation bias')),
+            max_translation_bias_m=translation_limit,
             max_rotation_bias_rad=min(.2, _positive(options.get('max_tracking_rotation_bias_rad', .2), 'rotation bias')),
             position_tolerance_m=min(.003, _positive(options.get('position_tolerance_m', .0015), 'position tolerance')),
             rotation_tolerance_rad=min(.1, _positive(options.get('rotation_tolerance_rad', .01), 'rotation tolerance')),
             max_dt_s=.2)
         self.phase, self.session, self.count = 'preflight', None, None
         self.saved, self.initial, self.goals, self.bounds, self.held = {}, {}, {}, {}, set()
+        self.nominal_targets = {}
         self.sequences, self.stamps = {}, {}
         self.commands = self.attempts = 0
         self.last_step, self.last_dispatch = None, None
+        self.last_control_tick = None
+        self.cap_wait_sides = set()
         self.timings, self.progress = [], []
         self.last_log = -math.inf
 
@@ -238,31 +257,68 @@ class _Run:
                 if max(map(abs, self.velocities[side])) >= .01:
                     raise ContinuousP2PError(f'{side}: already-at-goal arm is not stationary; saved compensation preserved')
                 self.held.add(side)
-            poses = (self.initial[side], self.saved[side], self.goals[side])
+            self.nominal_targets[side] = self.nominal_target(side)
+            poses = (self.initial[side], self.saved[side], self.goals[side], self.nominal_targets[side])
             cap = self.config.max_translation_bias_m
+            margin = (self.config.max_translation_speed_m_s * (SERVO_BUDGET_S + self.config.max_dt_s)
+                      if cap is None else cap)
             self.bounds[side] = {
-                'low': [min(p.position_m[i] for p in poses) - cap for i in range(3)],
-                'high': [max(p.position_m[i] for p in poses) + cap for i in range(3)],
+                'low': [min(p.position_m[i] for p in poses) - margin for i in range(3)],
+                'high': [max(p.position_m[i] for p in poses) + margin for i in range(3)],
+                'position_margin_m': margin,
+                'position_margin_basis': 'servo_speed_times_budget_plus_max_dt' if cap is None else 'translation_bias_cap',
+                'workspace_authorization_bound': False,
                 'rotation_from_initial_rad': min(math.pi, max(_error(self.initial[side], p)['rotation_rad']
                                                               for p in poses) + self.config.max_rotation_bias_rad)}
         self.start_count = self.count
         self.initial_saved = dict(self.saved)
         _emit('p2p_servo_start', goals={s: _six(p) for s, p in self.goals.items()},
               held_sides=sorted(self.held), bounds=self.bounds, servo_config=asdict(self.config),
-              period_s=self.period, max_cycle_s=self.max_cycle, servo_budget_s=30.,
+              period_s=self.period, max_cycle_s=self.max_cycle, servo_budget_s=SERVO_BUDGET_S,
+              translation_limit_source=self.translation_limit_source,
+              nominal_approach_distance_m=self.nominal_approach_distance_m,
+              nominal_targets={s: _six(p) for s, p in self.nominal_targets.items()},
               correction_guard_policy='final_success_only',
               legacy_corrections_and_settle_replaced=True, safety_qualified=False)
 
     def scheduled_dt(self, *, deadline=None):
-        if self.last_dispatch is not None:
-            time.sleep(max(0., self.last_dispatch + self.period - time.monotonic()))
+        # The controller also advances through read-only cap waits. Its real
+        # observation/control interval is separate from the last command time.
+        reference = self.last_control_tick if self.phase == 'servo' else self.last_dispatch
+        earliest = max((reference + self.period if reference is not None else -math.inf),
+                       (self.last_dispatch + self.period if self.last_dispatch is not None else -math.inf))
+        time.sleep(max(0., earliest - time.monotonic()))
         now = time.monotonic()
-        dt = self.period if self.last_dispatch is None else now - self.last_dispatch
+        dt = self.period if reference is None else now - reference
         if dt > self.max_cycle + 1e-9:
             raise ContinuousP2PError('Feedback cycle too slow; no catch-up command')
-        if deadline is not None and now >= deadline:
-            raise ContinuousP2PError('Continuous 30-second sending budget exhausted')
+        if deadline is not None:
+            self.check_servo_deadline(deadline)
+        if self.phase == 'servo':
+            self.last_control_tick = now
         return dt
+
+    def check_servo_deadline(self, deadline):
+        if time.monotonic() >= deadline:
+            bias = {s: _error(self.goals[s], self.saved[s]) for s in SIDES}
+            detail = {'final_error': self.error_report(),
+                      'bias': bias,
+                      'at_cap': {s: {'translation': self.config.max_translation_bias_m is not None
+                                     and b['translation_m'] >= self.config.max_translation_bias_m - 1e-9,
+                                     'rotation': b['rotation_rad'] >= self.config.max_rotation_bias_rad - 1e-9}
+                                 for s, b in bias.items()},
+                      'translation_cap_m': self.config.max_translation_bias_m,
+                      'rotation_cap_rad': self.config.max_rotation_bias_rad,
+                      'cap_wait_sides': sorted(self.cap_wait_sides)}
+            raise ContinuousP2PError('Continuous 30-second servo budget exhausted; residual=' +
+                                     json.dumps(detail, allow_nan=False))
+
+    def note_cap_wait(self, side, update):
+        if side not in self.cap_wait_sides:
+            self.cap_wait_sides.add(side)
+            _emit('p2p_servo_cap_warning', side=side, errors=update.errors, bias=update.bias,
+                  at_cap=update.at_cap, command_preserved=True,
+                  message='Bounded command stopped before arrival; read fresh feedback within original budget')
 
     def dispatch(self, desired, *, dt, deadline=None):
         if self.commands >= self.max_steps:
@@ -273,12 +329,20 @@ class _Run:
             increment = ([0.] * 6 if side in self.held else
                          legacy._absolute_target_to_delta(_six(self.saved[side]), _six(desired[side])))
             action[side] = legacy._motion_action_from_delta(increment)
+        # Never catch up after slow computation or read-only waiting. Waiting at
+        # a cap can legitimately make actual_send_interval_s large; the fresh
+        # controller cycle and each individual RPC still have strict deadlines.
+        if self.last_dispatch is not None:
+            time.sleep(max(0., self.last_dispatch + self.period - time.monotonic()))
         before = time.monotonic()
         interval = None if self.last_dispatch is None else before - self.last_dispatch
-        if ((interval is not None and interval > self.max_cycle + 1e-9)
-                or before - self.feedback_received > self.max_cycle
-                or (deadline is not None and before >= deadline)):
+        elapsed_cycle = (dt + before - self.last_control_tick if self.phase == 'servo'
+                         and self.last_control_tick is not None else interval)
+        if ((elapsed_cycle is not None and elapsed_cycle > self.max_cycle + 1e-9)
+                or before - self.feedback_received > self.max_cycle):
             raise ContinuousP2PError('Dispatch deadline exceeded before RPC; no catch-up command')
+        if deadline is not None:
+            self.check_servo_deadline(deadline)
         expected_count = self.count + 1
         self.attempts += 1
         response = self.client.step(action)
@@ -301,17 +365,34 @@ class _Run:
             raise ContinuousP2PError('RPC plus native feedback exceeded cycle limit; no further command')
         return timing
 
+    def nominal_target(self, side):
+        """Freeze a target while keeping compensation and nominal goal distinct."""
+        saved, goal = self.saved[side], self.goals[side]
+        if side in self.held:
+            return saved
+        error = _error(saved, goal)
+        cap = self.config.max_translation_bias_m
+        position = saved.position_m
+        if cap is None:
+            if _error(self.initial[side], goal)['translation_m'] > self.nominal_approach_distance_m:
+                # Carry the existing world-frame bias to the new physical goal.
+                # This changes only the nominal command trajectory endpoint;
+                # the measured arrival goal remains exactly the caller's goal.
+                position = tuple(g + c - m for g, c, m in
+                                 zip(goal.position_m, saved.position_m, self.initial[side].position_m))
+        elif error['translation_m'] > cap + geometry._ROUNDING:
+            position = goal.position_m
+        rotation = (goal.quaternion_xyzw
+                    if error['rotation_rad'] > self.config.max_rotation_bias_rad + geometry._ROUNDING
+                    else saved.quaternion_xyzw)
+        return Pose(position, rotation)
+
     def nominal(self):
-        targets = dict(self.saved)
-        for side in SIDES:
-            error = _error(self.saved[side], self.goals[side])
-            if side not in self.held and (error['translation_m'] > self.config.max_translation_bias_m
-                                          or error['rotation_rad'] > self.config.max_rotation_bias_rad):
-                targets[side] = self.goals[side]
+        targets = dict(self.nominal_targets)
         translation = max(_error(self.saved[s], targets[s])['translation_m'] for s in SIDES)
         rotation = max(_error(self.saved[s], targets[s])['rotation_rad'] for s in SIDES)
         if translation <= 1e-12 and rotation <= 1e-12:
-            return {'steps': 0, 'profile': 'saved_command_already_within_bias_caps'}
+            return {'steps': 0, 'profile': 'existing_saved_command_preserved'}
         self.phase = 'nominal'
         # An explicit short duration never overrides the caller's velocity limit.
         velocity = _positive(self.options.get('max_translation_speed', .05), 'translation speed')
@@ -396,21 +477,32 @@ class _Run:
         self.snapshot(expected=self.saved, count=self.count)
         servos = {s: geometry.ContinuousPoseServo(self.goals[s], self.saved[s], self.config)
                   for s in SIDES if s not in self.held}
-        deadline = time.monotonic() + 30.
+        deadline = time.monotonic() + SERVO_BUDGET_S
         while True:
             dt = self.scheduled_dt(deadline=deadline)
             updates = {s: servo.update(self.measured[s], dt) for s, servo in servos.items()}
+            for side, update in updates.items():
+                if update.command_stationary and not update.within_tolerance:
+                    if update.arrival_latched:
+                        raise ContinuousP2PError(f'{side}: stopped arm lost arrival; no restart')
+                    if not any(update.at_cap.values()):
+                        raise ContinuousP2PError(f'{side}: no feasible progress before arrival outside a cap')
+                    self.note_cap_wait(side, update)
             if all(update.command_stationary for update in updates.values()):
                 for side, update in updates.items():
                     servos[side].confirm_command(self.saved[side])
-                    if not update.within_tolerance or not update.arrival_latched:
-                        raise ContinuousP2PError(f'{side}: no feasible progress before arrival')
-                confirmation = self.hold()
-                break
+                if all(u.within_tolerance and u.arrival_latched for u in updates.values()):
+                    confirmation = self.hold()
+                    break
+                # Keep the last checked saved targets. Do not send zero steps,
+                # reset the integral, or renew the original 30-second budget.
+                self.log_progress(updates)
+                time.sleep(max(0., min(self.last_control_tick + self.period, deadline) - time.monotonic()))
+                self.check_servo_deadline(deadline)
+                self.snapshot(expected=self.saved, count=self.count)
+                self.check_servo_deadline(deadline)
+                continue
             desired = {s: updates[s].command if s in updates else self.saved[s] for s in SIDES}
-            for side, update in updates.items():
-                if update.command_stationary and not update.within_tolerance:
-                    raise ContinuousP2PError(f'{side}: stopped arm lost arrival; no restart')
             self.dispatch(desired, dt=dt, deadline=deadline)
             for side in servos:
                 servos[side].confirm_command(self.saved[side])
@@ -429,6 +521,8 @@ class _Run:
                   'server_session_id': self.session, 'timings': self.timings,
                   'held_sides': sorted(self.held), 'hold_confirmation': confirmation,
                   'bounds': self.bounds, 'frame': 'torso', 'servo_config': asdict(self.config),
+                  'translation_limit_source': self.translation_limit_source,
+                  'nominal_approach_distance_m': self.nominal_approach_distance_m,
                   'tolerances': {'position_tolerance_m': self.config.position_tolerance_m,
                                  'rotation_tolerance_rad': self.config.rotation_tolerance_rad,
                                  'settle_time_sec': 0., 'max_correction_iters': 0},

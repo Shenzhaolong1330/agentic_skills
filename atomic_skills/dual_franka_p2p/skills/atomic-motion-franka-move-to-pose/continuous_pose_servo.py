@@ -7,7 +7,9 @@ There is no RPC, synchronization, robot reset, sleep, clock or arrival dwell her
 
 The nominal goal stays fixed. Quaternion increments left-compose in torso frame.
 Velocity projection includes a conservative straight-line braking reserve inside
-the goal-centred bias balls. This bounds generated commands, not physical motion
+each configured goal-centred bias ball. The translation radius may explicitly be
+disabled with None; speed, step, acceleration and the rotation radius still apply.
+These limits bound generated commands, not physical motion
 or whole-arm clearance. Stability on a real delayed robot is NOT established by
 this candidate or its simulations; native health, timing, dwell and faults belong
 to the driver. A distant goal needs a separately verified nominal approach.
@@ -147,7 +149,7 @@ class ServoConfig:
     max_rotation_step_rad: float = .002
     max_translation_acceleration_m_s2: float = .01
     max_rotation_acceleration_rad_s2: float = .08
-    max_translation_bias_m: float = .025
+    max_translation_bias_m: float | None = .025
     max_rotation_bias_rad: float = .20
     position_tolerance_m: float = .003
     rotation_tolerance_rad: float = .1
@@ -155,6 +157,8 @@ class ServoConfig:
 
     def __post_init__(self):
         for field in fields(self):
+            if field.name == 'max_translation_bias_m' and getattr(self, field.name) is None:
+                continue
             object.__setattr__(self, field.name, _positive(getattr(self, field.name), field.name))
         # The angular braking proof uses the geodesic convexity of a small SO(3)
         # ball. No configurable cap may silently enter the antipodal region.
@@ -198,6 +202,7 @@ def _bounded_velocity(current, goal, previous, desired, *, dt, speed, step, acce
     reserve, including a shortened final step. Convex XYZ / small SO(3) balls
     contain the entire segment when its endpoints are inside. This also allows
     inward travel from a saturated boundary without accumulating outward bias.
+    A None cap skips only the radius and radial braking-reserve constraints.
     """
     speed_limit = min(speed, step / dt)
     desired = _limit(desired, speed_limit)
@@ -210,6 +215,8 @@ def _bounded_velocity(current, goal, previous, desired, *, dt, speed, step, acce
         if (magnitude > speed_limit + _ROUNDING
                 or _norm(_sub(velocity, previous)) > acceleration * dt + _ROUNDING):
             return False
+        if cap is None:
+            return True
         endpoint = _integrate(current, _scale(velocity, dt), angular)
         stopping_point = _integrate(endpoint, _scale(velocity, magnitude / (2. * acceleration)), angular)
         return (_distance(endpoint, goal, angular) <= cap + _ROUNDING
@@ -278,7 +285,8 @@ class ContinuousPoseServo:
 
     def _validate_bias(self, command):
         bias = _error(self._goal, command)
-        if (bias['translation_m'] > self.config.max_translation_bias_m + _ROUNDING
+        translation_cap = self.config.max_translation_bias_m
+        if ((translation_cap is not None and bias['translation_m'] > translation_cap + _ROUNDING)
                 or bias['rotation_rad'] > self.config.max_rotation_bias_rad + _ROUNDING):
             raise ValueError('Saved command exceeds the fixed nominal-goal bias cap; use a separate approach')
         return bias
@@ -313,7 +321,8 @@ class ContinuousPoseServo:
                        _integrate(self._command.quaternion_xyzw, rotation_delta, True), self._goal.frame)
         bias = self._validate_bias(command)
         stationary = _norm(translation_velocity) <= _STATIONARY and _norm(rotation_velocity) <= _STATIONARY
-        at_cap = {'translation': bias['translation_m'] >= config.max_translation_bias_m - 1e-9,
+        at_cap = {'translation': (config.max_translation_bias_m is not None
+                                  and bias['translation_m'] >= config.max_translation_bias_m - 1e-9),
                   'rotation': bias['rotation_rad'] >= config.max_rotation_bias_rad - 1e-9}
         status = ('holding' if stationary else 'braking') if arrival_latched else (
             'at_cap' if any(at_cap.values()) else 'tracking')
@@ -352,6 +361,8 @@ class ContinuousPoseServo:
             ('rotation_rad_s', actual_saved_pose.quaternion_xyzw, self._goal.quaternion_xyzw,
              self.config.max_rotation_bias_rad, self.config.max_rotation_acceleration_rad_s2, True),
         ):
+            if cap is None:
+                continue
             stopping_point = _integrate(
                 current, _scale(velocities[key], _norm(velocities[key]) / (2. * acceleration)), angular)
             # Reconstructing velocity from the acknowledged quaternion adds one

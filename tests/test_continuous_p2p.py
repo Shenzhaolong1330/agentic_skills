@@ -2,6 +2,7 @@
 import copy
 import importlib.util
 import io
+import json
 import math
 from pathlib import Path
 import sys
@@ -107,11 +108,13 @@ class ContinuousP2PTests(unittest.TestCase):
         self.clock = Clock()
         self.client = FakeClient(self.clock)
         self.patches = [mock.patch.object(adapter, 'time', self.clock),
+                        mock.patch.dict(adapter.os.environ),
                         mock.patch('socket.socket', side_effect=AssertionError('network forbidden')),
                         mock.patch('subprocess.Popen', side_effect=AssertionError('process forbidden'))]
         for patch in self.patches:
             patch.start()
             self.addCleanup(patch.stop)
+        adapter.os.environ.pop(adapter.TRANSLATION_LIMIT_ENV, None)
 
     def run_probe(self, goal=(.005, 0., 0., 0., 0., 0.), **kwargs):
         options = {'position_tolerance_m': .003, 'rotation_tolerance_rad': .1}
@@ -157,6 +160,41 @@ class ContinuousP2PTests(unittest.TestCase):
         self.assertIn('servo', {t['phase'] for t in result['timings']})
         self.assertLessEqual(result['final_error']['max_translation_error_m'], .003)
 
+    def test_orientation_nominal_preserves_in_budget_translation_compensation(self):
+        result = self.run_probe(goal=(.005, 0., 0., 0., 0., .5))
+        target = result['trajectory']['left_target_pose']
+        self.assertEqual(target[:3], [.01, 0., 0.])
+        self.assertAlmostEqual(target[5], .5)
+        self.assertEqual(result['trajectory']['max_translation_m'], 0.)
+
+    def test_translation_nominal_preserves_in_budget_rotation_compensation(self):
+        self.client = FakeClient(self.clock, left_saved=(.01, 0., 0., 0., 0., .15))
+        result = self.run_probe(goal=(.06, 0., 0., 0., 0., .05))
+        target = result['trajectory']['left_target_pose']
+        self.assertEqual(target[:3], [.06, 0., 0.])
+        self.assertAlmostEqual(target[5], .15)
+        self.assertLess(result['trajectory']['max_rotation_rad'], 1e-12)
+
+    def test_nominal_keeps_caps_with_the_same_roundoff_allowance_as_servo_math(self):
+        for left_saved, goal in (
+                ((.030000000001, 0., 0., 0., 0., 0.), (.005, 0., 0., 0., 0., 0.)),
+                ((0., 0., 0., 0., 0., .3400000000009), (0., 0., 0., 0., 0., .14))):
+            with self.subTest(left_saved=left_saved):
+                self.client = FakeClient(self.clock, left_saved=left_saved)
+                runner = adapter._Run(self.client, goal, [0.] * 6, False, None, None,
+                                      {'position_tolerance_m': .003, 'rotation_tolerance_rad': .1})
+                runner.started = self.clock.now
+                with redirect_stderr(io.StringIO()):
+                    runner.prepare()
+                    # This is a legal existing saved target according to the
+                    # exact controller that will consume it after nominal.
+                    adapter.geometry.ContinuousPoseServo(runner.goals['left_arm'],
+                                                         runner.saved['left_arm'], runner.config)
+                    metadata = runner.nominal()
+                self.assertEqual(metadata['steps'], 0)
+                self.assertFalse(self.client.actions)
+                self.assertEqual(self.client.saved['left_arm'], list(left_saved))
+
     def test_delta_goal_is_frozen_from_initial_native_not_saved(self):
         result = self.run_probe(delta=True)
         self.assertLessEqual(result['final_error']['left_translation_error_m'], .003)
@@ -174,6 +212,74 @@ class ContinuousP2PTests(unittest.TestCase):
         self.assertEqual(cfg['max_translation_step_m'], .00004)
         self.assertEqual(cfg['max_translation_bias_m'], .012)
         self.assertLessEqual(result['final_error']['max_translation_error_m'], .001)
+
+    def test_explicit_none_can_reach_with_more_than_25mm_compensation(self):
+        self.client = FakeClient(self.clock, left_saved=(.04, 0., 0., 0., 0., 0.))
+        result = self.run_probe(max_tracking_translation_bias_m=None)
+        self.assertTrue(result['ok'])
+        self.assertIsNone(result['servo_config']['max_translation_bias_m'])
+        self.assertEqual(result['trajectory']['steps'], 0)
+        self.assertGreater(self.client.actions[0]['left_arm']['motion']['translation'][0], 0.)
+        self.assertGreater(self.client.saved['left_arm'][0] - .005, .025)
+        self.assertLessEqual(result['final_error']['left_translation_error_m'], .003)
+        bound = result['bounds']['left_arm']
+        self.assertAlmostEqual(bound['position_margin_m'], .002 * (30. + .2))
+        self.assertEqual(bound['position_margin_basis'], 'servo_speed_times_budget_plus_max_dt')
+        self.assertFalse(bound['workspace_authorization_bound'])
+
+    def test_environment_none_overrides_old_caller_25mm_option(self):
+        self.client = FakeClient(self.clock, left_saved=(.04, 0., 0., 0., 0., 0.))
+        with mock.patch.dict(adapter.os.environ, {adapter.TRANSLATION_LIMIT_ENV: 'none'}):
+            result = self.run_probe(max_tracking_translation_bias_m=.025)
+        self.assertIsNone(result['servo_config']['max_translation_bias_m'])
+        self.assertEqual(result['translation_limit_source'], 'environment')
+        self.assertGreater(self.client.saved['left_arm'][0] - .005, .025)
+        self.assertTrue(result['ok'])
+
+    def test_explicit_finite_cap_above_25mm_is_not_silently_reduced(self):
+        self.client = FakeClient(self.clock, left_saved=(.03, 0., 0., 0., 0., 0.))
+        result = self.run_probe(max_tracking_translation_bias_m=.04)
+        self.assertEqual(result['servo_config']['max_translation_bias_m'], .04)
+        self.assertGreater(self.client.saved['left_arm'][0] - .005, .025)
+        self.assertLessEqual(self.client.saved['left_arm'][0] - .005, .04)
+
+    def test_uncapped_far_goal_nominal_carries_existing_bias_without_changing_goal(self):
+        self.client = FakeClient(self.clock, left_saved=(.03, 0., 0., 0., 0., 0.))
+        result = self.run_probe(goal=(.06, 0., 0., 0., 0., 0.), max_tracking_translation_bias_m=None)
+        self.assertAlmostEqual(result['trajectory']['left_start_pose'][0], .03)
+        self.assertAlmostEqual(result['trajectory']['left_target_pose'][0], .09)
+        self.assertAlmostEqual(self.client.measured['left_arm'][0], .06)
+        self.assertAlmostEqual(self.client.saved['left_arm'][0], .09)
+        self.assertLessEqual(result['final_error']['left_translation_error_m'], .003)
+        self.assertGreaterEqual(result['bounds']['left_arm']['high'][0], .09 + .0604 - 1e-12)
+
+    def test_uncapped_near_goal_keeps_saved_bias_during_rotation_nominal(self):
+        self.client = FakeClient(self.clock, left_saved=(.04, 0., 0., 0., 0., 0.))
+        result = self.run_probe(goal=(.005, 0., 0., 0., 0., .5), max_tracking_translation_bias_m=None)
+        self.assertAlmostEqual(result['trajectory']['left_target_pose'][0], .04)
+        self.assertAlmostEqual(result['trajectory']['left_target_pose'][5], .5)
+        self.assertEqual(result['trajectory']['max_translation_m'], 0.)
+        self.assertGreater(self.client.saved['left_arm'][0] - .005, .025)
+
+    def test_uncapped_translation_still_enforces_rotation_cap_and_deadline(self):
+        self.client = FakeClient(self.clock, left_saved=(0., 0., 0., 0., 0., .34))
+        with self.assertRaises(adapter.ContinuousP2PError) as raised:
+            self.run_probe(goal=(0., 0., 0., 0., 0., .14), max_tracking_translation_bias_m=None)
+        message = str(raised.exception)
+        self.assertIn('30-second servo budget exhausted', message)
+        detail = json.loads(message.split('residual=', 1)[1].split('; confirmed_commands=', 1)[0])
+        self.assertIsNone(detail['translation_cap_m'])
+        self.assertFalse(detail['at_cap']['left_arm']['translation'])
+        self.assertTrue(detail['at_cap']['left_arm']['rotation'])
+        self.assertLessEqual(detail['bias']['left_arm']['rotation_rad'], .2 + 2e-12)
+        self.assertLess(self.clock.now, 31.1)
+
+    def test_invalid_translation_limit_environment_rejected_before_transport(self):
+        for value in ('', 'None', 'NaN', 'inf', '0.05', 'false'):
+            with self.subTest(value=value), mock.patch.dict(adapter.os.environ, {adapter.TRANSLATION_LIMIT_ENV: value}):
+                with self.assertRaisesRegex(ValueError, adapter.TRANSLATION_LIMIT_ENV):
+                    self.run_probe()
+        self.assertEqual(self.client.sequence, 0)
 
     def test_ack_failures_stop_after_one_attempt(self):
         for mutation in (lambda r, c: r.update(ok=False), lambda r, c: r.update(done=True),
@@ -375,6 +481,145 @@ class ContinuousP2PTests(unittest.TestCase):
         self.assertGreater(len(self.client.actions), 0)
         self.assertLess(self.clock.now, 32.)
         self.assertLessEqual(self.client.saved['left_arm'][0] - .005, .025 + 1e-12)
+
+    def capped_client(self):
+        self.client = FakeClient(self.clock, left_saved=(.03, 0., 0., 0., 0., 0.))
+        return self.client
+
+    def assert_only_cap_roundoff_step(self):
+        # The math module permits 1e-12 m of geometric roundoff at the boundary.
+        # Its first proposal consumes that slack. ALL subsequent cap feedback
+        # must be read-only; this is not permission for repeated zero RPCs.
+        self.assertEqual(len(self.client.actions), 1)
+        increment = self.client.actions[0]['left_arm']['motion']['translation']
+        self.assertLessEqual(math.hypot(*increment), 2e-12)
+        self.assertEqual(self.client.count, 41)
+
+    def test_cap_wait_can_converge_from_delayed_feedback_without_zero_steps(self):
+        self.capped_client()
+        def delayed_feedback(o, c):
+            if c.sequence >= 8:
+                o['left_arm']['native_robot_state']['torso_eef_pose']['position'][0] = .005
+        self.client.mutate = delayed_feedback
+        log = io.StringIO()
+        with redirect_stderr(log):
+            result = adapter.run(self.client, [.005, 0., 0., 0., 0., 0.], [0.] * 6,
+                                 position_tolerance_m=.003, rotation_tolerance_rad=.1)
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['commands'], 1)
+        self.assert_only_cap_roundoff_step()
+        self.assertGreaterEqual(self.client.sequence, 12)
+        self.assertEqual(log.getvalue().count('"event": "p2p_servo_cap_warning"'), 1)
+
+    def test_permanent_cap_wait_keeps_original_deadline_and_reports_residual(self):
+        self.capped_client()
+        with self.assertRaises(adapter.ContinuousP2PError) as raised:
+            self.run_probe()
+        message = str(raised.exception)
+        self.assertIn('30-second servo budget exhausted', message)
+        detail = json.loads(message.split('residual=', 1)[1].split('; confirmed_commands=', 1)[0])
+        self.assertAlmostEqual(detail['final_error']['left_translation_error_m'], .005, places=10)
+        self.assertIn('"translation_cap_m": 0.025', message)
+        self.assertIn('"cap_wait_sides": ["left_arm"]', message)
+        self.assertIn('"at_cap":', message)
+        self.assertIn('"translation": true', message)
+        self.assert_only_cap_roundoff_step()
+        self.assertLessEqual(self.clock.now, 31.06)
+
+    def test_cap_wait_rejects_external_command_and_native_fault(self):
+        for fault in ('count', 'native', 'target'):
+            with self.subTest(fault=fault):
+                self.capped_client()
+                def mutation(o, c):
+                    if c.sequence >= 4:
+                        if fault == 'count':
+                            o['command_target_state']['step_count'] += 1
+                        elif fault == 'target':
+                            o['command_target_state']['arms']['left_arm']['position_m'][0] += .0001
+                        else:
+                            o['left_arm']['native_robot_state']['current_errors']['joint_reflex'] = True
+                self.client.mutate = mutation
+                with self.assertRaises(adapter.ContinuousP2PError):
+                    self.run_probe()
+                self.assertEqual(self.client.sequence, 4)
+                self.assert_only_cap_roundoff_step()
+
+    def test_cap_wait_can_resume_a_feasible_inward_step_without_slow_cycle_error(self):
+        self.capped_client()
+        def changed_error(o, c):
+            if c.sequence >= 8:
+                o['left_arm']['native_robot_state']['torso_eef_pose']['position'][0] = .009 if c.count == 41 else .005
+        self.client.mutate = changed_error
+        result = self.run_probe()
+        self.assertTrue(result['ok'])
+        self.assertGreater(result['commands'], 0)
+        self.assertLess(self.client.actions[1]['left_arm']['motion']['translation'][0], 0.)
+        self.assertGreater(self.client.send_times[1] - self.client.send_times[0], .1)
+        self.assertGreater(result['timings'][1]['actual_send_interval_s'], .1)
+        self.assertLess(result['timings'][1]['control_dt_s'], .1)
+        self.assertLessEqual(result['final_error']['left_translation_error_m'], .003)
+
+    def test_one_capped_arm_stays_fixed_while_other_arm_moves(self):
+        self.capped_client()
+        self.client.saved['right_arm'] = [0.] * 6
+        self.client.bias['right_arm'] = [0.] * 6
+        def delayed_left(o, c):
+            if c.sequence >= 12:
+                o['left_arm']['native_robot_state']['torso_eef_pose']['position'][0] = .005
+        self.client.mutate = delayed_left
+        with redirect_stderr(io.StringIO()):
+            result = adapter.run(self.client, [.005, 0., 0., 0., 0., 0.],
+                                 [0., .005, 0., 0., 0., 0.], position_tolerance_m=.003, rotation_tolerance_rad=.1)
+        self.assertTrue(result['ok'])
+        self.assertGreater(result['commands'], 0)
+        self.assertLessEqual(math.hypot(*self.client.actions[0]['left_arm']['motion']['translation']), 2e-12)
+        for action in self.client.actions[1:]:
+            self.assertEqual(action['left_arm']['motion']['translation'], [0.] * 3)
+        self.assertAlmostEqual(self.client.saved['left_arm'][0], .03, places=10)
+
+    def test_cap_wait_read_crossing_deadline_cannot_succeed(self):
+        self.capped_client()
+        hold_start = None
+        def callback(o):
+            nonlocal hold_start
+            if self.client.sequence == 2:
+                hold_start = self.clock.now
+            if self.client.sequence >= 3 and self.clock.now - hold_start > 29.9:
+                self.clock.now += .09
+                o['left_arm']['native_robot_state']['torso_eef_pose']['position'][0] = .005
+        with self.assertRaisesRegex(adapter.ContinuousP2PError, 'budget exhausted'):
+            self.run_probe(feedback_guard=callback)
+        self.assert_only_cap_roundoff_step()
+
+    def test_cap_wait_does_not_hide_a_single_slow_native_read(self):
+        self.capped_client()
+        original = self.client.get_observation
+        def slow_wait_read():
+            if self.client.sequence >= 3:
+                self.clock.now += .101
+            return original()
+        self.client.get_observation = slow_wait_read
+        with self.assertRaisesRegex(adapter.ContinuousP2PError, 'Native observation read exceeded'):
+            self.run_probe()
+        self.assert_only_cap_roundoff_step()
+
+    def test_arrival_latched_then_lost_does_not_restart_correction(self):
+        first_arrival = None
+        commands_at_loss = None
+        def later_drift(o, c):
+            nonlocal first_arrival, commands_at_loss
+            actual = o['left_arm']['native_robot_state']['torso_eef_pose']['position']
+            if abs(actual[0] - .005) <= .003 and first_arrival is None:
+                first_arrival = c.sequence
+            if first_arrival is not None and c.sequence >= first_arrival + 5:
+                if commands_at_loss is None:
+                    commands_at_loss = len(c.actions)
+                actual[0] = -.02
+        self.client.mutate = later_drift
+        with self.assertRaisesRegex(adapter.ContinuousP2PError, 'lost|arrival'):
+            self.run_probe()
+        self.assertIsNotNone(commands_at_loss)
+        self.assertEqual(len(self.client.actions), commands_at_loss)
 
     def test_max_steps_is_total_limit_without_retry(self):
         with self.assertRaisesRegex(adapter.ContinuousP2PError, 'max_steps budget exhausted'):

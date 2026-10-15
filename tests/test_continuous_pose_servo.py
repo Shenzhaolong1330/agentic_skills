@@ -43,7 +43,10 @@ class ContinuousPoseServoTests(unittest.TestCase):
         return update
 
     def assert_bounds(self, update, previous_velocity, config):
-        self.assertLessEqual(update.bias['translation_m'], config.max_translation_bias_m + 2e-12)
+        if config.max_translation_bias_m is not None:
+            self.assertLessEqual(update.bias['translation_m'], config.max_translation_bias_m + 2e-12)
+        else:
+            self.assertFalse(update.at_cap['translation'])
         self.assertLessEqual(update.bias['rotation_rad'], config.max_rotation_bias_rad + 2e-12)
         for key, delta, speed, step, acceleration in (
             ('translation_m_s', update.proposed_delta[:3], config.max_translation_speed_m_s,
@@ -201,6 +204,122 @@ class ContinuousPoseServoTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             servo.ServoConfig(max_rotation_bias_rad=math.pi / 2.)
 
+    def test_only_translation_radius_accepts_none_and_serializes_as_json_null(self):
+        config = servo.ServoConfig(max_translation_bias_m=None)
+        self.assertIsNone(config.max_translation_bias_m)
+        self.assertEqual(servo.ServoConfig().max_translation_bias_m, .025)
+        record = json.loads(json.dumps(dataclasses.asdict(config), allow_nan=False))
+        self.assertIsNone(record['max_translation_bias_m'])
+        for field in dataclasses.fields(servo.ServoConfig):
+            if field.name != 'max_translation_bias_m':
+                with self.subTest(field=field.name), self.assertRaises(ValueError):
+                    servo.ServoConfig(**{field.name: None})
+
+    def test_no_translation_radius_keeps_existing_large_saved_compensation(self):
+        config = servo.ServoConfig(max_translation_bias_m=None)
+        saved = pose((.040, -.010, .005), (0., .12, 0.))
+        controller = servo.ContinuousPoseServo(pose(), saved, config)
+        update = self.commit(controller, pose())
+        self.assertEqual(update.command, saved)
+        self.assertEqual(update.proposed_delta, (0.,) * 6)
+        self.assertFalse(update.at_cap['translation'])
+        self.assertTrue(update.within_tolerance)
+        self.assertGreater(update.bias['translation_m'], .025)
+        json.dumps(update.to_dict(), allow_nan=False)
+
+    def test_no_translation_radius_converges_beyond_25mm_and_brakes_without_reset(self):
+        config = servo.ServoConfig(max_translation_bias_m=None)
+        controller = servo.ContinuousPoseServo(pose(), pose(), config)
+        plant_bias = (-.035, .008, -.005)
+        measured = shifted(pose(), plant_bias)
+        previous = {'translation_m_s': (0., 0., 0.), 'rotation_rad_s': (0., 0., 0.)}
+        crossed_25mm = False
+        for index in range(600):
+            update = self.commit(controller, measured)
+            previous = self.assert_bounds(update, previous, config)
+            crossed_25mm |= update.bias['translation_m'] > .025
+            equilibrium = shifted(controller.confirmed_command, plant_bias)
+            # A first-order plant adds measurable lag without any settle call.
+            measured = shifted(measured, servo._scale(
+                servo._sub(equilibrium.position_m, measured.position_m), 1. - math.exp(-.05 / .2)))
+            if update.arrival_latched and update.command_stationary:
+                break
+        self.assertLess(index, 599)
+        self.assertTrue(crossed_25mm)
+        self.assertTrue(update.within_tolerance)
+        self.assertEqual(update.status, 'holding')
+        held = controller.confirmed_command
+        self.assertGreater(update.bias['translation_m'], .030)
+        for _ in range(20):
+            update = self.commit(controller, shifted(held, plant_bias))
+            self.assertTrue(update.within_tolerance)
+            self.assertEqual(update.command, held)
+            self.assertEqual(update.proposed_delta, (0.,) * 6)
+
+    def test_no_translation_radius_does_not_disable_rotation_cap_or_braking_reserve(self):
+        config = servo.ServoConfig(max_translation_bias_m=None)
+        with self.assertRaisesRegex(ValueError, 'bias cap'):
+            servo.ContinuousPoseServo(pose(), pose((.04, 0., 0.), (0., 0., .20001)), config)
+        controller = servo.ContinuousPoseServo(pose(), pose((.04, 0., 0.)), config)
+        previous = {'translation_m_s': (0., 0., 0.), 'rotation_rad_s': (0., 0., 0.)}
+        for _ in range(300):
+            update = self.commit(controller, pose((-.1, 0., 0.), (0., 0., -.8)))
+            previous = self.assert_bounds(update, previous, config)
+        self.assertTrue(update.at_cap['rotation'])
+        self.assertFalse(update.at_cap['translation'])
+        self.assertEqual(update.command_velocity['rotation_rad_s'], (0.,) * 3)
+        self.assertGreater(update.command_velocity['translation_m_s'][0], 0.)
+        self.assertGreater(update.bias['translation_m'], .09)
+        self.assertFalse(update.within_tolerance)
+        saved = pose((.04, 0., 0.), (0., 0., .19997))
+        controller = servo.ContinuousPoseServo(pose(), saved, config)
+        update = controller.update(pose((-.1, 0., 0.), (0., 0., -.8)), .05)
+        with self.assertRaisesRegex(ValueError, 'reserved braking distance'):
+            controller.confirm_command(shifted(update.command, rotation=(0., 0., 1e-7)))
+        self.assertEqual(controller.confirmed_command, saved)
+        self.assertIs(controller.pending, update)
+
+    def test_no_translation_radius_preserves_slew_limits_during_reversal(self):
+        config = servo.ServoConfig(max_translation_bias_m=None)
+        controller = servo.ContinuousPoseServo(pose(), pose((.04, 0., 0.)), config)
+        previous = {'translation_m_s': (0., 0., 0.), 'rotation_rad_s': (0., 0., 0.)}
+        for index in range(100):
+            measured = pose((-.1 if index < 50 else .1, 0., 0.))
+            update = self.commit(controller, measured)
+            previous = self.assert_bounds(update, previous, config)
+        self.assertLess(update.command_velocity['translation_m_s'][0], 0.)
+
+    def test_no_translation_radius_rejects_infeasible_step_and_late_feedback(self):
+        config = servo.ServoConfig(max_translation_bias_m=None)
+        controller = servo.ContinuousPoseServo(pose(), pose((.04, 0., 0.)), config)
+        for _ in range(20):
+            self.commit(controller, pose((-.1, 0., 0.)))
+        before = controller.confirmed_command
+        for dt, error in ((.2, servo.NoFeasibleStep), (.201, ValueError),
+                          (math.inf, ValueError), (math.nan, ValueError)):
+            with self.subTest(dt=dt), self.assertRaises(error):
+                controller.update(pose((-.1, 0., 0.)), dt)
+            self.assertEqual(controller.confirmed_command, before)
+            self.assertIsNone(controller.pending)
+
+    def test_no_translation_radius_checks_actual_ack_speed_and_acceleration(self):
+        config = servo.ServoConfig(max_translation_bias_m=None)
+        for preceding_steps in (0, 20):
+            with self.subTest(preceding_steps=preceding_steps):
+                controller = servo.ContinuousPoseServo(pose(), pose((.04, 0., 0.)), config)
+                for _ in range(preceding_steps):
+                    self.commit(controller, pose((-.1, 0., 0.)))
+                before = controller.confirmed_command
+                update = controller.update(pose((-.1, 0., 0.)), .05)
+                # Inside the 1-micrometre ACK match tolerance, but outside the
+                # acceleration limit on the first step or speed limit at cruise.
+                with self.assertRaisesRegex(ValueError, 'velocity or acceleration'):
+                    controller.confirm_command(shifted(update.command, (1e-7, 0., 0.)))
+                self.assertEqual(controller.confirmed_command, before)
+                self.assertIs(controller.pending, update)
+                with self.assertRaisesRegex(RuntimeError, 'pending'):
+                    controller.update(pose((-.1, 0., 0.)), .05)
+
     def test_speed_acceleration_step_caps_and_smooth_direction_reversal(self):
         config = servo.ServoConfig(position_tolerance_m=.0001, rotation_tolerance_rad=.001)
         controller = servo.ContinuousPoseServo(pose(), pose(), config)
@@ -354,12 +473,19 @@ class AtomicResearchParityTests(unittest.TestCase):
                 imported.add(node.module.split('.')[0])
         self.assertEqual(imported, {'__future__', 'dataclasses', 'math', 'typing'})
 
-    def test_control_algorithm_ast_matches_frozen_research_source(self):
-        def algorithm(path):
-            return [ast.dump(node, include_attributes=False) for node in ast.parse(path.read_text()).body
-                    if isinstance(node, (ast.FunctionDef, ast.ClassDef))
-                    and node.name not in ('Pose', '_finite_vector')]
-        self.assertEqual(algorithm(ATOMIC_PATH), algorithm(self.study_path))
+    def test_default_limits_and_invalid_initial_states_retain_research_semantics(self):
+        self.assertEqual(dataclasses.asdict(servo.ServoConfig()),
+                         dataclasses.asdict(self.study.ServoConfig()))
+        for translation, rotation in (((.02501, 0., 0.), (0., 0., 0.)),
+                                      ((0., 0., 0.), (0., 0., .20001))):
+            outcomes = []
+            for module in (servo, self.study):
+                goal = module.Pose((0., 0., 0.), (0., 0., 0., 1.))
+                saved = module.Pose(translation, module._quat_from_rotvec(rotation))
+                with self.assertRaises(ValueError) as caught:
+                    module.ContinuousPoseServo(goal, saved)
+                outcomes.append(str(caught.exception))
+            self.assertEqual(outcomes[0], outcomes[1])
 
     def test_embedded_pose_validation_is_equivalent_to_research_geometry(self):
         cases = [

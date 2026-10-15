@@ -76,11 +76,28 @@ compensation starts from the server's confirmed saved target.
 
 If that saved target is outside the goal's compensation limits, a quintic nominal
 approach first moves the saved command toward the goal using the caller's speed
-and step limits. The slow feedback phase then uses at most **2 mm/s** translation
+and step limits. Translation and rotation are checked independently: an
+orientation approach retains valid saved translation compensation, and vice
+versa. Comparisons use the same numerical roundoff allowance as the servo math.
+The slow feedback phase then uses at most **2 mm/s** translation
 and **0.01 rad/s** rotation, with bounded acceleration and command steps. Its
-fixed compensation limits are at most **25 mm / 0.20 rad** around the nominal
-goal. Smaller caller limits are retained. The controller never treats reaching
-a compensation limit as arrival.
+rotation compensation limit remains at most **0.20 rad** around the nominal
+goal. The standalone translation compensation limit defaults to **25 mm**, but
+accepts a finite caller limit or `max_tracking_translation_bias_m=None` to remove
+the fixed translation radius. The console explicitly sets
+`FRANKA_P2P_TRANSLATION_BIAS_LIMIT_M=none`, overriding legacy numeric arguments
+for its continuous free-space subprocesses. The effective result field
+`servo_config.max_translation_bias_m` is then JSON `null`, not infinity.
+Speed, acceleration, step, timing and feedback checks still apply. The controller
+never treats reaching any remaining compensation limit as arrival.
+
+Without a fixed translation radius, near-goal correction retains the saved
+command even if its bias exceeds 25 mm. Far-position nominal approach translates
+the previous saved-minus-measured offset along with the new goal. The 25 mm
+nominal-approach selection distance is a trajectory-mode threshold, not a
+correction cap. A fixed observation corridor includes the nominal path and the
+finite distance allowed by slow speed and time budget; it is not a whole-arm
+collision-clearance proof.
 
 Arrival uses the actual source-bound native torso pose. Effective tolerances are
 `min(caller_position_tolerance, 0.003 m)` and
@@ -91,11 +108,19 @@ requires a stationary hold lasting at least 0.5 seconds plus a fresh final
 verification. Losing tolerance after braking fails; the integrator does not
 restart automatically.
 
-The slow servo has a **30-second sending budget**; the final read-only hold has
+The slow servo has a **30-second budget including cap waits**; the final read-only hold has
 a **6-second limit**. `max_steps` (default 3000) also bounds the total number of
 nominal and servo commands. These are ceilings, not a promise to converge or a
 30-second limit for the entire task. Legacy `max_correction_iters` and
 `settle_time_sec` do not create repeated correction rounds in this mode.
+
+If a bounded command stops at its compensation cap before arrival, emit
+`p2p_servo_cap_warning` and keep checking fresh native feedback within that same
+budget. When all commands are stationary, this is read-only: do not send zero
+steps or change the saved targets/count. A later feasible inward correction may
+resume the same loop. Faults or external commands still fail immediately; a
+latched arrival that is lost never restarts. Budget exhaustion reports remaining
+errors, saved biases and caps, without declaring the target physically unreachable.
 
 Both arms must provide fresh source-bound native poses, complete healthy native
 diagnostics and advancing timestamps/sequences. Every command verifies the raw

@@ -855,7 +855,7 @@ class DualFrankaRobotiqRpcClient:
         position_tolerance_m: float = 0.0015,
         rotation_tolerance_rad: float = 0.01,
         max_correction_iters: int = 1,
-        max_tracking_translation_bias_m: float = 0.025,
+        max_tracking_translation_bias_m: Optional[float] = 0.025,
         max_tracking_rotation_bias_rad: float = 0.20,
         stall_detection_side: Optional[str] = None,
         stall_translation_epsilon_m: float = 0.0005,
@@ -872,6 +872,13 @@ class DualFrankaRobotiqRpcClient:
         ``delta=True`` keeps the legacy 6D torso-frame delta semantics. When
         ``delta=False``, the two pose inputs are absolute torso-frame targets:
         ``[x, y, z, rx, ry, rz]``.
+
+        ``controller='continuous_servo'`` selects timed native-feedback control.
+        In that mode, ``max_tracking_translation_bias_m=None`` removes the fixed
+        translation-bias radius while retaining speed, time and health checks.
+        The console explicitly requests this with environment variable
+        ``FRANKA_P2P_TRANSLATION_BIAS_LIMIT_M=none``. Legacy segmented mode retains
+        its numeric limit and does not use this environment override.
 
         Absolute targets default to a client-side smooth trajectory: position is
         linearly interpolated in torso frame, orientation uses quaternion slerp,

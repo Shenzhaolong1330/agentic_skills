@@ -97,11 +97,16 @@ their existing procedures. The `p2p_controller_selected` timeline event records
 which route each subprocess actually receives.
 
 The nominal goal stays fixed. An initial nominal approach, when needed, starts
-from the existing saved command with the caller's trajectory limits. The slow
+from the existing saved command with the caller's trajectory limits. The
+approach checks position and orientation separately; rotating the gripper must
+not clear position compensation. The
 feedback phase preserves and continuously updates bounded compensation at most
-**2 mm/s / 0.01 rad/s**, with bounded acceleration and command steps. It uses at
-most **25 mm / 0.20 rad** compensation around the goal and respects tighter
-caller limits. It does not synchronize with `step(None)` or restart the whole
+**2 mm/s / 0.01 rad/s**, with bounded acceleration and command steps. The console
+sets `FRANKA_P2P_TRANSLATION_BIAS_LIMIT_M=none`, removing the fixed translation
+compensation radius even when legacy command arguments contain 0.025 m. The
+effective translation cap is `null` in the result, while the **0.20 rad** rotation
+cap and tighter rotation limits remain. Standalone callers retain their explicit
+limits unless they opt in. It does not synchronize with `step(None)` or restart the whole
 target through an outer retry loop.
 
 The console grasp profile requests **3 mm / 0.10 rad** arrival. The continuous
@@ -112,11 +117,18 @@ feedback must then remain within tolerance for at least 0.5 seconds, followed by
 an independent final read. Existing saved compensation is retained at arrival.
 No subsequent descent, gripper or handover is allowed on an unverified result.
 
-The slow servo allows **30 seconds of sending** and the final read-only hold
+The slow servo allows **30 seconds including cap waits** and the final read-only hold
 allows **6 seconds**. `max_steps` (default 3000) additionally bounds the combined
 nominal and servo command count. The nominal approach, perception and other task
 stages are outside the 30-second servo budget. Legacy `--p2p-retries` and
 `--settle-time-sec` do not add correction rounds to this controller.
+
+A stationary command at its compensation cap warns and retains its saved target
+while reading fresh feedback within the original budget. It does not issue zero
+steps or renew the timeout. Feasible correction may resume, but exhausted time
+still fails with explicit residual/cap diagnostics. Waiting does not guarantee
+arrival. This applies to remaining limits such as rotation, or a standalone
+caller's finite translation cap; console translation is explicitly uncapped.
 
 Each command requires a valid raw ACK followed by fresh, healthy native
 diagnostics, source-bound torso poses, an unchanged server session, the exact
