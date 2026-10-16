@@ -467,16 +467,31 @@ class _Run:
             if time.monotonic() >= deadline:
                 raise ContinuousP2PError('Stopped-command hold did not settle within 6 seconds')
 
+        def stationarity(samples, stage):
+            metrics = {}
+            for side in SIDES:
+                speed = max(abs(v) for sample in samples for v in sample[2][side])
+                drift = max(math.dist(a[1][side].position_m, b[1][side].position_m)
+                            for a in samples for b in samples)
+                metrics[side] = {'max_joint_velocity_rad_s': speed,
+                                 'max_translation_drift_m': drift,
+                                 'velocity_ok': speed < .01, 'drift_ok': drift <= .00015}
+            stable = all(m['velocity_ok'] and m['drift_ok'] for m in metrics.values())
+            _emit('p2p_servo_hold_check', stage=stage, stationary=stable,
+                  metrics=metrics, final_error=self.error_report(),
+                  sample_count=len(samples), window_span_s=samples[-1][0] - samples[0][0],
+                  remaining_hold_s=max(0., deadline - time.monotonic()), step_count=self.count,
+                  limits={'joint_velocity_rad_s': .01, 'translation_drift_m': .00015})
+            return stable
+
         while time.monotonic() < deadline:
             self.snapshot(expected=held, count=self.count)
             check_deadline()
             if not all(self.within(self.measured[s], s) for s in SIDES):
                 return None  # Fresh, validated drift; caller decides whether to reacquire.
             window.append((time.monotonic(), dict(self.measured), dict(self.velocities)))
-            if (len(window) == 3 and window[-1][0] - window[0][0] >= .5
-                    and all(max(abs(v) for sample in window for v in sample[2][s]) < .01
-                            and max(math.dist(a[1][s].position_m, b[1][s].position_m)
-                                    for a in window for b in window) <= .00015 for s in SIDES)):
+            stable = stationarity(list(window), 'window')
+            if len(window) == 3 and window[-1][0] - window[0][0] >= .5 and stable:
                 # A fourth, independent fresh read must still match the held count,
                 # command, native stationarity and physical goal.
                 time.sleep(self.period)
@@ -485,10 +500,15 @@ class _Run:
                 check_deadline()
                 if not all(self.within(self.measured[s], s) for s in SIDES):
                     return None
-                if (any(max(map(abs, self.velocities[s])) >= .01
-                               or any(math.dist(self.measured[s].position_m, sample[1][s].position_m) > .00015
-                                      for sample in window) for s in SIDES)):
-                    raise ContinuousP2PError('Independent final arrival/stationarity check failed')
+                final_sample = (time.monotonic(), dict(self.measured), dict(self.velocities))
+                if not stationarity([*window, final_sample], 'independent'):
+                    # The target is still reached and health checks passed.
+                    # Residual settling is not a fault: keep the command fixed
+                    # and rebuild the full window under the SAME deadline.
+                    window.clear()
+                    window.append(final_sample)
+                    time.sleep(min(.25, max(0., deadline - time.monotonic())))
+                    continue
                 confirmation = [{'monotonic_s': stamp, 'poses': {s: _six(p) for s, p in poses.items()}}
                                 for stamp, poses, _ in window]
                 check_deadline()
