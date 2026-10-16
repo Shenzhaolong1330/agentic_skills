@@ -3,8 +3,9 @@
 Reuses the reviewed transport, telemetry, ownership, bounds and hold checks.
 Never changes the RPC server, impedance parameters, raw step() or policy loop.
 """
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import importlib.util
+import os
 from pathlib import Path
 import sys
 
@@ -54,6 +55,7 @@ class TrackingRun(base._Run):
         self.last_log = now
 
     def execute(self):
+        profile = tracking.feedback_profile(os.environ.get('FRANKA_P2P_TRACKING_PROFILE', 'conservative'))
         self.started = base.time.monotonic()
         self.prepare()
         if any(max(map(abs, self.velocities[s])) >= .01 for s in SIDES):
@@ -62,17 +64,22 @@ class TrackingRun(base._Run):
             self.options.get('max_translation_speed', .05), self.options.get('max_rotation_speed', .4),
             self.options.get('max_translation_step') or .003,
             self.options.get('max_rotation_step') or .025)
+        config = replace(config,
+            translation_integral_gain_per_s=profile.translation_gain_per_s,
+            rotation_integral_gain_per_s=profile.rotation_gain_per_s)
         minimum = max(base._positive(self.options.get('min_duration_sec', .5), 'minimum duration'),
                       base._positive(self.options['duration_sec'], 'duration')
                       if self.options.get('duration_sec') is not None else .5)
         duration = max(tracking.path_duration(self.initial[s], self.goals[s], config, minimum=minimum)
                        for s in SIDES)
         budget = duration + base.SERVO_BUDGET_S
-        self.servos = {s: tracking.TrackingServo(self.initial[s], self.goals[s], self.saved[s], config, duration)
+        self.servos = {s: tracking.TrackingServo(self.initial[s], self.goals[s], self.saved[s], config, duration, profile=profile.name)
                        for s in SIDES if s not in self.held}
         base._emit('p2p_tracking_config', controller=self.controller, nominal_duration_s=duration,
                    total_budget_s=budget, command_config=asdict(config),
-                   feedback_translation_speed_m_s=.002, feedback_rotation_speed_rad_s=.01,
+                   feedback_profile=asdict(profile),
+                   feedback_translation_speed_m_s=profile.translation_speed_m_s,
+                   feedback_rotation_speed_rad_s=profile.rotation_speed_rad_s,
                    governor={'position_slow_m': .003, 'position_pause_m': .009,
                              'rotation_slow_rad': .03, 'rotation_pause_rad': .08},
                    impedance_parameters_changed=False, contact_policy=False)
@@ -86,7 +93,9 @@ class TrackingRun(base._Run):
             # reference rather than allowing the other arm to run ahead.
             scale = min((servo.tracking_scale(self.measured[s])
                          for s, servo in self.servos.items()), default=1.)
-            updates = {s: servo.update(self.measured[s], dt, reference_scale=scale)
+            all_arrived = all(self.within(self.measured[s], s) for s in SIDES)
+            updates = {s: servo.update(self.measured[s], dt, reference_scale=scale,
+                                      allow_early_arrival=all_arrived)
                        for s, servo in self.servos.items()}
             drifted = [s for s, u in updates.items()
                        if u.command_stationary and u.arrival_latched and not u.within_tolerance]
@@ -138,6 +147,7 @@ class TrackingRun(base._Run):
                   'settle_reacquisitions': self.settle_reacquisitions,
                   'bounds': self.bounds, 'frame': 'torso', 'servo_config': asdict(config),
                   'total_budget_s': budget, 'impedance_parameters_changed': False,
+                  'feedback_profile': asdict(profile),
                   'translation_limit_source': self.translation_limit_source,
                   'correction_guard_policy': 'final_success_only',
                   'tolerances': {'position_tolerance_m': self.config.position_tolerance_m,
