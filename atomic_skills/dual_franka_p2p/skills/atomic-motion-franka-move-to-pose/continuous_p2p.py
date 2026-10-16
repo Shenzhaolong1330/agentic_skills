@@ -89,6 +89,8 @@ def _positive(value, name):
 
 
 class _Run:
+    controller = 'continuous_servo'
+
     def __init__(self, client, left, right, delta, feedback_guard, correction_guard, options):
         self.client, self.inputs, self.delta = client, dict(zip(SIDES, (left, right))), delta
         self.feedback_guard, self.correction_guard = feedback_guard, correction_guard
@@ -276,7 +278,7 @@ class _Run:
                                                               for p in poses) + self.config.max_rotation_bias_rad)}
         self.start_count = self.count
         self.initial_saved = dict(self.saved)
-        _emit('p2p_servo_start', goals={s: _six(p) for s, p in self.goals.items()},
+        _emit('p2p_servo_start', controller=self.controller, goals={s: _six(p) for s, p in self.goals.items()},
               held_sides=sorted(self.held), bounds=self.bounds, servo_config=asdict(self.config),
               period_s=self.period, max_cycle_s=self.max_cycle, servo_budget_s=SERVO_BUDGET_S,
               translation_limit_source=self.translation_limit_source,
@@ -320,7 +322,7 @@ class _Run:
     def note_cap_wait(self, side, update):
         if side not in self.cap_wait_sides:
             self.cap_wait_sides.add(side)
-            _emit('p2p_servo_cap_warning', side=side, errors=update.errors, bias=update.bias,
+            _emit('p2p_servo_cap_warning', controller=self.controller, side=side, errors=update.errors, bias=update.bias,
                   at_cap=update.at_cap, command_preserved=True,
                   message='Bounded command stopped before arrival; read fresh feedback within original budget')
 
@@ -451,7 +453,7 @@ class _Run:
                 servos[side].confirm_command(self.saved[side])
             servos[side].resume_after_settle_drift()
         self.settle_reacquisitions += 1
-        _emit('p2p_servo_reacquire', phase=self.phase, sides=sides,
+        _emit('p2p_servo_reacquire', controller=self.controller, phase=self.phase, sides=sides,
               attempt=self.settle_reacquisitions, max_attempts=MAX_SETTLE_REACQUISITIONS,
               final_error=self.error_report(), remaining_servo_s=deadline - time.monotonic(),
               goal_preserved=True, saved_compensation_preserved=True, step_count=self.count)
@@ -477,7 +479,7 @@ class _Run:
                                  'max_translation_drift_m': drift,
                                  'velocity_ok': speed < .01, 'drift_ok': drift <= .00015}
             stable = all(m['velocity_ok'] and m['drift_ok'] for m in metrics.values())
-            _emit('p2p_servo_hold_check', stage=stage, stationary=stable,
+            _emit('p2p_servo_hold_check', controller=self.controller, stage=stage, stationary=stable,
                   metrics=metrics, final_error=self.error_report(),
                   sample_count=len(samples), window_span_s=samples[-1][0] - samples[0][0],
                   remaining_hold_s=max(0., deadline - time.monotonic()), step_count=self.count,

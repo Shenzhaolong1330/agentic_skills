@@ -55,7 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rotation-tolerance-rad", type=float, default=0.03)
     parser.add_argument("--max-correction-iters", type=int, default=2)
     parser.add_argument("--max-steps", type=int, default=3000)
-    parser.add_argument("--controller", choices=("segmented", "continuous_servo"),
+    parser.add_argument("--controller", choices=("segmented", "continuous_servo", "external_tracking"),
                         help="Override FRANKA_P2P_CONTROLLER for this call; default remains segmented outside the console.")
     parser.add_argument("--execute", action="store_true", help="Send motion command. Without this, only print plan.")
     parser.add_argument("--compact", action="store_true")

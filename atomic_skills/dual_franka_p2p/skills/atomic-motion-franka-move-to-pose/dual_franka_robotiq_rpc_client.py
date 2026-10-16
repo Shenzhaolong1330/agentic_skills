@@ -24,14 +24,17 @@ from typing import Any, Optional
 def p2p_controller_mode(controller: Optional[str] = None) -> str:
     """Explicit per-call selection wins; legacy callers remain segmented."""
     mode = controller if controller is not None else os.environ.get('FRANKA_P2P_CONTROLLER', 'segmented')
-    if mode not in ('segmented', 'continuous_servo'):
-        raise ValueError('P2P controller must be segmented or continuous_servo')
+    if mode not in ('segmented', 'continuous_servo', 'external_tracking'):
+        raise ValueError('P2P controller must be segmented, continuous_servo or external_tracking')
     return mode
 
 
-def _continuous_p2p_module():
-    name = '_franka_skill_continuous_p2p'
-    path = Path(__file__).with_name('continuous_p2p.py')
+def _continuous_p2p_module(controller='continuous_servo'):
+    if controller == 'external_tracking':
+        name, filename = '_franka_external_tracking_p2p', 'external_tracking_p2p.py'
+    else:
+        name, filename = '_franka_skill_continuous_p2p', 'continuous_p2p.py'
+    path = Path(__file__).with_name(filename)
     loaded = sys.modules.get(name)
     if loaded is not None and Path(loaded.__file__).resolve() == path.resolve():
         return loaded
@@ -154,7 +157,7 @@ def _quat_multiply_xyzw(
 
 def _pose_from_side_observation(observation: Mapping[str, Any], side: str, *, controller: Optional[str] = None) -> list[float]:
     side_state = _as_mapping(observation.get(side))
-    if p2p_controller_mode(controller) == 'continuous_servo':
+    if p2p_controller_mode(controller) in ('continuous_servo', 'external_tracking'):
         native = _as_mapping(side_state.get('native_robot_state'))
         pose = _as_mapping(native.get('torso_eef_pose'))
         if (pose.get('schema') != 'aoe.franka-source-bound-pose.v1' or pose.get('frame') != 'torso'
@@ -873,7 +876,8 @@ class DualFrankaRobotiqRpcClient:
         ``delta=False``, the two pose inputs are absolute torso-frame targets:
         ``[x, y, z, rx, ry, rz]``.
 
-        ``controller='continuous_servo'`` selects timed native-feedback control.
+        ``controller='continuous_servo'`` selects the previous endpoint outer loop.
+        ``controller='external_tracking'`` selects feedback along the whole free-space path.
         In that mode, ``max_tracking_translation_bias_m=None`` removes the fixed
         translation-bias radius while retaining speed, time and health checks.
         The console explicitly requests this with environment variable
@@ -899,10 +903,10 @@ class DualFrankaRobotiqRpcClient:
         """
         left_pose = _as_float_vector(left_delta, 6, 'left_delta')
         right_pose = _as_float_vector(right_delta, 6, 'right_delta')
-        if p2p_controller_mode(controller) == 'continuous_servo':
+        if p2p_controller_mode(controller) in ('continuous_servo', 'external_tracking'):
             if smooth is False:
                 raise ValueError('continuous_servo cannot use the legacy single-RPC motion path')
-            return _continuous_p2p_module().run(
+            return _continuous_p2p_module(p2p_controller_mode(controller)).run(
                 self, left_pose, right_pose, delta=delta, wait=wait,
                 duration_sec=duration_sec, rate_hz=rate_hz,
                 max_translation_speed=max_translation_speed, max_rotation_speed=max_rotation_speed,

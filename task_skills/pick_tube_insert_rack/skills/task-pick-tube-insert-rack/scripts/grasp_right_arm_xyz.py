@@ -841,9 +841,9 @@ def load_transition_targets(path: Path, active_side: str) -> tuple[np.ndarray, n
 
 def reanchor(client: DualFrankaRobotiqRpcClient, enabled: bool) -> None:
     mode = os.environ.get('FRANKA_P2P_CONTROLLER', 'segmented')
-    if mode not in ('segmented', 'continuous_servo'):
-        raise ValueError('P2P controller must be segmented or continuous_servo')
-    if not enabled or mode == 'continuous_servo':
+    if mode not in ('segmented', 'continuous_servo', 'external_tracking'):
+        raise ValueError('P2P controller must be segmented, continuous_servo or external_tracking')
+    if not enabled or mode in ('continuous_servo', 'external_tracking'):
         return
     client.step(None)
     time.sleep(0.2)
@@ -919,7 +919,7 @@ def move_stage(
     )
     regular_retries_remaining = int(getattr(args, "p2p_retries", 1))
     min_progress = float(getattr(args, "p2p_retry_min_progress_ratio", 0.02))
-    servo = os.environ.get('FRANKA_P2P_CONTROLLER') == 'continuous_servo'
+    servo = os.environ.get('FRANKA_P2P_CONTROLLER') in ('continuous_servo', 'external_tracking')
     continuous = bool(getattr(args, "p2p_continuous_corrections", False) or servo)
     warn_and_retry_stall = bool(getattr(args, "warn_and_retry_stall", False) or continuous)
     if continuous and getattr(args, "recover_stalled_controller", False):
@@ -975,7 +975,7 @@ def move_stage(
             "correction_guard": correction_guard,
         }
         print("p2p correction policy:", json.dumps({
-            "mode": "continuous_servo" if servo else "continuous_bounded", "max_rounds": None if servo else max_possible_attempts,
+            "mode": os.environ.get("FRANKA_P2P_CONTROLLER") if servo else "continuous_bounded", "max_rounds": None if servo else max_possible_attempts,
             "max_corrections": regular_retries_remaining, "preserve_bias_within_stage": True,
             "position_deadband_m": .0005, "rotation_deadband_rad": .005,
         }), flush=True)
@@ -1058,7 +1058,7 @@ def move_stage(
         print("left residual:", json.dumps(left_error, indent=None if args.compact else 2, ensure_ascii=False))
         print("right residual:", json.dumps(right_error, indent=None if args.compact else 2, ensure_ascii=False))
         result_ok = bool(result.get("ok"))
-        if servo and (not result_ok or result.get('controller') != 'continuous_servo'):
+        if servo and (not result_ok or result.get('controller') != os.environ.get('FRANKA_P2P_CONTROLLER')):
             raise RuntimeError(f'{name}: continuous servo did not verify stable arrival; no retry or next stage')
         score = residual_score(left_current, right_current)
         print("p2p_attempt_result:", json.dumps({
