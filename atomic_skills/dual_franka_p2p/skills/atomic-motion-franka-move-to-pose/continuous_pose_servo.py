@@ -332,6 +332,21 @@ class ContinuousPoseServo:
         self._pending = proposal
         return proposal
 
+    def resume_after_settle_drift(self) -> None:
+        """Reopen tracking only after the driver verifies bounded healthy drift.
+
+        Preserve the goal, acknowledged command and zero velocity. This is not
+        a transport retry or an adoption of a new saved target. The driver owns
+        the unchanged deadline, recovery count and fresh-feedback checks.
+        """
+        if self._pending is not None:
+            raise RuntimeError('Cannot resume with an unconfirmed proposal')
+        if not self._arrival_latched:
+            raise RuntimeError('Cannot resume before a latched arrival')
+        if any(_norm(value) > _STATIONARY for value in self._velocity.values()):
+            raise RuntimeError('Cannot resume before command braking completes')
+        self._arrival_latched = False
+
     def confirm_command(self, actual_saved_pose: Pose) -> None:
         if self._pending is None:
             raise RuntimeError('No pending command to confirm')

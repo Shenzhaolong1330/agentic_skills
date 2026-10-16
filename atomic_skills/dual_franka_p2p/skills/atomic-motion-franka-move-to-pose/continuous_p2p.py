@@ -33,6 +33,8 @@ legacy = _neighbor('dual_franka_robotiq_rpc_client.py', '_franka_atomic_p2p_geom
 Pose = geometry.Pose
 SIDES = ('left_arm', 'right_arm')
 SERVO_BUDGET_S = 30.
+MAX_SETTLE_REACQUISITIONS = 3
+REACQUISITION_ERROR_RATIO = 2.
 TRANSLATION_LIMIT_ENV = 'FRANKA_P2P_TRANSLATION_BIAS_LIMIT_M'
 NATIVE_ERROR_FIELDS = frozenset('''joint_position_limits_violation cartesian_position_limits_violation
 self_collision_avoidance_violation joint_velocity_violation cartesian_velocity_violation
@@ -131,12 +133,14 @@ class _Run:
             max_dt_s=.2)
         self.phase, self.session, self.count = 'preflight', None, None
         self.saved, self.initial, self.goals, self.bounds, self.held = {}, {}, {}, {}, set()
+        self.measured = {}
         self.nominal_targets = {}
         self.sequences, self.stamps = {}, {}
         self.commands = self.attempts = 0
         self.last_step, self.last_dispatch = None, None
         self.last_control_tick = None
         self.cap_wait_sides = set()
+        self.settle_reacquisitions = 0
         self.timings, self.progress = [], []
         self.last_log = -math.inf
 
@@ -429,9 +433,34 @@ class _Run:
             _emit('p2p_servo_progress', **report)
             self.last_log = now
 
-    def hold(self):
+    def reacquire(self, servos, sides, deadline, *, pending=None):
+        """Resume this closed loop after small verified drift, never replay P2P."""
+        self.check_servo_deadline(deadline)
+        if not sides or any(s not in servos for s in sides):
+            raise ContinuousP2PError('Arrival drift affects a held arm; no reacquisition')
+        for side in sides:
+            error = _error(self.measured[side], self.goals[side])
+            # This is a recovery envelope, never an expanded arrival tolerance.
+            if (error['translation_m'] > REACQUISITION_ERROR_RATIO * self.config.position_tolerance_m
+                    or error['rotation_rad'] > REACQUISITION_ERROR_RATIO * self.config.rotation_tolerance_rad):
+                raise ContinuousP2PError(f'{side}: arrival drift exceeds bounded reacquisition envelope')
+        if self.settle_reacquisitions >= MAX_SETTLE_REACQUISITIONS:
+            raise ContinuousP2PError(f'Arrival did not stabilize within {MAX_SETTLE_REACQUISITIONS} settle reacquisitions')
+        for side in sides:
+            if pending is not None:
+                servos[side].confirm_command(self.saved[side])
+            servos[side].resume_after_settle_drift()
+        self.settle_reacquisitions += 1
+        _emit('p2p_servo_reacquire', phase=self.phase, sides=sides,
+              attempt=self.settle_reacquisitions, max_attempts=MAX_SETTLE_REACQUISITIONS,
+              final_error=self.error_report(), remaining_servo_s=deadline - time.monotonic(),
+              goal_preserved=True, saved_compensation_preserved=True, step_count=self.count)
+
+    def hold(self, *, overall_deadline=None):
         self.phase = 'hold'
         deadline, window = time.monotonic() + 6., deque(maxlen=3)
+        if overall_deadline is not None:
+            deadline = min(deadline, overall_deadline)
         held = dict(self.saved)
 
         def check_deadline():
@@ -442,7 +471,7 @@ class _Run:
             self.snapshot(expected=held, count=self.count)
             check_deadline()
             if not all(self.within(self.measured[s], s) for s in SIDES):
-                raise ContinuousP2PError('Arrival tolerance lost after braking; no integrator restart')
+                return None  # Fresh, validated drift; caller decides whether to reacquire.
             window.append((time.monotonic(), dict(self.measured), dict(self.velocities)))
             if (len(window) == 3 and window[-1][0] - window[0][0] >= .5
                     and all(max(abs(v) for sample in window for v in sample[2][s]) < .01
@@ -454,8 +483,9 @@ class _Run:
                 check_deadline()
                 self.snapshot(expected=held, count=self.count)
                 check_deadline()
-                if (not all(self.within(self.measured[s], s) for s in SIDES)
-                        or any(max(map(abs, self.velocities[s])) >= .01
+                if not all(self.within(self.measured[s], s) for s in SIDES):
+                    return None
+                if (any(max(map(abs, self.velocities[s])) >= .01
                                or any(math.dist(self.measured[s].position_m, sample[1][s].position_m) > .00015
                                       for sample in window) for s in SIDES)):
                     raise ContinuousP2PError('Independent final arrival/stationarity check failed')
@@ -481,6 +511,12 @@ class _Run:
         while True:
             dt = self.scheduled_dt(deadline=deadline)
             updates = {s: servo.update(self.measured[s], dt) for s, servo in servos.items()}
+            drifted = [s for s, u in updates.items()
+                       if u.command_stationary and u.arrival_latched and not u.within_tolerance]
+            if drifted:
+                self.reacquire(servos, drifted, deadline, pending=updates)
+                for side in drifted:
+                    updates[side] = servos[side].update(self.measured[side], dt)
             for side, update in updates.items():
                 if update.command_stationary and not update.within_tolerance:
                     if update.arrival_latched:
@@ -492,8 +528,16 @@ class _Run:
                 for side, update in updates.items():
                     servos[side].confirm_command(self.saved[side])
                 if all(u.within_tolerance and u.arrival_latched for u in updates.values()):
-                    confirmation = self.hold()
-                    break
+                    confirmation = self.hold(overall_deadline=deadline + 6.)
+                    if confirmation is not None:
+                        break
+                    drifted = [s for s in SIDES if not self.within(self.measured[s], s)]
+                    self.reacquire(servos, drifted, deadline)
+                    self.phase = 'servo'
+                    # Hold reads are not servo integration intervals. Start a
+                    # fresh timed cycle using the just-validated observation.
+                    self.last_control_tick = None
+                    continue
                 # Keep the last checked saved targets. Do not send zero steps,
                 # reset the integral, or renew the original 30-second budget.
                 self.log_progress(updates)
@@ -520,6 +564,7 @@ class _Run:
                   'initial_step_count': self.start_count, 'final_step_count': self.count,
                   'server_session_id': self.session, 'timings': self.timings,
                   'held_sides': sorted(self.held), 'hold_confirmation': confirmation,
+                  'settle_reacquisitions': self.settle_reacquisitions,
                   'bounds': self.bounds, 'frame': 'torso', 'servo_config': asdict(self.config),
                   'translation_limit_source': self.translation_limit_source,
                   'nominal_approach_distance_m': self.nominal_approach_distance_m,
@@ -543,5 +588,7 @@ def run(client, left_pose, right_pose, *, delta=False, feedback_guard=None, corr
         detail = (f'Continuous P2P failed in {runner.phase}: {error}; '
                   f'confirmed_commands={runner.commands}, dispatch_attempts={runner.attempts}; no automatic retry')
         _emit('p2p_servo_failed', phase=runner.phase, message=str(error),
-              confirmed_commands=runner.commands, dispatch_attempts=runner.attempts)
+              confirmed_commands=runner.commands, dispatch_attempts=runner.attempts,
+              last_validated_error=runner.error_report() if all(s in runner.measured and s in runner.goals for s in SIDES) else None,
+              settle_reacquisitions=runner.settle_reacquisitions)
         raise ContinuousP2PError(detail) from error

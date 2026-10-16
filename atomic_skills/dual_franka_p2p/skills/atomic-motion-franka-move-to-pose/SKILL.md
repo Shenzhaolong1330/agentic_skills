@@ -105,8 +105,18 @@ Arrival uses the actual source-bound native torso pose. Effective tolerances are
 tolerance but cannot loosen it. Once the measured pose first enters tolerance,
 the command smoothly brakes and retains its compensation. Completion then
 requires a stationary hold lasting at least 0.5 seconds plus a fresh final
-verification. Losing tolerance after braking fails; the integrator does not
-restart automatically.
+verification. Small drift after command braking can reopen tracking in the
+same call, keeping the nominal goal, saved compensation and ACK history.
+Only fresh healthy feedback permits this, with no pending proposal and zero
+command velocity. At most three settle reacquisitions share the original
+30-second servo deadline; neither command counts nor time budgets reset.
+Each drifting arm must remain within twice its position and rotation tolerances;
+that is a recovery envelope, not an enlarged success tolerance. Larger drift,
+drift of an initially held arm, faults or uncertain feedback still abort.
+Each new hold must pass the full 0.5-second stability window and independent
+final read. Each hold lasts at most 6 seconds, and all holds must finish by
+the original servo deadline plus 6 seconds. No motion resumes after that
+original servo deadline.
 
 The slow servo has a **30-second budget including cap waits**; the final read-only hold has
 a **6-second limit**. `max_steps` (default 3000) also bounds the total number of
@@ -119,7 +129,7 @@ If a bounded command stops at its compensation cap before arrival, emit
 budget. When all commands are stationary, this is read-only: do not send zero
 steps or change the saved targets/count. A later feasible inward correction may
 resume the same loop. Faults or external commands still fail immediately; a
-latched arrival that is lost never restarts. Budget exhaustion reports remaining
+lost arrival follows the bounded settle-reacquisition policy above. Budget exhaustion reports remaining
 errors, saved biases and caps, without declaring the target physically unreachable.
 
 Both arms must provide fresh source-bound native poses, complete healthy native

@@ -603,7 +603,7 @@ class ContinuousP2PTests(unittest.TestCase):
             self.run_probe()
         self.assert_only_cap_roundoff_step()
 
-    def test_arrival_latched_then_lost_does_not_restart_correction(self):
+    def test_large_arrival_drift_does_not_restart_correction(self):
         first_arrival = None
         commands_at_loss = None
         def later_drift(o, c):

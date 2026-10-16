@@ -117,6 +117,15 @@ feedback must then remain within tolerance for at least 0.5 seconds, followed by
 an independent final read. Existing saved compensation is retained at arrival.
 No subsequent descent, gripper or handover is allowed on an unverified result.
 
+Small post-braking drift may reopen the same feedback loop up to three times,
+keeping the goal and saved compensation. This shares the original 30-second
+deadline and command budget; it is not a fresh P2P call or a transport replay.
+Drift must remain within twice both arrival tolerances, with fresh healthy
+feedback and confirmed zero command velocity. This recovery envelope does not
+change success tolerances. Larger drift, held-arm drift or faulty feedback
+still fail. Every reacquired arrival needs a new full stable window and final
+read; all holds end by the original servo deadline plus 6 seconds.
+
 The slow servo allows **30 seconds including cap waits** and the final read-only hold
 allows **6 seconds**. `max_steps` (default 3000) additionally bounds the combined
 nominal and servo command count. The nominal approach, perception and other task

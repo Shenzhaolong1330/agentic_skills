@@ -1,0 +1,416 @@
+{
+  "source_run": "web-20261016-145057-13155e6e",
+  "source_sha256": "a3e04010a7efe195f2c78c161e879d9b2da4ead74e37da260e26986807f52434",
+  "goals": {
+    "left_arm": [
+      0.4877846006786004,
+      0.25213240330895426,
+      -0.1204499564618108,
+      2.40610864165854,
+      -1.7505738104138724,
+      0.33127650846761225
+    ],
+    "right_arm": [
+      0.5759555697441101,
+      -0.38759519038585144,
+      -0.12378005008543255,
+      -2.409939008962014,
+      -1.7449560298450442,
+      -0.3275912216568975
+    ]
+  },
+  "failure": {
+    "event": "p2p_servo_failed",
+    "controller": "continuous_servo",
+    "phase": "hold",
+    "message": "Arrival tolerance lost after braking; no integrator restart",
+    "confirmed_commands": 709,
+    "dispatch_attempts": 709
+  },
+  "terminal_samples": [
+    {
+      "sha256": "99d2027c9389e249bc215e0826861bd2c71d6e5c0484041a17e24ddc91a844e5",
+      "step_count": 713,
+      "actual": {
+        "left_arm": {
+          "schema": "aoe.franka-source-bound-pose.v1",
+          "position": [
+            0.4904216229915619,
+            0.2521664006970005,
+            -0.11866493667008124
+          ],
+          "orientation_xyzw": [
+            0.7944031075749213,
+            -0.5895820860576504,
+            0.09537737470414553,
+            0.11054330766610268
+          ],
+          "frame": "torso",
+          "native_frame": "left_base",
+          "source_ros_timestamp_ns": 1792133597823938282,
+          "source_sequence": 299176,
+          "torso_from_native": [
+            [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.70710678118,
+              0.70710678118,
+              0.25
+            ],
+            [
+              0.0,
+              -0.70710678118,
+              0.70710678118,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "transform_sha256": "abbfeda40fcd45e3fcf69dc7e2e3d62a691f555f05704597369babf61de645c9",
+          "transform_source": "original_environment._side_transform"
+        },
+        "right_arm": {
+          "schema": "aoe.franka-source-bound-pose.v1",
+          "position": [
+            0.5759488344192505,
+            -0.38759698623672467,
+            -0.12378839055162608
+          ],
+          "orientation_xyzw": [
+            0.8028945990316584,
+            0.5813465348467892,
+            0.1091326420073918,
+            -0.07407115306183513
+          ],
+          "frame": "torso",
+          "native_frame": "right_base",
+          "source_ros_timestamp_ns": 1792133597824934985,
+          "source_sequence": 299177,
+          "torso_from_native": [
+            [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.70710678118,
+              -0.70710678118,
+              -0.25
+            ],
+            [
+              0.0,
+              0.70710678118,
+              0.70710678118,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "transform_sha256": "75495546891c565f0a737da9172057a6c5df98c0e27e0dd2297677ec049cfd83",
+          "transform_source": "original_environment._side_transform"
+        }
+      },
+      "saved": {
+        "left_arm": {
+          "frame": "torso",
+          "position_m": [
+            0.48628950447446545,
+            0.23218574543701853,
+            -0.1356904213836669
+          ],
+          "quaternion_xyzw": [
+            0.818488885745145,
+            -0.5573245385334519,
+            0.13847700947551242,
+            -0.017012363353303025
+          ]
+        },
+        "right_arm": {
+          "frame": "torso",
+          "position_m": [
+            0.5764821171760559,
+            -0.3865557654664299,
+            -0.1226748747652456
+          ],
+          "quaternion_xyzw": [
+            0.8022816172080643,
+            0.5821109958801478,
+            0.10987158996536757,
+            -0.07361541199991795
+          ]
+        }
+      }
+    },
+    {
+      "sha256": "45d15e1e9b50bc6092cc13bb6bdec6efa702b882ca23c80a21e56b39ccb2b42d",
+      "step_count": 713,
+      "actual": {
+        "left_arm": {
+          "schema": "aoe.franka-source-bound-pose.v1",
+          "position": [
+            0.4904034435749054,
+            0.25214857784843664,
+            -0.11868048358882555
+          ],
+          "orientation_xyzw": [
+            0.7945054116116951,
+            -0.5894594295289979,
+            0.09532312744037912,
+            0.11050897354542936
+          ],
+          "frame": "torso",
+          "native_frame": "left_base",
+          "source_ros_timestamp_ns": 1792133598132976658,
+          "source_sequence": 299440,
+          "torso_from_native": [
+            [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.70710678118,
+              0.70710678118,
+              0.25
+            ],
+            [
+              0.0,
+              -0.70710678118,
+              0.70710678118,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "transform_sha256": "abbfeda40fcd45e3fcf69dc7e2e3d62a691f555f05704597369babf61de645c9",
+          "transform_source": "original_environment._side_transform"
+        },
+        "right_arm": {
+          "schema": "aoe.franka-source-bound-pose.v1",
+          "position": [
+            0.5759484767913818,
+            -0.3875967287458221,
+            -0.1237881844271951
+          ],
+          "orientation_xyzw": [
+            0.8028945737611342,
+            0.5813467767240753,
+            0.10913250232421642,
+            -0.07406973439880542
+          ],
+          "frame": "torso",
+          "native_frame": "right_base",
+          "source_ros_timestamp_ns": 1792133598130963701,
+          "source_sequence": 299440,
+          "torso_from_native": [
+            [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.70710678118,
+              -0.70710678118,
+              -0.25
+            ],
+            [
+              0.0,
+              0.70710678118,
+              0.70710678118,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "transform_sha256": "75495546891c565f0a737da9172057a6c5df98c0e27e0dd2297677ec049cfd83",
+          "transform_source": "original_environment._side_transform"
+        }
+      },
+      "saved": {
+        "left_arm": {
+          "frame": "torso",
+          "position_m": [
+            0.48628950447446545,
+            0.23218574543701853,
+            -0.1356904213836669
+          ],
+          "quaternion_xyzw": [
+            0.818488885745145,
+            -0.5573245385334519,
+            0.13847700947551242,
+            -0.017012363353303025
+          ]
+        },
+        "right_arm": {
+          "frame": "torso",
+          "position_m": [
+            0.5764821171760559,
+            -0.3865557654664299,
+            -0.1226748747652456
+          ],
+          "quaternion_xyzw": [
+            0.8022816172080643,
+            0.5821109958801478,
+            0.10987158996536757,
+            -0.07361541199991795
+          ]
+        }
+      }
+    },
+    {
+      "sha256": "ae4a84ca0682e87e4a0bc827ce7cd7a010c133a5d04f6b465cef8cc45c289d4e",
+      "step_count": 713,
+      "actual": {
+        "left_arm": {
+          "schema": "aoe.franka-source-bound-pose.v1",
+          "position": [
+            0.4903773367404938,
+            0.2521497948386874,
+            -0.1187174411066132
+          ],
+          "orientation_xyzw": [
+            0.7945721025801787,
+            -0.5893812177770416,
+            0.09526731734106654,
+            0.11049476086947228
+          ],
+          "frame": "torso",
+          "native_frame": "left_base",
+          "source_ros_timestamp_ns": 1792133598438946385,
+          "source_sequence": 299701,
+          "torso_from_native": [
+            [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.70710678118,
+              0.70710678118,
+              0.25
+            ],
+            [
+              0.0,
+              -0.70710678118,
+              0.70710678118,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "transform_sha256": "abbfeda40fcd45e3fcf69dc7e2e3d62a691f555f05704597369babf61de645c9",
+          "transform_source": "original_environment._side_transform"
+        },
+        "right_arm": {
+          "schema": "aoe.franka-source-bound-pose.v1",
+          "position": [
+            0.5759473443031311,
+            -0.38759593783386803,
+            -0.12378886997202788
+          ],
+          "orientation_xyzw": [
+            0.8028948668220426,
+            0.5813464103961737,
+            0.10913138564156875,
+            -0.07407107814963468
+          ],
+          "frame": "torso",
+          "native_frame": "right_base",
+          "source_ros_timestamp_ns": 1792133598439942209,
+          "source_sequence": 299702,
+          "torso_from_native": [
+            [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.70710678118,
+              -0.70710678118,
+              -0.25
+            ],
+            [
+              0.0,
+              0.70710678118,
+              0.70710678118,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "transform_sha256": "75495546891c565f0a737da9172057a6c5df98c0e27e0dd2297677ec049cfd83",
+          "transform_source": "original_environment._side_transform"
+        }
+      },
+      "saved": {
+        "left_arm": {
+          "frame": "torso",
+          "position_m": [
+            0.48628950447446545,
+            0.23218574543701853,
+            -0.1356904213836669
+          ],
+          "quaternion_xyzw": [
+            0.818488885745145,
+            -0.5573245385334519,
+            0.13847700947551242,
+            -0.017012363353303025
+          ]
+        },
+        "right_arm": {
+          "frame": "torso",
+          "position_m": [
+            0.5764821171760559,
+            -0.3865557654664299,
+            -0.1226748747652456
+          ],
+          "quaternion_xyzw": [
+            0.8022816172080643,
+            0.5821109958801478,
+            0.10987158996536757,
+            -0.07361541199991795
+          ]
+        }
+      }
+    }
+  ]
+}
