@@ -32,30 +32,57 @@ class FeedbackProfile:
     rotation_gain_per_s: float = .3
     rotation_speed_rad_s: float = .01
     settled_rotation_deadband_rad: float = 0.
+    command_translation_speed_m_s: float = .02
+    command_translation_step_m: float = .001
+    command_translation_acceleration_m_s2: float = .04
+    rotation_pause_rad: float = .08
+    rotation_slow_rad: float = .03
+    use_satisfied_goal_orientation: bool = False
+    endpoint_orientation_only: bool = False
+    command_rotation_speed_rad_s: float = .08
+    command_rotation_step_rad: float = .004
+    command_rotation_acceleration_rad_s2: float = .16
+    position_slow_m: float = .003
+    position_pause_m: float = .009
 
 
 PROFILES = {
     'conservative': FeedbackProfile('conservative', .3, .002),
     'responsive': FeedbackProfile('responsive', .6, .004, settled_rotation_deadband_rad=.03),
+    # Explicit research opt-in. The physical joint/wrench/arrival checks remain
+    # unchanged; a faster reference is not a guarantee of faster real motion.
+    'fast_free_space': FeedbackProfile(
+        'fast_free_space', 2., .02, rotation_gain_per_s=1.,
+        rotation_speed_rad_s=.04, settled_rotation_deadband_rad=.01,
+        command_translation_speed_m_s=.10, command_translation_step_m=.005,
+        command_translation_acceleration_m_s2=.20, rotation_pause_rad=.09, rotation_slow_rad=.07,
+        use_satisfied_goal_orientation=True),
 }
+PROFILES['fast_endpoint'] = replace(PROFILES['fast_free_space'], name='fast_endpoint',
+    endpoint_orientation_only=True, translation_gain_per_s=3., translation_speed_m_s=.03,
+    rotation_gain_per_s=3., rotation_speed_rad_s=.12,
+    command_rotation_speed_rad_s=.12, command_rotation_step_rad=.006,
+    command_rotation_acceleration_rad_s2=.4, position_slow_m=.006, position_pause_m=.015)
 
 
 def feedback_profile(name='conservative'):
     """Named, bounded outer-loop profiles; no inner impedance tuning."""
     if name not in PROFILES:
-        raise ValueError('Tracking profile must be conservative or responsive')
+        raise ValueError('Tracking profile must be one of: ' + ', '.join(PROFILES))
     return PROFILES[name]
 
 
 def command_config(feedback_config, translation_speed=.05, rotation_speed=.4,
-                   translation_step=.003, rotation_step=.025):
+                   translation_step=.003, rotation_step=.025, *, profile='conservative'):
     """Total reference + correction limits; keep the existing bias/arrival policy."""
+    limits = feedback_profile(profile)
     return replace(feedback_config,
-        max_translation_speed_m_s=min(.02, g._positive(translation_speed, 'translation speed')),
-        max_rotation_speed_rad_s=min(.08, g._positive(rotation_speed, 'rotation speed')),
-        max_translation_step_m=min(.001, g._positive(translation_step, 'translation step')),
-        max_rotation_step_rad=min(.004, g._positive(rotation_step, 'rotation step')),
-        max_translation_acceleration_m_s2=.04, max_rotation_acceleration_rad_s2=.16)
+        max_translation_speed_m_s=min(limits.command_translation_speed_m_s, g._positive(translation_speed, 'translation speed')),
+        max_rotation_speed_rad_s=min(limits.command_rotation_speed_rad_s, g._positive(rotation_speed, 'rotation speed')),
+        max_translation_step_m=min(limits.command_translation_step_m, g._positive(translation_step, 'translation step')),
+        max_rotation_step_rad=min(limits.command_rotation_step_rad, g._positive(rotation_step, 'rotation step')),
+        max_translation_acceleration_m_s2=limits.command_translation_acceleration_m_s2,
+        max_rotation_acceleration_rad_s2=limits.command_rotation_acceleration_rad_s2)
 
 
 def path_duration(initial, goal, config, *, minimum=.5):
@@ -63,7 +90,24 @@ def path_duration(initial, goal, config, *, minimum=.5):
     # Leave command-speed headroom for feedback; no caller speed is exceeded.
     return max(g._positive(minimum, 'minimum duration'),
                1.875 * error['translation_m'] / (config.max_translation_speed_m_s * .8),
-               1.875 * error['rotation_rad'] / (config.max_rotation_speed_rad_s * .8))
+               1.875 * error['rotation_rad'] / (config.max_rotation_speed_rad_s * .8),
+               (5.773502692 * error['translation_m'] / config.max_translation_acceleration_m_s2)**.5,
+               (5.773502692 * error['rotation_rad'] / config.max_rotation_acceleration_rad_s2)**.5)
+
+
+def reference_start(initial, goal, config, profile):
+    if (profile.use_satisfied_goal_orientation and
+            g._error(initial, goal)['rotation_rad'] <= config.rotation_tolerance_rad):
+        return g.Pose(initial.position_m, goal.quaternion_xyzw)
+    return initial
+
+
+def joint_tracking_scale(velocities, profile):
+    """Anticipatory slowdown only; the adapter's 0.15 rad/s rejection still applies."""
+    if not profile.name.startswith('fast_'):
+        return 1.
+    peak = max((abs(v) for values in velocities for v in values), default=0.)
+    return max(0., min(1., (.135 - peak) / .035))
 
 
 class TrackingServo(g.ContinuousPoseServo):
@@ -71,6 +115,18 @@ class TrackingServo(g.ContinuousPoseServo):
         # Initial offset is inherited from actual saved state, never cleared or
         # excluded from the configured total bias cap.
         self.feedback = feedback_profile(profile)
+        # A satisfied orientation can use the requested goal as its fixed
+        # reference. This preserves a previous call's valid compensation instead
+        # of moving its cap centre to the slightly different measured pose.
+        # Neither the saved command nor the cap is changed, and both physical
+        # arrival and the complete saved-to-reference bias are checked below.
+        if not isinstance(goal, g.Pose) or goal.frame != 'torso':
+            raise ValueError('goal must be a validated torso Pose')
+        self.orientation_reference = 'measured_start'
+        anchored = reference_start(initial, goal, config, self.feedback)
+        if anchored is not initial:
+            initial = anchored
+            self.orientation_reference = 'already_satisfied_goal'
         super().__init__(initial, saved, config)
         self._validate_pose(goal)
         self.initial = initial
@@ -100,16 +156,43 @@ class TrackingServo(g.ContinuousPoseServo):
     def tracking_scale(self, measured):
         self._validate_pose(measured)
         error = g._error(measured, self.reference)
+        position_scale = max(0., min(1.,
+            (self.feedback.position_pause_m - error['translation_m']) /
+            (self.feedback.position_pause_m - self.feedback.position_slow_m)))
+        if self.feedback.endpoint_orientation_only:
+            # The task constrains attitude at the endpoint only. Keep angular
+            # feedback running in parallel, but never stall XYZ on path attitude.
+            return position_scale
+        slow, pause = self.feedback.rotation_slow_rad, self.feedback.rotation_pause_rad
+        if self.feedback.name == 'fast_free_space':
+            slow = min(slow, .7 * self.config.rotation_tolerance_rad)
+            pause = min(pause, .9 * self.config.rotation_tolerance_rad)
         return max(0., min(1., (.009 - error['translation_m']) / .006,
-                          (.08 - error['rotation_rad']) / .05))
+                          (pause - error['rotation_rad']) / (pause - slow)))
 
-    def update(self, measured, dt, *, reference_scale=None, allow_early_arrival=True):
+    def capture_components(self, measured):
+        error = g._error(measured, self.final_goal)
+        position = self.config.position_tolerance_m
+        rotation = self.config.rotation_tolerance_rad
+        if self.feedback.endpoint_orientation_only:
+            # Brake well inside the acceptance boundary. Orientation correction
+            # can move XYZ slightly; stopping feedback at 3 mm invited repeated
+            # hold/reacquire cycles in hardware. This tightens capture only.
+            position = min(.001, position * .4)
+            rotation = min(.08, rotation * .8)
+        return error['translation_m'] <= position, error['rotation_rad'] <= rotation
+
+    def update(self, measured, dt, *, reference_scale=None, allow_early_arrival=True,
+               feedback_scale=1., allow_capture=True):
         if self._pending is not None:
             raise RuntimeError('A command proposal is pending confirmation; do not replay or advance')
         dt = g._positive(dt, 'dt')
         if dt > self.config.max_dt_s:
             raise ValueError('dt exceeds max_dt_s; do not integrate stale time')
         self._validate_pose(measured)
+        feedback_scale = g._finite_vector([feedback_scale], 1, 'feedback scale')[0]
+        if not 0 <= feedback_scale <= 1:
+            raise ValueError('feedback scale must be within [0, 1]')
         tracking_error = g._error(measured, self.reference)
         # Slow before the fixed physical orientation corridor is approached.
         requested_scale = self.tracking_scale(measured)
@@ -125,7 +208,9 @@ class TrackingServo(g.ContinuousPoseServo):
         position_in = final_error['translation_m'] <= self.config.position_tolerance_m
         rotation_in = final_error['rotation_rad'] <= self.config.rotation_tolerance_rad
         within = position_in and rotation_in
-        latched = self._arrival_latched or (within and (virtual_time >= self.duration or allow_early_arrival))
+        position_captured, rotation_captured = self.capture_components(measured)
+        latched = self._arrival_latched or (allow_capture and position_captured and rotation_captured and
+                   (virtual_time >= self.duration or allow_early_arrival))
         if latched:
             # This is free-space P2P, not timed path playback. Actual final-goal
             # arrival wins over a governor-stalled internal path clock. Freeze
@@ -146,7 +231,7 @@ class TrackingServo(g.ContinuousPoseServo):
              self.config.max_rotation_acceleration_rad_s2, self.config.max_rotation_bias_rad, True,
              self.feedback.rotation_speed_rad_s, self.feedback.rotation_gain_per_s),
         ):
-            arrived_component = position_in if not angular else rotation_in
+            arrived_component = position_captured if not angular else rotation_captured
             error_vector = reference_error[vector]
             forward = feedforward[vector]
             if angular and self.orientation_deadband_rad > 0.:
@@ -157,7 +242,7 @@ class TrackingServo(g.ContinuousPoseServo):
                 error_vector = g._scale(error_vector, factor)
                 forward = g._ZERO
             feedback = (g._ZERO if virtual_time >= self.duration and arrived_component else
-                        g._limit(g._scale(error_vector, gain), correction_speed))
+                        g._scale(g._limit(g._scale(error_vector, gain), correction_speed), feedback_scale))
             desired = g._ZERO if latched else g._add(g._scale(forward, 1. / dt), feedback)
             # Leave a numerical reserve before the physical cap. This does not
             # enlarge a cap or relax the saved-command acknowledgement check.
@@ -186,6 +271,8 @@ class TrackingServo(g.ContinuousPoseServo):
                           'requested_scale': requested_scale, 'path_fraction': virtual_time / self.duration,
                           'stage': status, 'bias_frame': 'current_reference',
                           'orientation_deadband_rad': self.orientation_deadband_rad,
+                          'orientation_reference': self.orientation_reference,
+                          'capture_ready': position_captured and rotation_captured,
                           'command_to_measured': g._error(measured, command)}
         self._pending_path = (reference, virtual_time, scale)
         self._pending = g.ServoUpdate(command, translation + rotation, final_error, bias, within,

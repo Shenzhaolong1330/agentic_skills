@@ -27,6 +27,18 @@ SIDES = base.SIDES
 class TrackingRun(base._Run):
     controller = 'external_tracking'
 
+    def check_bounds(self, side, value):
+        if (getattr(self, 'profile', None) is not None and
+                self.profile.endpoint_orientation_only and side not in self.held):
+            bound = self.bounds[side]
+            if any(not low - 1e-12 <= v <= high + 1e-12
+                   for v, low, high in zip(value.position_m, bound['low'], bound['high'])):
+                raise base.ContinuousP2PError(f'{side}: fixed position corridor exceeded')
+            # The servo still bounds angular command speed, acceleration and
+            # compensation. Actual attitude is constrained at final arrival.
+            return
+        return super().check_bounds(side, value)
+
     def nominal_target(self, side):
         # Used ONLY to establish the original fixed observation corridor.
         # Actual references are generated from measured pose during execution.
@@ -56,21 +68,29 @@ class TrackingRun(base._Run):
 
     def execute(self):
         profile = tracking.feedback_profile(os.environ.get('FRANKA_P2P_TRACKING_PROFILE', 'conservative'))
+        self.profile = profile
         self.started = base.time.monotonic()
         self.prepare()
+        if profile.endpoint_orientation_only:
+            for side in SIDES:
+                if side not in self.held:
+                    self.bounds[side]['rotation_from_initial_rad'] = None
+                    self.bounds[side]['orientation_constraint'] = 'endpoint_only'
         if any(max(map(abs, self.velocities[s])) >= .01 for s in SIDES):
             raise base.ContinuousP2PError('External tracking requires a stationary start')
         config = tracking.command_config(self.config,
             self.options.get('max_translation_speed', .05), self.options.get('max_rotation_speed', .4),
             self.options.get('max_translation_step') or .003,
-            self.options.get('max_rotation_step') or .025)
+            self.options.get('max_rotation_step') or .025, profile=profile.name)
         config = replace(config,
             translation_integral_gain_per_s=profile.translation_gain_per_s,
             rotation_integral_gain_per_s=profile.rotation_gain_per_s)
         minimum = max(base._positive(self.options.get('min_duration_sec', .5), 'minimum duration'),
                       base._positive(self.options['duration_sec'], 'duration')
                       if self.options.get('duration_sec') is not None else .5)
-        duration = max(tracking.path_duration(self.initial[s], self.goals[s], config, minimum=minimum)
+        duration = max(tracking.path_duration(
+                           tracking.reference_start(self.initial[s], self.goals[s], config, profile),
+                           self.goals[s], config, minimum=minimum)
                        for s in SIDES)
         budget = duration + base.SERVO_BUDGET_S
         self.servos = {s: tracking.TrackingServo(self.initial[s], self.goals[s], self.saved[s], config, duration, profile=profile.name)
@@ -80,8 +100,14 @@ class TrackingRun(base._Run):
                    feedback_profile=asdict(profile),
                    feedback_translation_speed_m_s=profile.translation_speed_m_s,
                    feedback_rotation_speed_rad_s=profile.rotation_speed_rad_s,
-                   governor={'position_slow_m': .003, 'position_pause_m': .009,
-                             'rotation_slow_rad': .03, 'rotation_pause_rad': .08},
+                   governor={'position_slow_m': profile.position_slow_m, 'position_pause_m': profile.position_pause_m,
+                             'rotation_slow_rad': min(profile.rotation_slow_rad, .7 * config.rotation_tolerance_rad)
+                                if profile.name.startswith('fast_') else profile.rotation_slow_rad,
+                             'rotation_pause_rad': min(profile.rotation_pause_rad, .9 * config.rotation_tolerance_rad)
+                                if profile.name.startswith('fast_') else profile.rotation_pause_rad,
+                             'orientation_constraint': 'endpoint_only' if profile.endpoint_orientation_only else 'whole_path',
+                             'joint_slow_rad_s': .10 if profile.name.startswith('fast_') else None,
+                             'joint_pause_rad_s': .135 if profile.name.startswith('fast_') else None},
                    impedance_parameters_changed=False, contact_policy=False)
         self.phase = 'servo'
         base.time.sleep(self.period)
@@ -93,16 +119,26 @@ class TrackingRun(base._Run):
             # reference rather than allowing the other arm to run ahead.
             scale = min((servo.tracking_scale(self.measured[s])
                          for s, servo in self.servos.items()), default=1.)
+            joint_scale = tracking.joint_tracking_scale((self.velocities[s] for s in self.servos), profile)
+            scale = min(scale, joint_scale)
             all_arrived = all(self.within(self.measured[s], s) for s in SIDES)
+            all_arrived = all_arrived and all(all(servo.capture_components(self.measured[s]))
+                                             for s, servo in self.servos.items())
+            capture_allowed = (not profile.endpoint_orientation_only or
+                               all(max(map(abs, self.velocities[s])) < .01 for s in SIDES))
             updates = {s: servo.update(self.measured[s], dt, reference_scale=scale,
-                                      allow_early_arrival=all_arrived)
+                                      allow_early_arrival=all_arrived,
+                                      feedback_scale=joint_scale if profile.endpoint_orientation_only else 1.,
+                                      allow_capture=capture_allowed)
                        for s, servo in self.servos.items()}
             drifted = [s for s, u in updates.items()
                        if u.command_stationary and u.arrival_latched and not u.within_tolerance]
             if drifted:
                 self.reacquire(self.servos, drifted, deadline, pending=updates)
                 for side in drifted:
-                    updates[side] = self.servos[side].update(self.measured[side], dt)
+                    updates[side] = self.servos[side].update(self.measured[side], dt,
+                        feedback_scale=joint_scale if profile.endpoint_orientation_only else 1.,
+                        allow_capture=capture_allowed)
             if all(u.command_stationary for u in updates.values()):
                 for side in self.servos:
                     self.servos[side].confirm_command(self.saved[side])
@@ -148,6 +184,7 @@ class TrackingRun(base._Run):
                   'bounds': self.bounds, 'frame': 'torso', 'servo_config': asdict(config),
                   'total_budget_s': budget, 'impedance_parameters_changed': False,
                   'feedback_profile': asdict(profile),
+                  'orientation_constraint': 'endpoint_only' if profile.endpoint_orientation_only else 'whole_path',
                   'translation_limit_source': self.translation_limit_source,
                   'correction_guard_policy': 'final_success_only',
                   'tolerances': {'position_tolerance_m': self.config.position_tolerance_m,

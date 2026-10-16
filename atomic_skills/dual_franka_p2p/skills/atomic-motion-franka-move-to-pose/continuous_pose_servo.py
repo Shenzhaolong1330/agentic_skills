@@ -225,6 +225,14 @@ def _bounded_velocity(current, goal, previous, desired, *, dt, speed, step, acce
     if feasible(slew):
         return slew
     if not feasible(brake):
+        # ACK quaternion reconstruction can put an otherwise valid saturated
+        # command a few ulps outside the projection tolerance. If one-cycle
+        # braking is feasible in acceleration, hold that acknowledged command
+        # exactly. Never accumulate another outward step or enlarge the cap.
+        if (cap is not None and _norm(brake) <= _STATIONARY and
+                old_speed <= acceleration * dt + _ROUNDING and
+                _distance(current, goal, angular) <= cap + 4 * _ROUNDING):
+            return _ZERO
         raise NoFeasibleStep('No feasible command step preserves speed, acceleration and braking bounds')
     # Both endpoints respect the convex speed/acceleration constraints. Keep a
     # verified feasible lower endpoint; no assumption about global optimality is
@@ -286,8 +294,12 @@ class ContinuousPoseServo:
     def _validate_bias(self, command):
         bias = _error(self._goal, command)
         translation_cap = self.config.max_translation_bias_m
-        if ((translation_cap is not None and bias['translation_m'] > translation_cap + _ROUNDING)
-                or bias['rotation_rad'] > self.config.max_rotation_bias_rad + _ROUNDING):
+        # Projection and ACK pose reconstruction evaluate equivalent quaternion
+        # products in different orders. Allow their accumulated floating-point
+        # roundoff; command projection still uses the original cap + _ROUNDING.
+        validation_roundoff = 4 * _ROUNDING
+        if ((translation_cap is not None and bias['translation_m'] > translation_cap + validation_roundoff)
+                or bias['rotation_rad'] > self.config.max_rotation_bias_rad + validation_roundoff):
             raise ValueError('Saved command exceeds the fixed nominal-goal bias cap; use a separate approach')
         return bias
 

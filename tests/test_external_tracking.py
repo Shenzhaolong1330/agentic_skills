@@ -45,6 +45,192 @@ class ExternalTrackingTests(unittest.TestCase):
         with redirect_stderr(self.log):
             return adapter.run(self.client, goal, [0.] * 6, **options)
 
+    def test_fast_profile_ideal_150mm_includes_hold_under_five_seconds(self):
+        os.environ['FRANKA_P2P_TRACKING_PROFILE'] = 'fast_free_space'
+        start = self.clock.now
+        result = self.run_servo(goal=(.15, 0., 0., 0., 0., 0.),
+                                max_translation_speed=.1, max_translation_step=.005)
+        self.assertLess(self.clock.now - start, 5.)
+        self.assertLessEqual(result['final_error']['max_translation_error_m'], .003)
+        self.assertGreaterEqual(result['hold_confirmation'][-1]['monotonic_s'] -
+                                result['hold_confirmation'][0]['monotonic_s'], .5)
+        previous = (0.,) * 3
+        for action, timing in zip(self.client.actions, result['timings']):
+            dt = timing['control_dt_s']
+            delta = action['left_arm']['motion']['translation']
+            velocity = g._scale(delta, 1. / dt)
+            self.assertLessEqual(g._norm(delta), .005 + 1e-9)
+            self.assertLessEqual(g._norm(velocity), .1 + 1e-9)
+            self.assertLessEqual(g._norm(g._sub(velocity, previous)), .2 * dt + 1e-9)
+            previous = velocity
+
+    def test_fast_profile_preserves_satisfied_goal_compensation_without_larger_cap(self):
+        goal = g.Pose((.15, 0., 0.), (0., 0., 0., 1.))
+        initial = g.Pose((0., 0., 0.), g._quat_from_rotvec((0., 0., -.08)))
+        saved = g.Pose(initial.position_m, g._quat_from_rotvec((0., 0., .19)))
+        config = adapter.tracking.command_config(g.ServoConfig(), profile='fast_free_space')
+        servo = adapter.tracking.TrackingServo(initial, goal, saved, config, 4., profile='fast_free_space')
+        self.assertEqual(servo.confirmed_command, saved)
+        self.assertEqual(servo.reference.quaternion_xyzw, goal.quaternion_xyzw)
+        self.assertEqual(config.max_rotation_bias_rad, .2)
+        outside = g.Pose(saved.position_m, g._quat_from_rotvec((0., 0., .201)))
+        with self.assertRaisesRegex(ValueError, 'bias cap'):
+            adapter.tracking.TrackingServo(initial, goal, outside, config, 4., profile='fast_free_space')
+        unsatisfied = g.Pose(initial.position_m, g._quat_from_rotvec((0., 0., -.11)))
+        with self.assertRaisesRegex(ValueError, 'bias cap'):
+            adapter.tracking.TrackingServo(unsatisfied, goal, saved, config, 4., profile='fast_free_space')
+
+    def test_fast_profile_respects_caller_speed_and_default_stays_slow(self):
+        for name, speed, step in [('conservative', .02, .001), ('responsive', .02, .001),
+                                  ('fast_free_space', .1, .005)]:
+            config = adapter.tracking.command_config(g.ServoConfig(), .2, translation_step=.01, profile=name)
+            self.assertEqual(config.max_translation_speed_m_s, speed)
+            self.assertEqual(config.max_translation_step_m, step)
+        config = adapter.tracking.command_config(g.ServoConfig(), .04, translation_step=.002,
+                                                 profile='fast_free_space')
+        self.assertEqual(config.max_translation_speed_m_s, .04)
+        self.assertEqual(config.max_translation_step_m, .002)
+
+    def test_cap_roundtrip_can_wait_without_false_failure_or_drift(self):
+        initial = g.Pose((0., 0., 0.), (0., 0., 0., 1.))
+        saved = g.Pose(initial.position_m, g._quat_from_rotvec((0., 0., .2 + 1e-12)))
+        measured = g.Pose(initial.position_m, g._quat_from_rotvec((0., 0., -.07)))
+        goal = g.Pose((.15, 0., 0.), initial.quaternion_xyzw)
+        config = adapter.tracking.command_config(g.ServoConfig(max_translation_bias_m=None),
+                                                 profile='fast_free_space')
+        servo = adapter.tracking.TrackingServo(measured, goal, saved, config, 4., profile='fast_free_space')
+        for _ in range(100):
+            update = servo.update(measured, .05)
+            # Exercise the actual command transport's quaternion / rotation-vector roundtrip.
+            six = adapter.base._six(update.command)
+            reconstructed = adapter.base._pose6(six)
+            servo.confirm_command(reconstructed)
+            self.assertLessEqual(g._error(initial, reconstructed)['rotation_rad'], .2 + 4e-12)
+        outside = g.Pose(initial.position_m, g._quat_from_rotvec((0., 0., .2 + 1e-10)))
+        with self.assertRaisesRegex(ValueError, 'bias cap'):
+            adapter.tracking.TrackingServo(initial, goal, outside, config, 4., profile='fast_free_space')
+
+    def test_fast_profile_still_stops_at_original_joint_speed_limit(self):
+        os.environ['FRANKA_P2P_TRACKING_PROFILE'] = 'fast_free_space'
+        def mutate(observation, client):
+            if len(client.actions) == 2:
+                observation['left_arm']['native_robot_state']['joint_velocities'][0] = .151
+        self.client.mutate = mutate
+        with self.assertRaisesRegex(adapter.base.ContinuousP2PError, 'joint speed'):
+            self.run_servo(goal=(.15, 0., 0., 0., 0., 0.),
+                           max_translation_speed=.1, max_translation_step=.005)
+        self.assertEqual(len(self.client.actions), 2)
+
+    def test_cap_roundoff_can_brake_in_place_then_move_inward(self):
+        center=(0., 0., 0., 1.)
+        current=g._quat_from_rotvec((.2 + 2e-12, 0., 0.))
+        options=dict(dt=.05, speed=.04, step=.002, acceleration=.16, cap=.2, angular=True)
+        stopped=g._bounded_velocity(current, center, (1e-8, 0., 0.), (.04, 0., 0.), **options)
+        self.assertEqual(stopped, (0., 0., 0.))
+        inward=g._bounded_velocity(current, center, stopped, (-.01, 0., 0.), **options)
+        self.assertLess(inward[0], 0.)
+        outside=g._quat_from_rotvec((.2 + 1e-9, 0., 0.))
+        with self.assertRaises(g.NoFeasibleStep):
+            g._bounded_velocity(outside, center, (1e-8, 0., 0.), (.04, 0., 0.), **options)
+
+    def test_fast_governor_slows_before_existing_physical_limits(self):
+        profile=adapter.tracking.feedback_profile('fast_free_space')
+        for speed, expected in ((.09,1.),(.1175,.5),(.135,0.),(.151,0.)):
+            self.assertAlmostEqual(adapter.tracking.joint_tracking_scale([[speed]*7],profile),expected)
+        origin=g.Pose((0.,0.,0.),(0.,0.,0.,1.))
+        goal=g.Pose((.15,0.,0.),origin.quaternion_xyzw)
+        for tolerance in (.1,.01):
+            config=adapter.tracking.command_config(g.ServoConfig(rotation_tolerance_rad=tolerance),
+                                                   profile='fast_free_space')
+            servo=adapter.tracking.TrackingServo(origin,goal,origin,config,4.,profile='fast_free_space')
+            for fraction, expected in ((.7,1.),(.8,.5),(.9,0.)):
+                measured=g.Pose(origin.position_m,g._quat_from_rotvec((0.,0.,fraction*tolerance)))
+                self.assertAlmostEqual(servo.tracking_scale(measured),expected)
+
+    def test_endpoint_only_orientation_does_not_slow_xyz_but_still_blocks_arrival(self):
+        origin=g.Pose((0.,0.,0.),(0.,0.,0.,1.))
+        goal=g.Pose((.15,0.,0.),origin.quaternion_xyzw)
+        config=adapter.tracking.command_config(g.ServoConfig(), profile='fast_endpoint')
+        servo=adapter.tracking.TrackingServo(origin,goal,origin,config,4.,profile='fast_endpoint')
+        rotated=g.Pose(origin.position_m,g._quat_from_rotvec((0.,0.,.4)))
+        self.assertEqual(servo.tracking_scale(rotated),1.)
+        lagged=g.Pose((-.016,0.,0.),rotated.quaternion_xyzw)
+        self.assertEqual(servo.tracking_scale(lagged),0.)
+        at_xyz=g.Pose(goal.position_m,g._quat_from_rotvec((0.,0.,.11)))
+        update=servo.update(at_xyz,.05)
+        self.assertFalse(update.within_tolerance)
+        self.assertFalse(update.arrival_latched)
+
+    def test_endpoint_profile_accepts_transient_attitude_then_requires_final_hold(self):
+        os.environ['FRANKA_P2P_TRACKING_PROFILE']='fast_endpoint'
+        def mutate(observation,client):
+            if 10 <= len(client.actions) <= 20:
+                observation['left_arm']['native_robot_state']['torso_eef_pose']['orientation_xyzw']=list(
+                    g._quat_from_rotvec((0.,0.,.5)))
+        self.client.mutate=mutate
+        result=self.run_servo(goal=(.15,0.,0.,0.,0.,0.),max_translation_speed=.08,max_translation_step=.004)
+        self.assertTrue(result['ok'])
+        self.assertLessEqual(result['final_error']['max_rotation_error_rad'],.1)
+        self.assertGreaterEqual(result['hold_confirmation'][-1]['monotonic_s']-
+                                result['hold_confirmation'][0]['monotonic_s'],.5)
+
+    def test_endpoint_feedback_stops_advancing_when_joint_governor_pauses(self):
+        initial=g.Pose((0.,0.,0.),(0.,0.,0.,1.))
+        goal=g.Pose((.15,0.,0.),initial.quaternion_xyzw)
+        config=adapter.tracking.command_config(g.ServoConfig(), profile='fast_endpoint')
+        servo=adapter.tracking.TrackingServo(initial,goal,initial,config,4.,profile='fast_endpoint')
+        measured=g.Pose((-.005,0.,0.),g._quat_from_rotvec((0.,0.,.15)))
+        update=servo.update(measured,.05,reference_scale=0.,feedback_scale=0.)
+        self.assertEqual(update.proposed_delta,(0.,)*6)
+        self.assertFalse(update.within_tolerance)
+
+    def test_endpoint_combined_commands_respect_linear_and_angular_limits(self):
+        os.environ['FRANKA_P2P_TRACKING_PROFILE']='fast_endpoint'
+        result=self.run_servo(goal=(.15,0.,0.,0.,0.,.2),max_translation_speed=.1,
+            max_translation_step=.005,max_rotation_speed=.12,max_rotation_step=.006)
+        previous={'translation':(0.,)*3,'rotation_rotvec':(0.,)*3}
+        for action,timing in zip(self.client.actions,result['timings']):
+            dt=timing['control_dt_s']
+            for key,speed,step,acceleration in [('translation',.1,.005,.2),('rotation_rotvec',.12,.006,.4)]:
+                delta=action['left_arm']['motion'][key];velocity=g._scale(delta,1./dt)
+                self.assertLessEqual(g._norm(delta),step+1e-9)
+                self.assertLessEqual(g._norm(velocity),speed+1e-9)
+                self.assertLessEqual(g._norm(g._sub(velocity,previous[key])),acceleration*dt+1e-9)
+                previous[key]=velocity
+        self.assertLessEqual(result['final_error']['max_rotation_error_rad'],.1)
+
+    def test_endpoint_capture_tightens_braking_without_changing_acceptance(self):
+        origin=g.Pose((0.,0.,0.),(0.,0.,0.,1.))
+        config=adapter.tracking.command_config(g.ServoConfig(),profile='fast_endpoint')
+        servo=adapter.tracking.TrackingServo(origin,origin,origin,config,.5,profile='fast_endpoint')
+        servo.virtual_time=.5
+        measured=g.Pose((-.002,0.,0.),origin.quaternion_xyzw)
+        update=servo.update(measured,.05)
+        self.assertTrue(update.within_tolerance)
+        self.assertFalse(update.arrival_latched)
+        self.assertGreater(update.proposed_delta[0],0.)
+        servo.confirm_command(update.command)
+        self.assertEqual(servo.capture_components(g.Pose((-.0008,0.,0.),g._quat_from_rotvec((0.,0.,.09)))),(True,False))
+        self.assertEqual(servo.capture_components(g.Pose((-.0008,0.,0.),g._quat_from_rotvec((0.,0.,.07)))),(True,True))
+        self.assertEqual(config.position_tolerance_m,.003)
+        self.assertEqual(config.rotation_tolerance_rad,.1)
+
+    def test_endpoint_capture_waits_for_measured_rest_even_after_path_finishes(self):
+        origin=g.Pose((0.,0.,0.),(0.,0.,0.,1.))
+        config=adapter.tracking.command_config(g.ServoConfig(),profile='fast_endpoint')
+        servo=adapter.tracking.TrackingServo(origin,origin,origin,config,.5,profile='fast_endpoint')
+        servo.virtual_time=.5
+        update=servo.update(origin,.05,allow_capture=False)
+        self.assertTrue(update.within_tolerance)
+        self.assertFalse(update.arrival_latched)
+        servo.confirm_command(update.command)
+        update=servo.update(g.Pose((-.002,0.,0.),origin.quaternion_xyzw),.05,allow_capture=False)
+        self.assertGreater(update.proposed_delta[0],0.)
+        self.assertFalse(update.arrival_latched)
+        servo.confirm_command(update.command)
+        update=servo.update(origin,.05,allow_capture=True)
+        self.assertTrue(update.arrival_latched)
+
     def test_responsive_profile_completes_with_existing_bounds_and_hold(self):
         os.environ['FRANKA_P2P_TRACKING_PROFILE'] = 'responsive'
         result = self.run_servo()
