@@ -69,7 +69,7 @@ class InsertionRetryLogicTests(unittest.TestCase):
         }
         poses = {"left": np.array([0.3, 0.0, 0.095, 0.0, 0.0, 0.0])}
         args = insert_down.build_parser().parse_args(
-            ["--monitor-force-during-insert", "--rate-hz", "1000000"]
+            ["--monitor-force-during-insert", "--rate-hz", "1000000", "--seated-min-depth-m", "0.003"]
         )
         with mock.patch.object(
             insert_down.skill,

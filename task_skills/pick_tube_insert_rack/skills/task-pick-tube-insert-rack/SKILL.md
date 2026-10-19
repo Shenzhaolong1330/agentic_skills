@@ -7,6 +7,15 @@ description: Task-level harness for locating a loose test tube, selecting the ta
 
 Use this task skill for the full task-level orchestration. It is not an atomic P2P, gripper, perception, or reset command.
 
+For force-monitored insertion, `insert_down_from_current_pose.py` derives the
+default seated-contact minimum from the requested insertion depth:
+`depth - min(near_depth_tolerance, 0.15 * depth)`. For a 55 mm insertion with
+8 mm near-depth tolerance this is 47 mm. An explicit calibrated
+`--seated-min-depth-m` remains supported and must not exceed the requested depth.
+Early axial contact is a failed insertion, not permission to release. Depth and
+force checks are necessary conditions; verify the final object/container relation
+separately. This change has offline regression coverage, not new physical validation.
+
 ## Safe Default Entry
 
 ```bash

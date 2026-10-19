@@ -27,6 +27,14 @@ SKILL_PATH = SCRIPT_DIR / "tube_insertion_skill.py"
 DEFAULT_FIRST_INSERT_SEGMENT_M = 0.015
 DEFAULT_NEAR_INSERT_DEPTH_TOLERANCE_M = 0.008
 
+# Load by path so isolated Python and importlib-based adapters do not depend on
+# inherited PYTHONPATH or the caller adding this script directory to sys.path.
+_depth_spec = importlib.util.spec_from_file_location(
+    "insertion_depth_contract", SCRIPT_DIR / "insertion_depth_contract.py")
+_depth_contract = importlib.util.module_from_spec(_depth_spec)
+_depth_spec.loader.exec_module(_depth_contract)
+seated_minimum_depth = _depth_contract.seated_minimum_depth
+
 
 def _load_skill_module():
     spec = importlib.util.spec_from_file_location("tube_insertion_skill_for_insert_down", SKILL_PATH)
@@ -67,11 +75,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-insert-force-delta-n", type=float, default=12.0)
     parser.add_argument("--max-insert-lateral-force-delta-n", type=float, default=4.0)
     parser.add_argument("--seated-axial-force-delta-n", type=float, default=6.0)
-    parser.add_argument("--seated-min-depth-m", type=float, default=0.003)
+    parser.add_argument("--seated-min-depth-m", type=float, default=None,
+                        help="Calibrated minimum depth for seated contact; by default derive from this insertion depth.")
     parser.add_argument(
         "--release-after-insert",
         action="store_true",
-        help="Open the selected gripper after the downward move attempt, even if P2P reports failure.",
+        help="Open only after confirmed insertion success; an early collision does not authorize release.",
     )
     parser.add_argument("--after-release-sleep-sec", type=float, default=0.5)
     parser.add_argument("--retract-after-release-m", type=float, default=0.0)
@@ -368,6 +377,7 @@ def guarded_vertical_insert(
     args: argparse.Namespace,
 ) -> dict[str, Any]:
     """Force-monitored absolute-pose descent with P2P-style settle/corrections."""
+    seated_depth = seated_minimum_depth(depth_m, args.near_insert_depth_tolerance_m, args.seated_min_depth_m)
     start = np.asarray(start_pose, dtype=float).reshape(6)
     target = compute_insert_down_target_pose(current_pose=start, insert_depth_m=depth_m)
     base_force = np.asarray(base_force, dtype=float).reshape(3)
@@ -395,7 +405,7 @@ def guarded_vertical_insert(
             max_total_delta_n=float(args.max_insert_force_delta_n),
             max_lateral_delta_n=float(args.max_insert_lateral_force_delta_n),
             seated_axial_delta_n=float(args.seated_axial_force_delta_n),
-            seated_min_depth_m=float(args.seated_min_depth_m),
+            seated_min_depth_m=seated_depth,
         )
         samples.append(
             {
@@ -605,6 +615,8 @@ def main(argv: list[str] | None = None) -> int:
     insert_depth = float(args.insert_depth_m)
     if not np.isfinite(insert_depth) or insert_depth < 0.0:
         raise ValueError(f"insert_depth_m must be finite and non-negative, got {args.insert_depth_m!r}")
+    args.seated_min_depth_m = seated_minimum_depth(
+        insert_depth, args.near_insert_depth_tolerance_m, args.seated_min_depth_m)
     if args.retract_after_release_m > 0.0 and not args.release_after_insert:
         raise ValueError("--retract-after-release-m requires --release-after-insert")
     if args.home_after_release and not args.release_after_insert:
