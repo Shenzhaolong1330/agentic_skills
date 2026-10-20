@@ -84,7 +84,7 @@ class ExternalTrackingTests(unittest.TestCase):
         for name, speed, step in [('conservative', .02, .001), ('responsive', .02, .001),
                                   ('fast_free_space', .1, .005)]:
             config = adapter.tracking.command_config(g.ServoConfig(), .2, translation_step=.01, profile=name)
-            self.assertEqual(config.max_translation_speed_m_s, speed)
+            self.assertAlmostEqual(config.max_translation_speed_m_s, speed)
             self.assertEqual(config.max_translation_step_m, step)
         config = adapter.tracking.command_config(g.ServoConfig(), .04, translation_step=.002,
                                                  profile='fast_free_space')
@@ -110,16 +110,25 @@ class ExternalTrackingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'bias cap'):
             adapter.tracking.TrackingServo(initial, goal, outside, config, 4., profile='fast_free_space')
 
-    def test_fast_profile_still_stops_at_original_joint_speed_limit(self):
-        os.environ['FRANKA_P2P_TRACKING_PROFILE'] = 'fast_free_space'
-        def mutate(observation, client):
-            if len(client.actions) == 2:
-                observation['left_arm']['native_robot_state']['joint_velocities'][0] = .151
-        self.client.mutate = mutate
-        with self.assertRaisesRegex(adapter.base.ContinuousP2PError, 'joint speed'):
-            self.run_servo(goal=(.15, 0., 0., 0., 0., 0.),
-                           max_translation_speed=.1, max_translation_step=.005)
-        self.assertEqual(len(self.client.actions), 2)
+    def test_joint_speed_no_longer_stops_or_changes_transit_in_any_profile(self):
+        for profile in adapter.tracking.PROFILES:
+            actions = []
+            for speed in (0., .16452360153198242, .30):
+                with self.subTest(profile=profile, speed=speed):
+                    self.clock.now = 1.
+                    self.client = FakeClient(self.clock)
+                    os.environ['FRANKA_P2P_TRACKING_PROFILE'] = profile
+                    def mutate(observation, client):
+                        if 1 <= len(client.actions) <= 10:
+                            observation['left_arm']['native_robot_state']['joint_velocities'][0] = speed
+                    self.client.mutate = mutate
+                    result = self.run_servo(goal=(.15, 0., 0., 0., 0., 0.),
+                                            max_translation_speed=.1, max_translation_step=.005)
+                    self.assertTrue(result['ok'])
+                    actions.append(self.client.actions)
+            # Removing the exception must not leave a hidden speed governor.
+            self.assertEqual(actions[0], actions[1])
+            self.assertEqual(actions[0], actions[2])
 
     def test_cap_roundoff_can_brake_in_place_then_move_inward(self):
         center=(0., 0., 0., 1.)
@@ -133,10 +142,7 @@ class ExternalTrackingTests(unittest.TestCase):
         with self.assertRaises(g.NoFeasibleStep):
             g._bounded_velocity(outside, center, (1e-8, 0., 0.), (.04, 0., 0.), **options)
 
-    def test_fast_governor_slows_before_existing_physical_limits(self):
-        profile=adapter.tracking.feedback_profile('fast_free_space')
-        for speed, expected in ((.09,1.),(.1175,.5),(.135,0.),(.151,0.)):
-            self.assertAlmostEqual(adapter.tracking.joint_tracking_scale([[speed]*7],profile),expected)
+    def test_fast_governor_still_uses_requested_attitude_tolerance(self):
         origin=g.Pose((0.,0.,0.),(0.,0.,0.,1.))
         goal=g.Pose((.15,0.,0.),origin.quaternion_xyzw)
         for tolerance in (.1,.01):
@@ -451,7 +457,7 @@ class ExternalTrackingTests(unittest.TestCase):
                 previous[key] = velocity
 
     def test_stale_feedback_and_foreign_command_stop_without_extra_motion(self):
-        for kind in ('age','count','saved','speed'):
+        for kind in ('age','count','saved'):
             with self.subTest(kind=kind):
                 self.client = FakeClient(self.clock)
                 def mutate(observation, client):
@@ -463,8 +469,6 @@ class ExternalTrackingTests(unittest.TestCase):
                         observation['command_target_state']['step_count'] += 1
                     elif kind == 'saved':
                         observation['command_target_state']['arms']['left_arm']['position_m'][0] += .001
-                    else:
-                        observation['left_arm']['native_robot_state']['joint_velocities'][0] = .16
                 self.client.mutate = mutate
                 with self.assertRaises(adapter.base.ContinuousP2PError):
                     self.run_servo()

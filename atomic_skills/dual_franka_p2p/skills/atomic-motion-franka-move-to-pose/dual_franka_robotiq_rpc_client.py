@@ -21,6 +21,57 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Optional
 
 
+ARRIVAL_POLICY_ENV = 'FRANKA_P2P_ARRIVAL_POLICY'
+
+
+def arrival_policy(position_tolerance_m, rotation_tolerance_rad):
+    """An explicit task policy; absent policy preserves each caller's limits."""
+    raw = os.environ.get(ARRIVAL_POLICY_ENV)
+    policy = ({'position_tolerance_m': position_tolerance_m,
+               'rotation_tolerance_rad': rotation_tolerance_rad, 'warning_multiplier': 1.}
+              if raw is None else json.loads(raw))
+    keys = {'position_tolerance_m', 'rotation_tolerance_rad', 'warning_multiplier'}
+    optional = {'precision_position_tolerance_m'}
+    if not isinstance(policy, dict) or not keys <= set(policy) or set(policy) - keys - optional:
+        raise ValueError('Invalid P2P arrival policy fields')
+    for key in policy:
+        value = policy[key]
+        if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+            raise ValueError(f'Invalid P2P arrival policy {key}')
+    if not 1 <= policy['warning_multiplier'] <= 2:
+        raise ValueError('P2P warning multiplier must be between one and two')
+    if policy.get('precision_position_tolerance_m', 0) > policy['position_tolerance_m']:
+        raise ValueError('P2P precision position tolerance must not exceed nominal tolerance')
+    return {**policy, 'configured': raw is not None}
+
+
+def arrival_check(error, policy, *, emit=False):
+    """Classify measured endpoint residuals, never faults or transport errors."""
+    values = [error.get(f'{side}_{component}_error_{unit}')
+              for side in ('left', 'right') for component, unit in (('translation', 'm'), ('rotation', 'rad'))]
+    if any(type(v) not in (int, float) or not math.isfinite(v) or v < 0 for v in values):
+        raise ValueError('Arrival check requires finite measured errors for both arms')
+    position, rotation = max(values[0], values[2]), max(values[1], values[3])
+    p, r, factor = (policy[k] for k in ('position_tolerance_m', 'rotation_tolerance_rad', 'warning_multiplier'))
+    normal = position <= p and rotation <= r
+    accepted = position <= p * factor and rotation <= r * factor
+    result = {'status': 'within_tolerance' if normal else 'warning' if accepted else 'outside_limit',
+              'accepted': accepted, 'position_error_m': position, 'rotation_error_rad': rotation,
+              'position_tolerance_m': p, 'rotation_tolerance_rad': r,
+              'stop_position_error_m': p * factor, 'stop_rotation_error_rad': r * factor}
+    if 'precision_position_tolerance_m' in policy:
+        precise = position <= policy['precision_position_tolerance_m']
+        result.update(precision_position_tolerance_m=policy['precision_position_tolerance_m'],
+                      precision_reached=precise)
+        if accepted and not precise:
+            result.update(status='precision_not_reached', accepted=False)
+    if emit and result['status'] == 'warning':
+        print(json.dumps({'event': 'p2p_arrival_warning', **result,
+                          'message': 'Measured arrival exceeds nominal tolerance but is within the explicit warning band'}),
+              file=sys.stderr, flush=True)
+    return result
+
+
 def p2p_controller_mode(controller: Optional[str] = None) -> str:
     """Explicit per-call selection wins; legacy callers remain segmented."""
     mode = controller if controller is not None else os.environ.get('FRANKA_P2P_CONTROLLER', 'segmented')
@@ -758,18 +809,29 @@ class DualFrankaRobotiqRpcClient:
         """Recover Franka errors and restart the selected Cartesian controller."""
         return self._call('recover_robot', _side_or_both(side))
 
+    def _gripper_call(self, method, *args):
+        tracking = (_continuous_p2p_module('external_tracking')
+                    if (p2p_controller_mode(None) == 'external_tracking'
+                        and os.environ.get('FRANKA_P2P_TRACKING_PROFILE') == 'fast_tracking')
+                    or os.environ.get('FRANKA_P2P_CONTINUITY_FILE') else None)
+        receipt = tracking.continuity.read(self) if tracking else None
+        response = self._call(method, *args)
+        if receipt:
+            tracking.continuity.after_gripper(self, receipt, response, tracking.tracking.g)
+        return response
+
     def command_gripper(
         self,
         side: str = 'left_arm',
         command: Optional[dict[str, Any]] = None,
     ):
-        return self._call('command_gripper', _side(side), command or {})
+        return self._gripper_call('command_gripper', _side(side), command or {})
 
     def open_gripper(self, side: str = 'left_arm'):
-        return self._call('open_gripper', _side(side))
+        return self._gripper_call('open_gripper', _side(side))
 
     def close_gripper(self, side: str = 'left_arm'):
-        return self._call('close_gripper', _side(side))
+        return self._gripper_call('close_gripper', _side(side))
 
     def reactivate_gripper(self, side: str = 'left_arm'):
         return self._call('reactivate_gripper', _side(side))
@@ -903,6 +965,9 @@ class DualFrankaRobotiqRpcClient:
         """
         left_pose = _as_float_vector(left_delta, 6, 'left_delta')
         right_pose = _as_float_vector(right_delta, 6, 'right_delta')
+        policy = arrival_policy(position_tolerance_m, rotation_tolerance_rad)
+        position_tolerance_m = policy['position_tolerance_m']
+        rotation_tolerance_rad = policy['rotation_tolerance_rad']
         if p2p_controller_mode(controller) in ('continuous_servo', 'external_tracking'):
             if smooth is False:
                 raise ValueError('continuous_servo cannot use the legacy single-RPC motion path')
@@ -940,7 +1005,7 @@ class DualFrankaRobotiqRpcClient:
                            or correction_guard is not None or feedback_mode != 'step_reply'):
             raise ValueError('P2P feedback guards and stall warnings require smooth=True')
         if smooth:
-            return self._smooth_dual_robot_move_to_ee_pose(
+            result = self._smooth_dual_robot_move_to_ee_pose(
                 left_pose,
                 right_pose,
                 delta=delta,
@@ -969,6 +1034,14 @@ class DualFrankaRobotiqRpcClient:
                 correction_guard=correction_guard,
                 feedback_mode=feedback_mode,
             )
+            if policy['configured']:
+                result['arrival_check'] = arrival_check(result.get('final_error') or {}, policy, emit=True)
+                result['ok'] = result['arrival_check']['accepted']
+                result['arrival_policy'] = policy
+                result['tolerances'].update(
+                    position_tolerance_m=position_tolerance_m * policy['warning_multiplier'],
+                    rotation_tolerance_rad=rotation_tolerance_rad * policy['warning_multiplier'])
+            return result
 
         try:
             return self._call(

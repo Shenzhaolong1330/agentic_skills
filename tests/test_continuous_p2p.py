@@ -344,19 +344,65 @@ class ContinuousP2PTests(unittest.TestCase):
                     self.run_probe()
                 self.assertFalse(self.client.actions)
 
-    def test_servo_speed_limit_and_wrench_limits_stop_without_retry(self):
-        for field, value in (('joint_velocities', .151), ('force_n', 10.01), ('torque_nm', 3.01)):
+    def test_servo_wrench_limits_stop_without_retry(self):
+        for field, value in (('force_n', 10.01), ('torque_nm', 3.01)):
             with self.subTest(field=field):
                 self.client = FakeClient(self.clock)
                 def mutation(o, c):
                     if c.actions:
                         native = o['left_arm']['native_robot_state']
-                        owner = native if field == 'joint_velocities' else native['wrench']
-                        owner[field][0] = value
+                        native['wrench'][field][0] = value
                 self.client.mutate = mutation
                 with self.assertRaisesRegex(adapter.ContinuousP2PError, 'limit exceeded'):
                     self.run_probe()
                 self.assertEqual(len(self.client.actions), 1)
+
+    def test_joint_speed_above_removed_experiment_limit_does_not_stop_motion(self):
+        def mutation(o, c):
+            if 1 <= len(c.actions) <= 3:
+                o['left_arm']['native_robot_state']['joint_velocities'][0] = .16452360153198242
+        self.client.mutate = mutation
+        result = self.run_probe()
+        self.assertTrue(result['ok'])
+        self.assertGreater(len(self.client.actions), 3)
+
+    def test_configured_wrench_warning_and_stop_are_distinct(self):
+        policy = {'force_stop_n': 10., 'torque_warn_nm': 3., 'torque_stop_nm': 5.}
+        with mock.patch.dict(adapter.os.environ, {adapter.WRENCH_POLICY_ENV: json.dumps(policy)}):
+            def mutation(o, c):
+                o['left_arm']['native_robot_state']['wrench']['torque_nm'][0] = 3.501922426
+            self.client.mutate = mutation
+            with mock.patch.object(adapter, '_emit', wraps=adapter._emit) as emit:
+                self.assertTrue(self.run_probe()['ok'])
+                warnings = [call for call in emit.call_args_list if call.args[0] == 'p2p_wrench_warning']
+                self.assertEqual(len(warnings), 1)
+                self.assertEqual(warnings[0].kwargs['policy'], policy)
+            self.client = FakeClient(self.clock)
+            def excessive(o, c):
+                if c.actions:
+                    o['left_arm']['native_robot_state']['wrench']['torque_nm'][0] = 5.01
+            self.client.mutate = excessive
+            with self.assertRaisesRegex(adapter.ContinuousP2PError, 'limit exceeded'):
+                self.run_probe()
+            self.assertEqual(len(self.client.actions), 1)
+
+    def test_invalid_wrench_policy_cannot_dispatch(self):
+        for value in ({'torque_stop_nm': 5},
+                      {'force_stop_n': 10, 'torque_warn_nm': 6, 'torque_stop_nm': 5},
+                      {'force_stop_n': float('nan'), 'torque_warn_nm': 3, 'torque_stop_nm': 5}):
+            with mock.patch.dict(adapter.os.environ, {adapter.WRENCH_POLICY_ENV: json.dumps(value)}):
+                with self.assertRaisesRegex(ValueError, 'wrench policy'):
+                    self.run_probe()
+                self.assertFalse(self.client.actions)
+
+    def test_native_joint_velocity_fault_still_stops_without_retry(self):
+        def mutation(o, c):
+            if c.actions:
+                o['left_arm']['native_robot_state']['current_errors']['joint_velocity_violation'] = True
+        self.client.mutate = mutation
+        with self.assertRaisesRegex(adapter.ContinuousP2PError, 'native diagnostics or fault'):
+            self.run_probe()
+        self.assertEqual(len(self.client.actions), 1)
 
     def test_actual_pose_outside_fixed_corridor_stops(self):
         def mutation(o, c):

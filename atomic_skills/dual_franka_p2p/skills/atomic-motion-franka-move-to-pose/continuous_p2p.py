@@ -36,6 +36,8 @@ SERVO_BUDGET_S = 30.
 MAX_SETTLE_REACQUISITIONS = 3
 REACQUISITION_ERROR_RATIO = 2.
 TRANSLATION_LIMIT_ENV = 'FRANKA_P2P_TRANSLATION_BIAS_LIMIT_M'
+ROTATION_LIMIT_ENV = 'FRANKA_P2P_ROTATION_BIAS_LIMIT_RAD'
+WRENCH_POLICY_ENV = 'FRANKA_P2P_WRENCH_POLICY'
 NATIVE_ERROR_FIELDS = frozenset('''joint_position_limits_violation cartesian_position_limits_violation
 self_collision_avoidance_violation joint_velocity_violation cartesian_velocity_violation
 force_control_safety_violation joint_reflex cartesian_reflex max_goal_pose_deviation_violation
@@ -64,6 +66,17 @@ def _emit(event, **data):
 
 def _vector(value, size, name):
     return geometry._finite_vector(value, size, name)
+
+
+def _wrench_policy():
+    raw = os.environ.get(WRENCH_POLICY_ENV)
+    policy = (json.loads(raw) if raw is not None else
+              {'force_stop_n': 10., 'torque_warn_nm': 3., 'torque_stop_nm': 3.})
+    if (not isinstance(policy, dict) or set(policy) != {'force_stop_n', 'torque_warn_nm', 'torque_stop_nm'}
+            or any(type(v) not in (int, float) or not math.isfinite(v) or v <= 0 for v in policy.values())
+            or policy['torque_warn_nm'] > policy['torque_stop_nm']):
+        raise ValueError('Invalid P2P wrench policy')
+    return policy
 
 
 def _pose6(value):
@@ -117,10 +130,20 @@ class _Run:
         if translation_limit is not None:
             translation_limit = _positive(translation_limit, 'translation bias')
         self.translation_limit_source = 'environment' if env_limit is not None else 'argument_or_default'
+        rotation_limit = min(.2, _positive(options.get('max_tracking_rotation_bias_rad', .2), 'rotation bias'))
+        if ROTATION_LIMIT_ENV in os.environ:
+            rotation_limit = _positive(float(os.environ[ROTATION_LIMIT_ENV]), 'configured rotation bias')
+        self.rotation_limit_source = 'environment' if ROTATION_LIMIT_ENV in os.environ else 'argument_or_default'
         # This selects the approach profile by physical distance. It never
         # limits compensation, clips a target or resets the saved command.
         self.nominal_approach_distance_m = _positive(options.get('nominal_approach_distance_m', .025),
                                                     'nominal approach distance')
+        self.arrival_policy = legacy.arrival_policy(options.get('position_tolerance_m', .0015),
+                                                    options.get('rotation_tolerance_rad', .01))
+        configured = self.arrival_policy['configured']
+        position = self.arrival_policy['position_tolerance_m']
+        rotation = self.arrival_policy['rotation_tolerance_rad']
+        factor = self.arrival_policy['warning_multiplier']
         self.config = geometry.ServoConfig(
             translation_integral_gain_per_s=.3, rotation_integral_gain_per_s=.3,
             max_translation_speed_m_s=min(.002, _positive(options.get('max_translation_speed', .05), 'translation speed')),
@@ -129,9 +152,10 @@ class _Run:
             max_rotation_step_rad=self._step('max_rotation_step', .002),
             max_translation_acceleration_m_s2=.005, max_rotation_acceleration_rad_s2=.02,
             max_translation_bias_m=translation_limit,
-            max_rotation_bias_rad=min(.2, _positive(options.get('max_tracking_rotation_bias_rad', .2), 'rotation bias')),
-            position_tolerance_m=min(.003, _positive(options.get('position_tolerance_m', .0015), 'position tolerance')),
-            rotation_tolerance_rad=min(.1, _positive(options.get('rotation_tolerance_rad', .01), 'rotation tolerance')),
+            max_rotation_bias_rad=rotation_limit,
+            position_tolerance_m=self.arrival_policy.get('precision_position_tolerance_m',
+                position * factor if configured else min(.003, position)),
+            rotation_tolerance_rad=rotation * factor if configured else min(.1, rotation),
             max_dt_s=.2)
         self.phase, self.session, self.count = 'preflight', None, None
         self.saved, self.initial, self.goals, self.bounds, self.held = {}, {}, {}, {}, set()
@@ -145,6 +169,8 @@ class _Run:
         self.settle_reacquisitions = 0
         self.timings, self.progress = [], []
         self.last_log = -math.inf
+        self.wrench_policy = _wrench_policy()
+        self.wrench_warning_sides = set()
 
     def _step(self, key, limit):
         value = self.options.get(key)
@@ -154,6 +180,9 @@ class _Run:
         error = _error(measured, self.goals[side])
         return (error['translation_m'] <= self.config.position_tolerance_m
                 and error['rotation_rad'] <= self.config.rotation_tolerance_rad)
+
+    def initially_arrived(self, side):
+        return self.within(self.initial[side], side)
 
     def snapshot(self, *, expected=None, count=None):
         read_started = time.monotonic()
@@ -213,9 +242,25 @@ class _Run:
                 raise ContinuousP2PError(f'{side}: unexpected wrench frame')
             force = _vector(wrench.get('force_n'), 3, 'force')
             torque = _vector(wrench.get('torque_nm'), 3, 'torque')
-            if self.phase in ('servo', 'hold') and (max(map(abs, velocities[side])) > .15
-                    or math.hypot(*force) > 10. or math.hypot(*torque) > 3.):
-                raise ContinuousP2PError(f'{side}: servo joint speed or wrench limit exceeded')
+            metrics = {'joint_speed_rad_s': max(map(abs, velocities[side])),
+                       'force_norm_n': math.hypot(*force), 'torque_norm_nm': math.hypot(*torque)}
+            # Joint speed is telemetry, not an additional software stop limit.
+            # Native faults and separate stationarity checks still apply.
+            limits = {'force_norm_n': self.wrench_policy['force_stop_n'],
+                      'torque_norm_nm': self.wrench_policy['torque_stop_nm']}
+            exceeded = [key for key in limits if metrics[key] > limits[key]]
+            if self.phase in ('servo', 'hold') and exceeded:
+                detail = {'exceeded': exceeded, 'measured': metrics, 'limits': limits,
+                          'source_sequence': sequence, 'source_ros_timestamp_ns': stamp}
+                raise ContinuousP2PError(f'{side}: servo wrench limit exceeded; '
+                                         + json.dumps(detail, allow_nan=False))
+            warning = metrics['torque_norm_nm'] > self.wrench_policy['torque_warn_nm']
+            if self.phase in ('servo', 'hold') and warning and side not in self.wrench_warning_sides:
+                _emit('p2p_wrench_warning', side=side, measured=metrics,
+                      policy=self.wrench_policy, source_sequence=sequence)
+                self.wrench_warning_sides.add(side)
+            elif not warning:
+                self.wrench_warning_sides.discard(side)
             # Some servers expose these only in the legacy diagnostic view.
             for owner in (native, data.get('robot_state', {})):
                 for key in ('joint_collision', 'cartesian_collision', 'joint_collisions', 'cartesian_collisions'):
@@ -253,13 +298,17 @@ class _Run:
         if _error(self.initial[side], value)['rotation_rad'] > bound['rotation_from_initial_rad'] + 1e-12:
             raise ContinuousP2PError(f'{side}: fixed orientation corridor exceeded')
 
+    def settle_preflight(self):
+        pass
+
     def prepare(self):
         self.snapshot()
+        self.settle_preflight()
         self.initial = dict(self.measured)
         self.goals = {side: _pose6(legacy._pose_from_delta(_six(self.initial[side]), self.inputs[side]))
                       if self.delta else _pose6(self.inputs[side]) for side in SIDES}
         for side in SIDES:
-            if self.within(self.initial[side], side):
+            if self.initially_arrived(side):
                 if max(map(abs, self.velocities[side])) >= .01:
                     raise ContinuousP2PError(f'{side}: already-at-goal arm is not stationary; saved compensation preserved')
                 self.held.add(side)
@@ -275,13 +324,16 @@ class _Run:
                 'position_margin_basis': 'servo_speed_times_budget_plus_max_dt' if cap is None else 'translation_bias_cap',
                 'workspace_authorization_bound': False,
                 'rotation_from_initial_rad': min(math.pi, max(_error(self.initial[side], p)['rotation_rad']
-                                                              for p in poses) + self.config.max_rotation_bias_rad)}
+                                                              for p in poses) + max(self.config.max_rotation_bias_rad,
+                                                                  self.config.rotation_tolerance_rad))}
         self.start_count = self.count
         self.initial_saved = dict(self.saved)
         _emit('p2p_servo_start', controller=self.controller, goals={s: _six(p) for s, p in self.goals.items()},
               held_sides=sorted(self.held), bounds=self.bounds, servo_config=asdict(self.config),
+              arrival_policy=self.arrival_policy,
               period_s=self.period, max_cycle_s=self.max_cycle, servo_budget_s=SERVO_BUDGET_S,
               translation_limit_source=self.translation_limit_source,
+              rotation_limit_source=self.rotation_limit_source,
               nominal_approach_distance_m=self.nominal_approach_distance_m,
               nominal_targets={s: _six(p) for s, p in self.nominal_targets.items()},
               correction_guard_policy='final_success_only',
@@ -438,13 +490,26 @@ class _Run:
     def reacquire(self, servos, sides, deadline, *, pending=None):
         """Resume this closed loop after small verified drift, never replay P2P."""
         self.check_servo_deadline(deadline)
+        # A task can require finer contact accuracy than its outer stop band.
+        # Reacquire small measured drift under the SAME deadline and command
+        # history; never interpret that finer goal as a new physical stop band.
+        policy = self.arrival_policy
+        position_envelope = REACQUISITION_ERROR_RATIO * self.config.position_tolerance_m
+        rotation_envelope = REACQUISITION_ERROR_RATIO * self.config.rotation_tolerance_rad
+        if policy['configured']:
+            position_envelope = policy['position_tolerance_m'] * policy['warning_multiplier']
+            rotation_envelope = policy['rotation_tolerance_rad'] * policy['warning_multiplier']
+            if any(_error(self.measured[s], self.goals[s])['translation_m'] > position_envelope
+                   or _error(self.measured[s], self.goals[s])['rotation_rad'] > rotation_envelope
+                   for s in sides):
+                raise ContinuousP2PError('Measured arrival drift exceeds the explicit stop tolerance')
         if not sides or any(s not in servos for s in sides):
             raise ContinuousP2PError('Arrival drift affects a held arm; no reacquisition')
         for side in sides:
             error = _error(self.measured[side], self.goals[side])
             # This is a recovery envelope, never an expanded arrival tolerance.
-            if (error['translation_m'] > REACQUISITION_ERROR_RATIO * self.config.position_tolerance_m
-                    or error['rotation_rad'] > REACQUISITION_ERROR_RATIO * self.config.rotation_tolerance_rad):
+            if (error['translation_m'] > position_envelope
+                    or error['rotation_rad'] > rotation_envelope):
                 raise ContinuousP2PError(f'{side}: arrival drift exceeds bounded reacquisition envelope')
         if self.settle_reacquisitions >= MAX_SETTLE_REACQUISITIONS:
             raise ContinuousP2PError(f'Arrival did not stabilize within {MAX_SETTLE_REACQUISITIONS} settle reacquisitions')
@@ -461,6 +526,12 @@ class _Run:
     def hold(self, *, overall_deadline=None):
         self.phase = 'hold'
         deadline, window = time.monotonic() + 6., deque(maxlen=3)
+        # An explicit millimetre-scale arrival policy must not silently require
+        # 150-micron stationarity. Keep drift below 20% of nominal tolerance,
+        # capped at the same 1 mm used by independent console feedback checks.
+        policy = getattr(self, 'arrival_policy', None)
+        drift_limit = (min(.001, .2 * policy.get('precision_position_tolerance_m', policy['position_tolerance_m']))
+                       if policy and policy['configured'] else .00015)
         if overall_deadline is not None:
             deadline = min(deadline, overall_deadline)
         held = dict(self.saved)
@@ -477,13 +548,13 @@ class _Run:
                             for a in samples for b in samples)
                 metrics[side] = {'max_joint_velocity_rad_s': speed,
                                  'max_translation_drift_m': drift,
-                                 'velocity_ok': speed < .01, 'drift_ok': drift <= .00015}
+                                 'velocity_ok': speed < .01, 'drift_ok': drift <= drift_limit}
             stable = all(m['velocity_ok'] and m['drift_ok'] for m in metrics.values())
             _emit('p2p_servo_hold_check', controller=self.controller, stage=stage, stationary=stable,
                   metrics=metrics, final_error=self.error_report(),
                   sample_count=len(samples), window_span_s=samples[-1][0] - samples[0][0],
                   remaining_hold_s=max(0., deadline - time.monotonic()), step_count=self.count,
-                  limits={'joint_velocity_rad_s': .01, 'translation_drift_m': .00015})
+                  limits={'joint_velocity_rad_s': .01, 'translation_drift_m': drift_limit})
             return stable
 
         while time.monotonic() < deadline:
@@ -574,12 +645,17 @@ class _Run:
                 servos[side].confirm_command(self.saved[side])
             self.log_progress(updates)
         final_error = self.error_report()
+        arrival = (legacy.arrival_check(final_error, self.arrival_policy, emit=True)
+                   if self.arrival_policy['configured'] else None)
+        if arrival is not None and not arrival['accepted']:
+            raise ContinuousP2PError('Final measured arrival exceeds the explicit stop tolerance')
         # The legacy progress callback receives exactly one final report, not
         # a fabricated sequence of discrete continuous-servo correction rounds.
         final_error['correction_index'] = 0
         if self.correction_guard is not None:
             self.correction_guard(final_error)
         result = {'ok': True, 'mode': 'continuous_servo', 'controller': 'continuous_servo',
+                  'arrival_policy': self.arrival_policy, 'arrival_check': arrival,
                   'final_error': final_error, 'last_step': self.last_step, 'stalled': None,
                   'trajectory': nominal_metadata, 'corrections': [], 'continuous_progress': self.progress,
                   'commands': self.commands, 'dispatch_attempts': self.attempts,

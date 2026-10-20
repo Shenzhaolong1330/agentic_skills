@@ -1,0 +1,74 @@
+{
+  "measured": {
+    "position_m": [
+      0.5125280022621155,
+      -0.21920683812864977,
+      -0.1229981595325674
+    ],
+    "quaternion_xyzw": [
+      -0.8054954633361358,
+      -0.5753491991912809,
+      -0.08965374092647789,
+      0.11005709551293769
+    ],
+    "frame": "torso"
+  },
+  "goal": {
+    "position_m": [
+      0.5110238554419857,
+      -0.22214622356846198,
+      -0.12299594155466453
+    ],
+    "quaternion_xyzw": [
+      -0.46929937988346276,
+      -0.8830391225993316,
+      -5.407055175065793e-17,
+      -1.6081226496766366e-16
+    ],
+    "frame": "torso"
+  },
+  "saved": {
+    "position_m": [
+      0.511649820801339,
+      -0.20113505009604357,
+      -0.13072830635297647
+    ],
+    "quaternion_xyzw": [
+      0.8300925848551223,
+      0.5481955965937176,
+      0.10040397873335796,
+      0.018626043549584758
+    ],
+    "frame": "torso"
+  },
+  "reference": {
+    "position_m": [
+      0.5112921369057826,
+      -0.2228071978323633,
+      -0.12097766752448373
+    ],
+    "quaternion_xyzw": [
+      -0.8077184864415567,
+      -0.5743676203249569,
+      -0.11004487370642708,
+      0.07471819827688252
+    ],
+    "frame": "torso"
+  },
+  "config": {
+    "translation_integral_gain_per_s": 3.0,
+    "rotation_integral_gain_per_s": 3.0,
+    "max_translation_speed_m_s": 0.02,
+    "max_rotation_speed_rad_s": 0.12,
+    "max_translation_step_m": 0.001,
+    "max_rotation_step_rad": 0.006,
+    "max_translation_acceleration_m_s2": 0.1,
+    "max_rotation_acceleration_rad_s2": 0.2,
+    "max_translation_bias_m": null,
+    "max_rotation_bias_rad": 0.2,
+    "position_tolerance_m": 0.01,
+    "rotation_tolerance_rad": 0.4,
+    "max_dt_s": 0.2
+  },
+  "duration": 18.812843798659742
+}

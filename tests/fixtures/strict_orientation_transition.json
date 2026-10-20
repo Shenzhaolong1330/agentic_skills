@@ -1,0 +1,976 @@
+{
+  "source_run": "web-20261020-224321-11c413b0",
+  "receipt": {
+    "version": 1,
+    "server_session_id": "661a978413874f43823b199347a7e42b",
+    "step_count": 14881,
+    "arms": {
+      "left_arm": {
+        "saved": {
+          "position_m": [
+            0.48249400471754444,
+            -0.07938070775591183,
+            -0.028923228122275657
+          ],
+          "quaternion_xyzw": [
+            -0.6369773035684896,
+            0.7563589005166839,
+            0.13906084052003181,
+            0.053321768365946924
+          ],
+          "frame": "torso"
+        },
+        "reference": {
+          "position_m": [
+            0.4610571535416953,
+            -0.04175986258210827,
+            -0.03127006225385802
+          ],
+          "quaternion_xyzw": [
+            0.6346186418990941,
+            -0.7728254520615565,
+            1.4387268967704018e-08,
+            9.566268021709787e-09
+          ],
+          "frame": "torso"
+        }
+      },
+      "right_arm": {
+        "saved": {
+          "position_m": [
+            0.5419052867908462,
+            -0.17619757565335675,
+            0.04135858668193995
+          ],
+          "quaternion_xyzw": [
+            0.524145705889135,
+            0.7120871106679282,
+            0.29835065052124454,
+            -0.35943026465801725
+          ],
+          "frame": "torso"
+        },
+        "reference": {
+          "position_m": [
+            0.530085563659668,
+            -0.14745925692156708,
+            0.022304175452031366
+          ],
+          "quaternion_xyzw": [
+            0.6027511024103032,
+            0.6835700820541246,
+            0.33391343039648463,
+            -0.24067586597856785
+          ],
+          "frame": "torso"
+        }
+      }
+    }
+  },
+  "strict_start_report": {
+    "command": "status",
+    "server": "172.16.0.1:4242",
+    "source": "live_rpc",
+    "execute": false,
+    "status_before": {
+      "classification": "healthy",
+      "needs_reset": false,
+      "auto_reset_allowed": false,
+      "reasons": [
+        "both arms have valid telemetry and explicit healthy diagnostic evidence"
+      ],
+      "reset_reasons": [],
+      "unresolved_reasons": [],
+      "diagnostics_complete": true,
+      "diagnostic_coverage": "native_or_explicit",
+      "arms": {
+        "left_arm": {
+          "valid_telemetry": true,
+          "problems": [],
+          "diagnostics": {
+            "reset_reasons": [],
+            "healthy_evidence": [
+              "left_arm.robot_state.robot_mode is move",
+              "left_arm.robot_state.current_errors has no active entries"
+            ],
+            "manual_reasons": [],
+            "recovering_reasons": [],
+            "unresolved_reasons": [],
+            "observed": [
+              {
+                "path": "left_arm.robot_state.robot_mode",
+                "value": 2,
+                "mode": "move"
+              },
+              {
+                "path": "left_arm.robot_state.current_errors",
+                "active": [],
+                "unresolved": []
+              }
+            ]
+          },
+          "diagnostics_complete": true
+        },
+        "right_arm": {
+          "valid_telemetry": true,
+          "problems": [],
+          "diagnostics": {
+            "reset_reasons": [],
+            "healthy_evidence": [
+              "right_arm.robot_state.robot_mode is move",
+              "right_arm.robot_state.current_errors has no active entries"
+            ],
+            "manual_reasons": [],
+            "recovering_reasons": [],
+            "unresolved_reasons": [],
+            "observed": [
+              {
+                "path": "right_arm.robot_state.robot_mode",
+                "value": 2,
+                "mode": "move"
+              },
+              {
+                "path": "right_arm.robot_state.current_errors",
+                "active": [],
+                "unresolved": []
+              }
+            ]
+          },
+          "diagnostics_complete": true
+        }
+      },
+      "global_diagnostics": {
+        "reset_reasons": [],
+        "healthy_evidence": [],
+        "manual_reasons": [],
+        "recovering_reasons": [],
+        "unresolved_reasons": [],
+        "observed": []
+      }
+    },
+    "reset": {
+      "attempted": false
+    },
+    "status_after": null,
+    "ping_before": {
+      "ok": true,
+      "node_name": "dual_franka_robotiq_rpc_server",
+      "step_count": 14881,
+      "legacy_motion_enabled": true,
+      "lease_required": false,
+      "server_session_id": "661a978413874f43823b199347a7e42b",
+      "native_motion_enabled": false,
+      "arm_base_protocol": "aoe.arm-base.v1"
+    },
+    "state_before": {
+      "left_arm": {
+        "robot_state": {
+          "joint_positions": [
+            -0.4016798734664917,
+            1.2725589275360107,
+            -0.2502996027469635,
+            -1.5496315956115723,
+            1.056680679321289,
+            2.000558614730835,
+            0.33532312512397766
+          ],
+          "joint_velocities": [
+            0.0007892528083175421,
+            -0.0008677707519382238,
+            -0.000525557086803019,
+            0.0005485336878336966,
+            -0.0002845984126906842,
+            0.00018885698227677494,
+            0.000459664617665112
+          ],
+          "joint_efforts": [
+            -32.6185188293457,
+            -40.34296417236328,
+            -25.35419464111328,
+            15.414993286132812,
+            0.49851858615875244,
+            2.4427480697631836,
+            0.47387540340423584
+          ],
+          "eef_pose": {
+            "position": [
+              0.46082669496536255,
+              -0.041270200317314765,
+              -0.031097620168277967
+            ],
+            "orientation_xyzw": [
+              -0.6523291905897544,
+              0.7576949390797605,
+              -0.014509098545615794,
+              0.01242949946005855
+            ],
+            "frame": "torso"
+          },
+          "wrench": {
+            "force": [
+              5.8273725509643555,
+              -4.849937915802002,
+              -1.288523554801941
+            ],
+            "torque": [
+              -1.3799235820770264,
+              -1.954329013824463,
+              0.3443332314491272
+            ]
+          },
+          "eef_pose_frame": "torso",
+          "diagnostics_complete": true,
+          "robot_mode": 2,
+          "robot_mode_name": "move",
+          "current_errors": {
+            "joint_position_limits_violation": false,
+            "cartesian_position_limits_violation": false,
+            "self_collision_avoidance_violation": false,
+            "joint_velocity_violation": false,
+            "cartesian_velocity_violation": false,
+            "force_control_safety_violation": false,
+            "joint_reflex": false,
+            "cartesian_reflex": false,
+            "max_goal_pose_deviation_violation": false,
+            "max_path_pose_deviation_violation": false,
+            "cartesian_velocity_profile_safety_violation": false,
+            "joint_position_motion_generator_start_pose_invalid": false,
+            "joint_motion_generator_position_limits_violation": false,
+            "joint_motion_generator_velocity_limits_violation": false,
+            "joint_motion_generator_velocity_discontinuity": false,
+            "joint_motion_generator_acceleration_discontinuity": false,
+            "cartesian_position_motion_generator_start_pose_invalid": false,
+            "cartesian_motion_generator_elbow_limit_violation": false,
+            "cartesian_motion_generator_velocity_limits_violation": false,
+            "cartesian_motion_generator_velocity_discontinuity": false,
+            "cartesian_motion_generator_acceleration_discontinuity": false,
+            "cartesian_motion_generator_elbow_sign_inconsistent": false,
+            "cartesian_motion_generator_start_elbow_invalid": false,
+            "cartesian_motion_generator_joint_position_limits_violation": false,
+            "cartesian_motion_generator_joint_velocity_limits_violation": false,
+            "cartesian_motion_generator_joint_velocity_discontinuity": false,
+            "cartesian_motion_generator_joint_acceleration_discontinuity": false,
+            "cartesian_position_motion_generator_invalid_frame": false,
+            "force_controller_desired_force_tolerance_violation": false,
+            "controller_torque_discontinuity": false,
+            "start_elbow_sign_inconsistent": false,
+            "communication_constraints_violation": false,
+            "power_limit_violation": false,
+            "joint_p2p_insufficient_torque_for_planning": false,
+            "tau_j_range_violation": false,
+            "instability_detected": false
+          },
+          "diagnostics_schema": "libfranka-errors/v1"
+        },
+        "sensors": {
+          "robotiq": {
+            "position": 0.649688986784141,
+            "velocity": 0.0,
+            "effort": null,
+            "stamp": {
+              "sec": 1792507797,
+              "nanosec": 416577644
+            },
+            "enabled": true,
+            "command_mode": "forward_multi",
+            "joint_name": "robotiq_85_left_knuckle_joint",
+            "last_command_position": 0.7929,
+            "last_command_source": "{'close': True}",
+            "open_position": 0.0,
+            "closed_position": 0.7929
+          }
+        },
+        "gripper": {
+          "position": 0.649688986784141,
+          "velocity": 0.0,
+          "effort": null,
+          "stamp": {
+            "sec": 1792507797,
+            "nanosec": 416577644
+          },
+          "enabled": true,
+          "command_mode": "forward_multi",
+          "joint_name": "robotiq_85_left_knuckle_joint",
+          "last_command_position": 0.7929,
+          "last_command_source": "{'close': True}",
+          "open_position": 0.0,
+          "closed_position": 0.7929,
+          "position_unit": "encoded_robotiq_register_scaled_to_joint_range",
+          "measured_width_m": null,
+          "object_detected": true,
+          "driver_status": {
+            "schema": "aoe.robotiq-register-status.v1",
+            "source_sensor": "robotiq_status",
+            "source_session_id": "83815fbcbdcf460f984e2e133b553c80",
+            "source_ros_timestamp_ns": 1792507797416577644,
+            "received_monotonic_ns": 3410374555242082,
+            "sequence_first_seen_monotonic_ns": 3410374535268890,
+            "sample_sequence": 692035,
+            "driver_read_age_s": 0.028185173,
+            "publisher_age_at_receive_ns": 1878677,
+            "registers": {
+              "status_byte": 185,
+              "fault_byte": 0,
+              "requested_position_raw": 230,
+              "position_raw": 189,
+              "motor_current_raw": 5
+            },
+            "sample_valid": true,
+            "read_time_semantics": "driver_serial_read_completion; not onboard acquisition",
+            "measured_width_m": null,
+            "holding_verified": false,
+            "receive_age_ns": 14167075,
+            "estimated_read_age_ns": 44230925,
+            "sequence_age_ns": 34140267,
+            "sample_fresh": true,
+            "activated": true,
+            "go_to_requested": true,
+            "ready": true,
+            "object_detection_code": 2,
+            "object_detected": true,
+            "contact_direction": "closing",
+            "requested_position_reached": false
+          }
+        },
+        "native_robot_state": {
+          "joint_positions": [
+            -0.4016813337802887,
+            1.2725646495819092,
+            -0.2502976655960083,
+            -1.5496318340301514,
+            1.056681752204895,
+            2.000558376312256,
+            0.33532658219337463
+          ],
+          "joint_velocities": [
+            -0.0009519640589132905,
+            -0.0003016535774804652,
+            -0.0006295260973274708,
+            0.0003692387545015663,
+            2.9304583222256042e-05,
+            -0.0003849598579108715,
+            0.0007525543333031237
+          ],
+          "joint_efforts": [
+            -32.5867805480957,
+            -40.37073516845703,
+            -25.41370391845703,
+            15.474502563476562,
+            0.48478567600250244,
+            2.4427480697631836,
+            0.44091641902923584
+          ],
+          "eef_pose": {
+            "position": [
+              0.46082404255867004,
+              -0.18396791815757751,
+              -0.2279512882232666
+            ],
+            "orientation_xyzw": [
+              -0.5979139820231614,
+              0.7055727974889285,
+              0.2765557049883432,
+              0.2611184408116759
+            ],
+            "frame": "left_base",
+            "ros_frame_id": "base"
+          },
+          "wrench": {
+            "force_n": [
+              3.83768367767334,
+              -5.654969215393066,
+              -3.590247392654419
+            ],
+            "torque_nm": [
+              1.5346016883850098,
+              1.7216566801071167,
+              -1.3374019861221313
+            ],
+            "frame": "left_base",
+            "ros_frame_id": "base",
+            "source": "FrankaRobotState.o_f_ext_hat_k",
+            "force_unit": "N",
+            "torque_unit": "Nm"
+          },
+          "robot_mode": 2,
+          "robot_mode_name": "move",
+          "current_errors": {
+            "joint_position_limits_violation": false,
+            "cartesian_position_limits_violation": false,
+            "self_collision_avoidance_violation": false,
+            "joint_velocity_violation": false,
+            "cartesian_velocity_violation": false,
+            "force_control_safety_violation": false,
+            "joint_reflex": false,
+            "cartesian_reflex": false,
+            "max_goal_pose_deviation_violation": false,
+            "max_path_pose_deviation_violation": false,
+            "cartesian_velocity_profile_safety_violation": false,
+            "joint_position_motion_generator_start_pose_invalid": false,
+            "joint_motion_generator_position_limits_violation": false,
+            "joint_motion_generator_velocity_limits_violation": false,
+            "joint_motion_generator_velocity_discontinuity": false,
+            "joint_motion_generator_acceleration_discontinuity": false,
+            "cartesian_position_motion_generator_start_pose_invalid": false,
+            "cartesian_motion_generator_elbow_limit_violation": false,
+            "cartesian_motion_generator_velocity_limits_violation": false,
+            "cartesian_motion_generator_velocity_discontinuity": false,
+            "cartesian_motion_generator_acceleration_discontinuity": false,
+            "cartesian_motion_generator_elbow_sign_inconsistent": false,
+            "cartesian_motion_generator_start_elbow_invalid": false,
+            "cartesian_motion_generator_joint_position_limits_violation": false,
+            "cartesian_motion_generator_joint_velocity_limits_violation": false,
+            "cartesian_motion_generator_joint_velocity_discontinuity": false,
+            "cartesian_motion_generator_joint_acceleration_discontinuity": false,
+            "cartesian_position_motion_generator_invalid_frame": false,
+            "force_controller_desired_force_tolerance_violation": false,
+            "controller_torque_discontinuity": false,
+            "start_elbow_sign_inconsistent": false,
+            "communication_constraints_violation": false,
+            "power_limit_violation": false,
+            "joint_p2p_insufficient_torque_for_planning": false,
+            "tau_j_range_violation": false,
+            "instability_detected": false
+          },
+          "diagnostics_schema": "libfranka-errors/v1",
+          "diagnostics_complete": true,
+          "source_ros_timestamp_ns": 1792507797426932054,
+          "robot_time_seconds": 29382.195,
+          "received_monotonic_ns": 3410374568571923,
+          "sequence": 18756763,
+          "sensor_clock_progressing": true,
+          "clock_domain": "remote-host-monotonic",
+          "source_clock": "libfranka robot duration; not shared across arms or hosts",
+          "age_ns": 709273,
+          "torso_eef_pose": {
+            "schema": "aoe.franka-source-bound-pose.v1",
+            "position": [
+              0.46082404255867004,
+              -0.041270864130178775,
+              -0.031100939232598185
+            ],
+            "orientation_xyzw": [
+              -0.652326191198197,
+              0.7576975525139782,
+              -0.014506864484494853,
+              0.012430208124113053
+            ],
+            "frame": "torso",
+            "native_frame": "left_base",
+            "source_ros_timestamp_ns": 1792507797426932054,
+            "source_sequence": 18756763,
+            "torso_from_native": [
+              [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.70710678118,
+                0.70710678118,
+                0.25
+              ],
+              [
+                0.0,
+                -0.70710678118,
+                0.70710678118,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+              ]
+            ],
+            "transform_sha256": "abbfeda40fcd45e3fcf69dc7e2e3d62a691f555f05704597369babf61de645c9",
+            "transform_source": "original_environment._side_transform"
+          }
+        }
+      },
+      "right_arm": {
+        "robot_state": {
+          "joint_positions": [
+            -0.3420563340187073,
+            0.6627277135848999,
+            0.34739890694618225,
+            -2.240966558456421,
+            -1.1731003522872925,
+            2.969074010848999,
+            -0.6577861309051514
+          ],
+          "joint_velocities": [
+            -0.0010807138169184327,
+            0.0011014491319656372,
+            -0.00010857469169422984,
+            0.000927608460187912,
+            -0.00022206206631381065,
+            -0.0005481238476932049,
+            -2.840310480678454e-05
+          ],
+          "joint_efforts": [
+            28.760042190551758,
+            -28.084579467773438,
+            28.079328536987305,
+            6.181192398071289,
+            0.30888500809669495,
+            3.6705362796783447,
+            -0.41503337025642395
+          ],
+          "eef_pose": {
+            "position": [
+              0.5300707221031189,
+              -0.14745516867726155,
+              0.022312341403930278
+            ],
+            "orientation_xyzw": [
+              0.6227102417359796,
+              0.6678430293178894,
+              0.3616429593538379,
+              -0.188233931527823
+            ],
+            "frame": "torso"
+          },
+          "wrench": {
+            "force": [
+              -0.6202855706214905,
+              3.4858155250549316,
+              -3.194357395172119
+            ],
+            "torque": [
+              2.1813807487487793,
+              1.056196928024292,
+              -0.3287615180015564
+            ]
+          },
+          "eef_pose_frame": "torso",
+          "diagnostics_complete": true,
+          "robot_mode": 2,
+          "robot_mode_name": "move",
+          "current_errors": {
+            "joint_position_limits_violation": false,
+            "cartesian_position_limits_violation": false,
+            "self_collision_avoidance_violation": false,
+            "joint_velocity_violation": false,
+            "cartesian_velocity_violation": false,
+            "force_control_safety_violation": false,
+            "joint_reflex": false,
+            "cartesian_reflex": false,
+            "max_goal_pose_deviation_violation": false,
+            "max_path_pose_deviation_violation": false,
+            "cartesian_velocity_profile_safety_violation": false,
+            "joint_position_motion_generator_start_pose_invalid": false,
+            "joint_motion_generator_position_limits_violation": false,
+            "joint_motion_generator_velocity_limits_violation": false,
+            "joint_motion_generator_velocity_discontinuity": false,
+            "joint_motion_generator_acceleration_discontinuity": false,
+            "cartesian_position_motion_generator_start_pose_invalid": false,
+            "cartesian_motion_generator_elbow_limit_violation": false,
+            "cartesian_motion_generator_velocity_limits_violation": false,
+            "cartesian_motion_generator_velocity_discontinuity": false,
+            "cartesian_motion_generator_acceleration_discontinuity": false,
+            "cartesian_motion_generator_elbow_sign_inconsistent": false,
+            "cartesian_motion_generator_start_elbow_invalid": false,
+            "cartesian_motion_generator_joint_position_limits_violation": false,
+            "cartesian_motion_generator_joint_velocity_limits_violation": false,
+            "cartesian_motion_generator_joint_velocity_discontinuity": false,
+            "cartesian_motion_generator_joint_acceleration_discontinuity": false,
+            "cartesian_position_motion_generator_invalid_frame": false,
+            "force_controller_desired_force_tolerance_violation": false,
+            "controller_torque_discontinuity": false,
+            "start_elbow_sign_inconsistent": false,
+            "communication_constraints_violation": false,
+            "power_limit_violation": false,
+            "joint_p2p_insufficient_torque_for_planning": false,
+            "tau_j_range_violation": false,
+            "instability_detected": false
+          },
+          "diagnostics_schema": "libfranka-errors/v1"
+        },
+        "sensors": {
+          "robotiq": {
+            "position": 0.0,
+            "velocity": 0.0,
+            "effort": null,
+            "stamp": {
+              "sec": 1792507797,
+              "nanosec": 424953240
+            },
+            "enabled": true,
+            "command_mode": "forward_multi",
+            "joint_name": "robotiq_85_left_knuckle_joint",
+            "last_command_position": 0.0,
+            "last_command_source": "{'open': True}",
+            "open_position": 0.0,
+            "closed_position": 0.7929
+          }
+        },
+        "gripper": {
+          "position": 0.0,
+          "velocity": 0.0,
+          "effort": null,
+          "stamp": {
+            "sec": 1792507797,
+            "nanosec": 424953240
+          },
+          "enabled": true,
+          "command_mode": "forward_multi",
+          "joint_name": "robotiq_85_left_knuckle_joint",
+          "last_command_position": 0.0,
+          "last_command_source": "{'open': True}",
+          "open_position": 0.0,
+          "closed_position": 0.7929,
+          "position_unit": "encoded_robotiq_register_scaled_to_joint_range",
+          "measured_width_m": null,
+          "object_detected": false,
+          "driver_status": {
+            "schema": "aoe.robotiq-register-status.v1",
+            "source_sensor": "robotiq_status",
+            "source_session_id": "e922225736db4639bc059ef97eb28deb",
+            "source_ros_timestamp_ns": 1792507797424953240,
+            "received_monotonic_ns": 3410374564939202,
+            "sequence_first_seen_monotonic_ns": 3410374564939202,
+            "sample_sequence": 691847,
+            "driver_read_age_s": 0.006103751,
+            "publisher_age_at_receive_ns": 3199888,
+            "registers": {
+              "status_byte": 249,
+              "fault_byte": 0,
+              "requested_position_raw": 3,
+              "position_raw": 3,
+              "motor_current_raw": 0
+            },
+            "sample_valid": true,
+            "read_time_semantics": "driver_serial_read_completion; not onboard acquisition",
+            "measured_width_m": null,
+            "holding_verified": false,
+            "receive_age_ns": 4469955,
+            "estimated_read_age_ns": 13773594,
+            "sequence_age_ns": 4469955,
+            "sample_fresh": true,
+            "activated": true,
+            "go_to_requested": true,
+            "ready": true,
+            "object_detection_code": 3,
+            "object_detected": false,
+            "contact_direction": null,
+            "requested_position_reached": true
+          }
+        },
+        "native_robot_state": {
+          "joint_positions": [
+            -0.34205392003059387,
+            0.6627262830734253,
+            0.3473967909812927,
+            -2.2409725189208984,
+            -1.1730998754501343,
+            2.9690749645233154,
+            -0.6577911376953125
+          ],
+          "joint_velocities": [
+            -0.0010403103660792112,
+            9.595770279702265e-06,
+            -0.0004987387219443917,
+            -0.0007409899262711406,
+            -0.0004692680377047509,
+            0.00045321500510908663,
+            -0.0014563632430508733
+          ],
+          "joint_efforts": [
+            28.700532913208008,
+            -28.052841186523438,
+            28.079328536987305,
+            6.276407241821289,
+            0.30247631669044495,
+            3.6641275882720947,
+            -0.38848307728767395
+          ],
+          "eef_pose": {
+            "position": [
+              0.5300675630569458,
+              0.0882878303527832,
+              -0.05673405900597572
+            ],
+            "orientation_xyzw": [
+              0.6473408745386852,
+              0.7554036252414856,
+              0.0785403095111783,
+              0.06439401283818062
+            ],
+            "frame": "right_base",
+            "ros_frame_id": "base"
+          },
+          "wrench": {
+            "force_n": [
+              2.8189306259155273,
+              -0.19150972366333008,
+              3.8283870220184326
+            ],
+            "torque_nm": [
+              0.9504408240318298,
+              0.1113278791308403,
+              0.19559596478939056
+            ],
+            "frame": "right_base",
+            "ros_frame_id": "base",
+            "source": "FrankaRobotState.o_f_ext_hat_k",
+            "force_unit": "N",
+            "torque_unit": "Nm"
+          },
+          "robot_mode": 2,
+          "robot_mode_name": "move",
+          "current_errors": {
+            "joint_position_limits_violation": false,
+            "cartesian_position_limits_violation": false,
+            "self_collision_avoidance_violation": false,
+            "joint_velocity_violation": false,
+            "cartesian_velocity_violation": false,
+            "force_control_safety_violation": false,
+            "joint_reflex": false,
+            "cartesian_reflex": false,
+            "max_goal_pose_deviation_violation": false,
+            "max_path_pose_deviation_violation": false,
+            "cartesian_velocity_profile_safety_violation": false,
+            "joint_position_motion_generator_start_pose_invalid": false,
+            "joint_motion_generator_position_limits_violation": false,
+            "joint_motion_generator_velocity_limits_violation": false,
+            "joint_motion_generator_velocity_discontinuity": false,
+            "joint_motion_generator_acceleration_discontinuity": false,
+            "cartesian_position_motion_generator_start_pose_invalid": false,
+            "cartesian_motion_generator_elbow_limit_violation": false,
+            "cartesian_motion_generator_velocity_limits_violation": false,
+            "cartesian_motion_generator_velocity_discontinuity": false,
+            "cartesian_motion_generator_acceleration_discontinuity": false,
+            "cartesian_motion_generator_elbow_sign_inconsistent": false,
+            "cartesian_motion_generator_start_elbow_invalid": false,
+            "cartesian_motion_generator_joint_position_limits_violation": false,
+            "cartesian_motion_generator_joint_velocity_limits_violation": false,
+            "cartesian_motion_generator_joint_velocity_discontinuity": false,
+            "cartesian_motion_generator_joint_acceleration_discontinuity": false,
+            "cartesian_position_motion_generator_invalid_frame": false,
+            "force_controller_desired_force_tolerance_violation": false,
+            "controller_torque_discontinuity": false,
+            "start_elbow_sign_inconsistent": false,
+            "communication_constraints_violation": false,
+            "power_limit_violation": false,
+            "joint_p2p_insufficient_torque_for_planning": false,
+            "tau_j_range_violation": false,
+            "instability_detected": false
+          },
+          "diagnostics_schema": "libfranka-errors/v1",
+          "diagnostics_complete": true,
+          "source_ros_timestamp_ns": 1792507797426872089,
+          "robot_time_seconds": 29370.676,
+          "received_monotonic_ns": 3410374568843404,
+          "sequence": 18756291,
+          "sensor_clock_progressing": true,
+          "clock_domain": "remote-host-monotonic",
+          "source_clock": "libfranka robot duration; not shared across arms or hosts",
+          "age_ns": 437792,
+          "torso_eef_pose": {
+            "schema": "aoe.franka-source-bound-pose.v1",
+            "position": [
+              0.5300675630569458,
+              -0.14745403861488587,
+              0.022311885691130753
+            ],
+            "orientation_xyzw": [
+              0.6227075020474245,
+              0.6678458682540077,
+              0.36164223403264534,
+              -0.188234315983523
+            ],
+            "frame": "torso",
+            "native_frame": "right_base",
+            "source_ros_timestamp_ns": 1792507797426872089,
+            "source_sequence": 18756291,
+            "torso_from_native": [
+              [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.70710678118,
+                -0.70710678118,
+                -0.25
+              ],
+              [
+                0.0,
+                0.70710678118,
+                0.70710678118,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+              ]
+            ],
+            "transform_sha256": "75495546891c565f0a737da9172057a6c5df98c0e27e0dd2297677ec049cfd83",
+            "transform_source": "original_environment._side_transform"
+          }
+        }
+      },
+      "rpc_metadata": {
+        "protocol": "aoe.franka-rpc.telemetry.v1",
+        "legacy_motion_enabled": true,
+        "lease_required": false,
+        "guardian_required": false,
+        "native_snapshot_method": "get_observation_v2",
+        "legacy_pose_frame": "torso",
+        "native_pose_frames": [
+          "left_base",
+          "right_base"
+        ],
+        "reset_semantics": "original environment reset: target to measured current pose",
+        "startup_actions_from_telemetry": [],
+        "qualified_for_motion": false,
+        "legacy_telemetry_atomic": false,
+        "native_snapshot_available": true,
+        "source_bound_torso_pose_available": true,
+        "diagnostics_errors": {},
+        "gripper_register_state_available": {
+          "left_arm": true,
+          "right_arm": true
+        },
+        "gripper_diagnostics_errors": {}
+      },
+      "command_target_state": {
+        "schema": "aoe.franka-command-targets.v1",
+        "server_session_id": "661a978413874f43823b199347a7e42b",
+        "step_count": 14881,
+        "read_monotonic_ns": 3410374570297025,
+        "clock_domain": "remote-host-monotonic",
+        "available": true,
+        "arms": {
+          "left_arm": {
+            "frame": "torso",
+            "position_m": [
+              0.48249400471754444,
+              -0.07938070775591183,
+              -0.028923228122275657
+            ],
+            "quaternion_xyzw": [
+              -0.6369773035684896,
+              0.7563589005166839,
+              0.13906084052003181,
+              0.053321768365946924
+            ]
+          },
+          "right_arm": {
+            "frame": "torso",
+            "position_m": [
+              0.5419052867908462,
+              -0.17619757565335675,
+              0.04135858668193995
+            ],
+            "quaternion_xyzw": [
+              0.524145705889135,
+              0.7120871106679282,
+              0.29835065052124454,
+              -0.35943026465801725
+            ]
+          }
+        }
+      }
+    }
+  },
+  "arrival_event": {
+    "event": "p2p_servo_arrived",
+    "controller": "external_tracking",
+    "commands": 201,
+    "final_error": {
+      "left_error_delta": [
+        0.00015461250525872217,
+        -0.0005302008949708836,
+        -0.00022695024251692675,
+        0.006707383517477173,
+        0.037691243274557876,
+        -0.0468591968082185
+      ],
+      "right_error_delta": [
+        1.5795230865478516e-05,
+        -4.636153336179394e-06,
+        -9.188012975294702e-06,
+        -3.547044602695004e-05,
+        -1.5255612895782632e-05,
+        -1.6047664883837034e-05
+      ],
+      "left_translation_error_m": 0.0005970966658664209,
+      "right_translation_error_m": 1.885213033809485e-05,
+      "left_rotation_error_rad": 0.06050952932178355,
+      "right_rotation_error_rad": 4.181403848470848e-05,
+      "max_translation_error_m": 0.0005970966658664209,
+      "max_rotation_error_rad": 0.06050952932178355,
+      "correction_index": 0
+    },
+    "step_count": 14881,
+    "hold_samples": 3,
+    "performance": {
+      "target_s": 5.0,
+      "nominal_motion_s": 9.903344895049067,
+      "minimum_hold_s": 0.5,
+      "nominal_with_hold_s": 10.403344895049067,
+      "nominal_exceeds_target": true,
+      "step_and_rate_accounted": true,
+      "actual_call_s": 12.134740014967974,
+      "met_target": false
+    },
+    "orientation_references": {
+      "left_arm": "confirmed_previous_reference"
+    }
+  },
+  "failure_event": {
+    "event": "p2p_servo_failed",
+    "controller": "external_tracking",
+    "phase": "preflight",
+    "message": "Saved command exceeds the fixed nominal-goal bias cap; use a separate approach",
+    "confirmed_commands": 0,
+    "dispatch_attempts": 0,
+    "last_validated_error": {
+      "left_error_delta": [
+        8.219480514526367e-05,
+        4.034507073669147e-05,
+        6.078629226430321e-05,
+        0.006644368471534288,
+        0.037625356436795515,
+        -0.04657099803689261
+      ],
+      "right_error_delta": [
+        2.2649765014648438e-06,
+        -1.8570955124808108e-06,
+        2.5551526909584066e-07,
+        -5.671270620351732e-07,
+        7.444414201206165e-07,
+        -5.515882805708337e-06
+      ],
+      "left_translation_error_m": 0.00010990306662171802,
+      "right_translation_error_m": 2.9401037987468074e-06,
+      "left_rotation_error_rad": 0.060238467257506506,
+      "right_rotation_error_rad": 5.594710828880498e-06,
+      "max_translation_error_m": 0.00010990306662171802,
+      "max_rotation_error_rad": 0.060238467257506506
+    },
+    "tracking": {}
+  },
+  "previous_policy": {
+    "position_tolerance_m": 0.005,
+    "rotation_tolerance_rad": 0.2,
+    "warning_multiplier": 2,
+    "precision_position_tolerance_m": 0.001,
+    "configured": true
+  },
+  "strict_policy": {
+    "position_tolerance_m": 0.01,
+    "rotation_tolerance_rad": 0.035,
+    "warning_multiplier": 1,
+    "precision_position_tolerance_m": 0.001,
+    "configured": true
+  }
+}
