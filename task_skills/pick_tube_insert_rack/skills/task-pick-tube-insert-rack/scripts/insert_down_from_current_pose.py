@@ -407,6 +407,21 @@ def guarded_vertical_insert(
             seated_axial_delta_n=float(args.seated_axial_force_delta_n),
             seated_min_depth_m=seated_depth,
         )
+        # Low contact force is not proof of a vertical path. Use the task's
+        # existing pose tolerances throughout descent, before seated-contact
+        # acceptance or another correction command can hide lateral drift.
+        lateral_error = float(np.linalg.norm(pose[:2] - start[:2]))
+        rotation_error = float(
+            (R.from_rotvec(pose[3:]) * R.from_rotvec(start[3:]).inv()).magnitude()
+        )
+        force_state.update(
+            lateral_path_error_m=lateral_error,
+            rotation_path_error_rad=rotation_error,
+            path_guard_failure=(
+                lateral_error > float(args.position_tolerance_m)
+                or rotation_error > float(args.rotation_tolerance_rad)
+            ),
+        )
         samples.append(
             {
                 "index": len(samples) + 1,
@@ -435,6 +450,19 @@ def guarded_vertical_insert(
             "total_motion_steps": total_steps,
             "last_step": last_step,
         }
+        if force_state.get("path_guard_failure"):
+            return {
+                **common,
+                "ok": False,
+                "stopped_reason": "insertion_path_deviation",
+                "path_guard_failure": True,
+                "force_guard_failure": False,
+                "force_classification": classification,
+                "lateral_path_error_m": force_state["lateral_path_error_m"],
+                "rotation_path_error_rad": force_state["rotation_path_error_rad"],
+                "lateral_path_limit_m": float(args.position_tolerance_m),
+                "rotation_path_limit_rad": float(args.rotation_tolerance_rad),
+            }
         if classification == "seated_axial_contact":
             return {
                 **common,
@@ -795,6 +823,7 @@ def main(argv: list[str] | None = None) -> int:
         insert_targets: list[list[float]] = []
         guarded_success_kind: str | None = None
         guarded_force_failure = False
+        guarded_path_failure = False
         if args.monitor_force_during_insert:
             guarded_stage = guarded_vertical_insert(
                 client=client,
@@ -808,6 +837,7 @@ def main(argv: list[str] | None = None) -> int:
             insert_stage_ok = bool(guarded_stage.get("ok"))
             guarded_success_kind = guarded_stage.get("insert_success_kind")
             guarded_force_failure = bool(guarded_stage.get("force_guard_failure"))
+            guarded_path_failure = bool(guarded_stage.get("path_guard_failure"))
         else:
             remaining_depth = insert_depth
             segment_depths = [
@@ -863,7 +893,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         report["insert_success_kind"] = guarded_success_kind
         report["insert_success_confirmed"] = bool(
-            not guarded_force_failure
+            not guarded_force_failure and not guarded_path_failure
             and (
                 report["insert_depth_reached"]
                 or report["insert_depth_near_reached"]
@@ -876,7 +906,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         report["release_after_insert_executed"] = release_after_success
 
-        if should_abort_before_release(
+        if guarded_path_failure or should_abort_before_release(
             insert_stage_ok=insert_stage_ok,
             release_after_insert=release_after_success,
             continue_on_p2p_failure=False,
