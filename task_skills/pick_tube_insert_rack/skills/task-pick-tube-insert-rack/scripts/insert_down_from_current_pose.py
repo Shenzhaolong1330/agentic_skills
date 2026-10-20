@@ -382,6 +382,7 @@ def guarded_vertical_insert(
     target = compute_insert_down_target_pose(current_pose=start, insert_depth_m=depth_m)
     base_force = np.asarray(base_force, dtype=float).reshape(3)
     action_key = f"{side}_arm"
+    passive_key = "left_arm" if side == "right" else "right_arm"
     period_sec = 1.0 / float(args.rate_hz)
     translation_step, rotation_step = guarded_motion_step_limits(args)
     max_correction_iters = int(args.max_correction_iters)
@@ -533,7 +534,16 @@ def guarded_vertical_insert(
                             "translation": translation_command.tolist(),
                             "rotation_rotvec": rotation_command.tolist(),
                         }
-                    }
+                    },
+                    # Omission reanchors the other arm in the legacy RPC.
+                    # Explicit zero increments preserve its saved compensation
+                    # without issuing any gripper command.
+                    passive_key: {
+                        "motion": {
+                            "translation": [0.0, 0.0, 0.0],
+                            "rotation_rotvec": [0.0, 0.0, 0.0],
+                        }
+                    },
                 }
             )
             total_steps += 1
