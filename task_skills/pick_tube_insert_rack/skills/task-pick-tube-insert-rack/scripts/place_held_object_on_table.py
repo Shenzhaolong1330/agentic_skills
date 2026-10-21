@@ -144,6 +144,7 @@ def _move_with_failure_release(
     report: dict[str, Any],
 ) -> dict[str, Any]:
     """Release the held object if a placement move fails, then re-raise the failure."""
+    report["active_stage"] = stage
     try:
         return _move(
             client,
@@ -160,6 +161,7 @@ def _move_with_failure_release(
             raise
         if not (args.execute and args.release_on_motion_failure):
             raise
+        report["release_dispatch_state"] = "attempted"
         release_report: dict[str, Any] = {
             "stage": "open_gripper_after_motion_failure",
             "side": side,
@@ -316,6 +318,8 @@ def main(argv: list[str] | None = None) -> int:
         "down_pitch_rad": float(args.down_pitch_rad),
         "retract_distance_m": float(args.retract_distance_m),
         "stages": [],
+        "active_stage": "preflight",
+        "release_dispatch_state": "not_dispatched",
     }
     if not args.execute:
         report["planned_only"] = True
@@ -390,10 +394,13 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
 
+        report["active_stage"] = "open_gripper"
+        report["release_dispatch_state"] = "attempted"
         open_result = client.open_gripper(_side_key(args.side))
         report["stages"].append({"stage": "open_gripper", "result": open_result})
         if isinstance(open_result, Mapping) and open_result.get("ok") is False:
             raise RuntimeError(f"open gripper failed: {open_result}")
+        report["release_dispatch_state"] = "acknowledged"
         if args.release_sleep_sec > 0.0:
             time.sleep(args.release_sleep_sec)
 
@@ -436,6 +443,11 @@ def main(argv: list[str] | None = None) -> int:
         report["physical_verified"] = True
         print(json.dumps(report, indent=None if args.compact else 2, ensure_ascii=False, default=str))
         return 0
+    except Exception as exc:
+        report.update(completion_flag=False, physical_verified=False,
+                      failure_stage=report["active_stage"], error=str(exc))
+        print(json.dumps(report, ensure_ascii=False, default=str), flush=True)
+        raise
     finally:
         client.close()
 
