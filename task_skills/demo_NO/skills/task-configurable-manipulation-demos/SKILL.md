@@ -75,11 +75,26 @@ RealSense 的深度预设在按指定序列号解析设备后、开流前设置�
 不调用会重新激活夹爪的 `reset()`。拔出观察同样不自动回位另一只手。
 插入结果通过本次运行 `insert_N/result.json` 读取，不把含误差提示的 stdout 当作纯 JSON。
 结果文件缺失、损坏或未明确报告完成时停止；动作可能已经执行，不自动重跑插入。
+
+失败后可在确认现场状态未被人工改变后恢复同一运行：
+
+```bash
+bash "$DEMO_DIR/scripts/demo_1_vial_insert_extract.sh" --mode live --execute \
+  --resume /tmp/agentic_skills_runs/demo_1_vial_insert_extract_YYYYMMDD_HHMMSS_xxxxxx
+```
+
+省略目录、只写 `--resume` 时选择最新的失败 Demo 1。恢复会核对配置快照，复用 inventory/rack
+产物，跳过已经完成的抓取与插入；若正在恢复插入，会先读取接收夹爪反馈并要求闭合比例至少 0.35，
+同时把当前末端位姿与失败报告里最后保存的目标作有界比较。反馈闭合不等于已经物理夹住试管，
+因此恢复前仍需人工确认。失败发生在抓取交接、开夹爪、拔管、
+松管或落料等物理状态不明确的阶段时，脚本拒绝自动恢复，避免重放非幂等动作。
+
 **四支全部插完后**，按 `cycles` 顺序拔出指定位置；第 i 次拔出由第 i 次插入的手完成。
-拔出前观察/转姿显式使用 `extract_observe_max_correction_iters: 10` 次纠偏，
-保持 3 mm / 0.03 rad 到位容差。2026-09-18 首次拔出曾因漏传该参数，只纠偏 1 次后
-仍有 12.03 mm / 0.0534 rad 残差而停止；当时还未抓管。
-观察失败时终端显示 JSON 报告的 `stopped_reason` 和最终残差，缓存识别提示不作为错误原因。
+Demo 1 的抓取/交接、插入观察、腕部孔位移动、下插/回撤、拔出观察、拔管/提升和落料
+统一读取 `motion_*` 策略：5 mm / 0.20 rad、最多 15 次纠偏、累计跟踪补偿上限
+50 mm / 1.0 rad。`motion_continue_on_tolerance_miss: true` 时，仅纠偏次数或累计补偿上限耗尽
+会记录警告并继续后续动作；RPC、反馈、夹爪、感知和力控碰撞等其他失败仍停止。
+这是高风险真机策略：继续不表示物理到位，尤其插入/释放前必须人工确认工件与料架状态。
 拔出时夹盖/露出的上端，竖直提升 `extract_lift_m`，再移到侧边空桌面、下降到释放高度、松爪。
 不做第二次 handover，不尝试让物品直立或稳定落座。
 
@@ -119,11 +134,26 @@ cycles:
 
 ## Demo 2
 
+抓取、提升和交接配置 `grasp_max_correction_iters: 15`、
+`grasp_max_tracking_translation_bias_m: 0.050`；旋转补偿上限仍为 0.20 rad。
+2026-09-19 23:53 的 `stage4_return_transition` 在第 9 次纠偏用尽原 25 mm
+平移补偿，位置残差仍为 10.8309 mm，因此同时增加次数和有界平移补偿额度。
+原到位容差保持，`grasp_continue_on_tolerance_miss: true`，纠偏次数或补偿额度耗尽时
+记录警告并继续后续步骤；RPC、反馈、夹爪等其他错误仍停止。继续不表示物理到位；
+50 mm 是命令补偿上限，不是可接受的位置误差。该调整尚未经真机收敛验证。
+
 每轮重新识别一件平放长条物品，按指定端点位置抓取，再执行旧交接流程。
 `count` 是本次确切处理件数；不足、定位失败或头尾坐标缺失时停止并报告失败。
 `object_description` 描述物品及取料区，`front_definition` 定义前端。
 默认优先采用明显的功能端/标记端；对称物体以头部图像 x 较小的端为前端。
 此配置关闭试管黑盖 SAM 端点重估，直接使用 VLM 端点和已有深度/标定流程。
+
+Demo 2 支持同目录恢复：
+`bash "$DEMO_DIR/scripts/demo_2_elongated_handover.sh" --mode live --execute --resume /失败运行目录`。
+省略目录时选择最新失败的 Demo 2。配置必须与该次快照一致；修改纠偏参数后不能直接恢复旧配置的运行。
+恢复支持物体定位、交接完成后的落料区域定位及恢复夹爪状态检查失败；已完成的整轮任务跳过。
+继续落料前检查接收夹爪闭合比例至少 0.35，并保留运动前 Enter 确认；需确认工件仍在夹爪中。
+抓取交接、开爪或实际落料动作失败时，夹持/释放状态不明确，与 Demo 1 一样拒绝自动重放。
 
 默认 `after_handover: drop`：接收手把物品放到侧边桌面上方释放，再处理下一件。
 交接后仅松开的原手向外侧平移 20 cm（同 Demo 1）；接收手保持夹持，继续执行配置的 drop 或 hold。
@@ -131,6 +161,12 @@ cycles:
 取料区与落料区应在 `object_description` / `drop_description` 中清楚区分，避免重新抓取落下的物品。
 
 ## 抓取、交接和落料参数
+
+初次抓取默认 `--gripper-close-stable-sec 0.5`：闭合比例至少 0.35，且新反馈
+在 0.5 秒内变化不超过 0.01，然后才提升；物体会阻挡夹指，不要求 100% 闭合。
+交接后原手必须达到闭合比例 ≤0.1，且新反馈持续 0.3 秒，才允许回撤或插入；
+5 秒未确认则停止。Demo 3 和旧完整入口保存 `handover_tube_N.json`，插入明确使用
+记录中的接收手，不再根据两爪尚在运动时的闭合比例猜测。记录只在交接和后续回撤成功后生成。
 
 - `handover_receiver_stable_sec: 0.5`：接收夹爪达到原闭合阈值后，要求带更新 `stamp`
   的位置反馈持续稳定（闭合比例变化范围 ≤0.01），避免夹爪仍在闭合时就放开原手。
@@ -169,8 +205,25 @@ cycles:
 `--grasp-arg`、`--insertion-arg`、`--no-reset-after-error`。
 
 此 demo 按初始图像从左到右处理所有识别到的散落 vial，插入当前空孔，**不拔出**。
-保留原程序失败后 reset 并处理下一支的策略，与 Demo 1/2 的失败即停止策略不同。
-`--mock` / `--dry-run` 调用原安全 harness，不连接硬件；真机主流程保持原样。
+阶段失败默认停止，不自动 reset，也不处理下一支；`--reset-after-error` 可显式启用旧的复位后继续策略。
+共用抓取 shell 将连续三次小运动作为停滞判据，检测与控制器恢复解耦；默认不自动恢复控制器、不整段重试。
+持续停滞不受补偿耗尽后继续选项影响，仍停止。
+抓取、观察、腕部定位和插入纠偏上限均为 15 次，累计补偿上限为 50 mm / 1.0 rad。
+旧入口 `run_full_pick_tube_insert_rack.sh` 同步使用上述策略，抓取前横移的位置容差
+两入口均显式设置为 5 mm，避免旧抓取 shell 的 15 mm 默认值提前停止平移纠偏。
+2026-09-20 00:20 的旧入口日志中，11.54 mm 已小于 15 mm，因此后续只纠正姿态，
+最终因原 0.20 rad 旋转补偿额度耗尽停止。命令参数现在用 `--grasp-arg=值`
+传给选臂脚本，避免以 `--` 开头的值被 argparse 当作另一选项。
+次数或补偿额度耗尽后记录警告并继续；RPC、感知、夹爪、持续停滞和碰撞等其他失败默认停止。
+继续不表示物理到位。`--grasp-arg` / `--insertion-arg` 仍可覆盖数值参数。
+`--mock` / `--dry-run` 调用原安全 harness，不连接硬件；它们不执行 live shell 的检查点逻辑。
+
+Demo 3 支持 `--mode live --execute --resume [运行目录]`，不填写目录时选择最新的
+有检查点且未完成的 Demo 3。新运行生成 `demo3_state.json`，校验配置内容与有效动作参数；
+复用原始 inventory/rack/tube 文件，跳过已完整插入的试管。恢复保留 Enter 确认，现场物体和架子不能移动。
+恢复粒度是完整一支管：支持初始感知失败或两支之间中断；抓取、交接、插入及复位过程中
+状态不明确时拒绝恢复，不重放物理动作。旧运行没有检查点，不能直接恢复。
+这比 Demo 1 的插入子流程恢复范围更窄；不会依据旧日志猜测夹持/释放状态。
 
 默认配置为 [demo_3_all_vials_to_rack.env](config/demo_3_all_vials_to_rack.env)，
 使用原程序的 Bash 环境变量格式。文件会被 `source`，只使用可信任配置。
@@ -180,23 +233,26 @@ cycles:
 ## Demo 4：仅拔出四支 vial
 
 入口 [demo_4_vial_extract.sh](scripts/demo_4_vial_extract.sh)，配置
-[demo_4_vial_extract.yaml](config/demo_4_vial_extract.yaml)。红架四角已经各有一支 vial，
+[demo_4_vial_extract.yaml](config/demo_4_vial_extract.yaml)。红架指定的四个孔位已经各有一支 vial，
 所选手应为空手；不需要把它们重新放回桌面，也不运行 inventory、handover 或插入。
 
 ```yaml
 extract_arm: right
 gripper_opening_direction: 1  # 1 垂直于 base X；2 平行于 base X
-extract_order: [右下, 左上, 右上, 左下]
+extract_order: [[2, 2], [1, 1], [1, 2], [2, 1]]  # 右中 → 左上 → 右上 → 左中
 ```
 
-`extract_order` 必须恰好包含左上、左下、右上、右下各一次。四次均使用
+`extract_order` 按列表顺序拔出，必须包含四个不同孔位。支持 `[行1..3,列1..2]`，
+也可混用左上 `[1,1]`、左下 `[3,1]`、右上 `[1,2]`、右下 `[3,2]`；
+原四角名称配置仍有效。名称和坐标指向同一孔时视为重复，越界孔位也会在运动前拒绝。
+中间行用 `[2,1]`、`[2,2]`；目标孔必须有管，识别为空时停止。四次均使用
 `extract_arm`（left/right）。X 指所选机械臂的 base X，不是图像 X 或红架长轴。
 `gripper_opening_direction` 控制两指开合的连线：1 沿 base Y，2 沿 base X；
 两种选择都保持 TCP Z 朝下。`jaw_opening_axis: y` 是 TCP 局部开合轴的标定定义，
 不应为了切换朝向而修改它。
 
 复用原拔出流程：首次识别并检查红架 → 空手转到指定姿态和腕部观察位 → 用本次实际腕部
-标定定位指定角落 vial 的盖子 → 保持朝向抓住盖子 → 竖直提升 → 水平移到右侧空桌面上方，下降并释放。
+标定定位指定孔位 vial 的盖子 → 保持朝向抓住盖子 → 竖直提升 → 水平移到右侧空桌面上方，下降并释放。
 四次观察共用本轮首次红架参考；期间架子须保持不动。每支管盖仍用当前腕图和实际位姿重新定位。
 首次红架 Z 必须在 `rack_z_range_m` 内（当前桌面为 [-0.25,-0.10] m），管盖也必须在
 参考架子附近（XY 半径 `extract_cap_max_xy_m`，相对高度 `extract_cap_z_range_m`）。
@@ -259,6 +315,19 @@ Demo 4 的 `p2p` 现在实际传入观察、拔管和落料三个入口。默认
 [纠偏与速度配置修复](../../../../docs/franka_p2p_tracking_bias_20260918.md)。
 
 ## VLM 回复长度截断
+
+2026-09-20 00:32 的批量识别拒绝第 5 个候选，是 VLM 将头尾也输出为 0–1000 坐标，
+旧通用解析器把它们当像素，并据此把归一化框误改成像素框，导致 SAM 对准空桌面。
+批量 inventory 现在统一约定框与 `head_1000` / `tail_1000` 均为 0–1000，
+显式转换成像素后交给 SAM；不再依据头尾猜框的单位。缺字段、越界或头尾不在框内
+会停止，不跳过候选；SAM 掩码和深度校验仍保留。
+
+Demo 3 的批量 inventory 在 2026-09-20 00:15 出现 HTTP 400 回退后 JSON 截断：
+输出 4092 tokens 中推理占 3142，内容停在第六支管的尾端坐标。
+批量入口现在默认使用 `reasoning.effort: low`（显式配置优先），保存 finish_reason 和逐次回复；
+遇到 length 或 JSON 解析失败时，在同一张已采图上最多补试一次，输出额度加倍至最多 8192
+（已有更高额度不降低）。长度截断不接受部分结果，补试仍失败则停止，不发抓取命令。
+重试保留当前格式约束；已有 HTTP 400/422 去 Schema 回退仍保留。
 
 Demo 4 使用 `vlm_reasoning_effort: low`，写入生成的定位配置 `openrouter.reasoning_effort`。
 2026-09-19 13:17 的第二支管盖识别两次 `finish_reason=length`，各有 3928 reasoning tokens，

@@ -1,4 +1,4 @@
-# 只拔出红架四角的四支 vial，不做散物抓取、handover 或插入。
+# 只拔出红架指定四个孔位的 vial，不做散物抓取、handover 或插入。
 # 3 行 × 2 列：左上[1,1] 左下[3,1] 右上[1,2] 右下[3,2]。
 demo: 4
 extract_arm: right  # left / right；四次均使用所选机械臂
@@ -7,8 +7,9 @@ vlm_reasoning_effort: low  # 给最终定位 JSON 留出输出额度；截断时
 # 夹爪两指开合的连线相对于所选机械臂 base X 轴的方向：
 # 1 = 垂直于 X 轴（沿 base Y）；2 = 平行于 X 轴（沿 base X）。
 # 两种姿态均保持 TCP Z 轴朝下。不是相机图像 X 轴，也不是红架长轴。
-gripper_opening_direction: 2
-extract_order: [左上, 左下, 右上, 右下]  # 调整顺序；四个位置必须各出现一次
+gripper_opening_direction: 1
+extract_order: [[2, 2], [1, 1], [1, 2], [2, 1]]  # 右中 → 左上 → 右上 → 左中
+# 必须指定四个不同孔位；支持 [行1..3,列1..2]，也可混用左上/左下/右上/右下。
 
 # 夹爪开合轴在 TCP 局部坐标中的标定定义，沿用现有 Robotiq 配置。
 jaw_opening_axis: y
@@ -39,10 +40,19 @@ extract_approach_settle_time_sec: 0.6
 extract_lift_position_tolerance_m: 0.005
 extract_lift_rotation_tolerance_rad: 0.06
 extract_lift_settle_time_sec: 0.4
-# 移到右侧空桌面并落料：10 mm / 0.10 rad（约 5.73 度）。
-drop_position_tolerance_m: 0.010
-drop_rotation_tolerance_rad: 0.10
-drop_settle_time_sec: 0.3
+# 拔出后不再识别精确落点：保持当前姿态，先按 base 坐标直接向右（-Y）横移，
+# 再下降 6 cm 后松手。四次只做 2 cm 级的小错位，避免落在完全同一点。
+# 每项都是相对于“刚拔出并提升后”的 TCP [dX,dY,dZ]，单位 m。
+drop_relative_offsets_m:
+  - [-0.01, -0.14, -0.06]
+  - [ 0.01, -0.14, -0.06]
+  - [-0.01, -0.16, -0.06]
+  - [ 0.01, -0.16, -0.06]
+# 落料只要求大致到位，不做精确位置纠偏。
+drop_position_tolerance_m: 0.030
+drop_rotation_tolerance_rad: 0.20
+drop_settle_time_sec: 0.2
+drop_max_correction_iters: 1
 # 观察转姿/横移、拔出提升、右侧落料共享速度；旧版本漏传，实际用 0.04 m/s / 0.20 rad/s。
 # 单位：速度 m/s、rad/s；步长 m、rad。靠近管盖的下探仍用原来的较低速度。
 p2p:
@@ -55,23 +65,6 @@ p2p:
   approach_max_rotation_speed: 0.20
   approach_max_translation_step: 0.001
   approach_max_rotation_step: 0.012
-drop_height_m: 0.10
-# 右侧 = base -Y（与原 demo 左右臂约定一致），不是“任意旁边”。
-# 每次重新识别右侧空桌面，坐标校验失败就停止，绝不退回前方或左边。
-drop_lateral_range_m: [0.12, 0.30]
-drop_max_fore_aft_m: 0.15
-drop_perception_retries: 1  # 选点未通过图像/坐标检查时，只重新识别，不重发运动
-# 显式 xyz 是 TCP 松爪点，仍需通过右侧位置/高度检查。
-# 保持拔管姿态，横移后下降松爪，不额外上升 10 cm、不 go home。
-drop_xyz:
-  left: null
-  right: null
-drop_description: Select a clear empty tabletop area strictly to the RIGHT of the RED
-  rack, about 12-30 cm away, at a similar front/back position. Never choose the front
-  or left side. Exclude all objects, previously dropped vials, robot parts, table
-  edges and the rack. The whole drop area must be bare tabletop. Return found=false
-  if unavailable.
-
 # 逻辑孔位在当前腕相机画面中的方向。架子旋转、切换机械臂或切换开合方向后
 # 必须核对；夹爪转 90 度时腕相机画面方向也会变化，不能直接照搬另一姿态。
 # row1_at 为架子“上”边，col1_at 为架子“左”边在图像中的位置。

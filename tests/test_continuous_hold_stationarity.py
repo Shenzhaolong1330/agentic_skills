@@ -1,6 +1,7 @@
 """Read-only settling regressions using synthetic feedback, never robot motion."""
 import io
 import json
+import os
 import unittest
 from contextlib import redirect_stderr
 from unittest.mock import patch
@@ -120,14 +121,36 @@ class HoldStationarityTests(unittest.TestCase):
         self.assertEqual(self.hold_reads, 5)
         self.assert_read_only_hold()
 
-    def test_excessive_speed_is_not_treated_as_residual_settling(self):
+    def test_above_old_speed_cap_resets_hold_window_until_actually_stationary(self):
         def mutate(observation):
             if self.hold_reads == 4:
                 observation['left_arm']['native_robot_state']['joint_velocities'][0] = .16
         self.mutate = mutate
-        with self.assertRaisesRegex(adapter.ContinuousP2PError, 'speed or wrench limit'):
-            self.run_servo()
-        self.assertEqual(self.hold_reads, 4)
+        result = self.run_servo()
+        self.assertTrue(result['ok'])
+        self.assertGreaterEqual(self.hold_reads, 8)
+        self.assert_read_only_hold()
+
+    def test_explicit_arrival_uses_bounded_millimetre_stationarity(self):
+        def oscillate(observation):
+            observation['left_arm']['native_robot_state']['torso_eef_pose']['position'][0] += .0004 * (self.hold_reads % 2)
+        self.mutate = oscillate
+        policy = {'position_tolerance_m': .005, 'rotation_tolerance_rad': .2, 'warning_multiplier': 2}
+        with patch.dict(os.environ, {adapter.legacy.ARRIVAL_POLICY_ENV: json.dumps(policy)}):
+            result = self.run_servo()
+        self.assertTrue(result['ok'])
+        self.assert_read_only_hold()
+        self.assertTrue(all(e['limits']['translation_drift_m'] == .001 for e in self.events()))
+        self.assertLess(self.clock.now - self.hold_started, 2.)
+
+    def test_explicit_arrival_does_not_accept_persistent_large_drift(self):
+        def oscillate(observation):
+            observation['left_arm']['native_robot_state']['torso_eef_pose']['position'][1] += .0012 * (self.hold_reads % 2)
+        self.mutate = oscillate
+        policy = {'position_tolerance_m': .005, 'rotation_tolerance_rad': .2, 'warning_multiplier': 2}
+        with patch.dict(os.environ, {adapter.legacy.ARRIVAL_POLICY_ENV: json.dumps(policy)}):
+            with self.assertRaisesRegex(adapter.ContinuousP2PError, 'within 6 seconds'):
+                self.run_servo()
         self.assert_read_only_hold()
 
 

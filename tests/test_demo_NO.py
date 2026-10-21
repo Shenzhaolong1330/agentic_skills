@@ -59,6 +59,101 @@ class DemoTests(unittest.TestCase):
             self.assertTrue(report["inventory_complete"])
             self.assertFalse(report["completion_flag"])
 
+    def test_resume_context_skips_only_commands_before_failed_stage(self):
+        c = config()
+        normalized = {**c, "p2p": demo.p2p_settings(c)}
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            demo.write_json(root / "config_snapshot.json", normalized)
+            demo.write_json(root / "command_plan.json", [
+                {"stage": "inventory", "executed": True},
+                {"stage": "grasp_handover_1", "executed": True},
+                {"stage": "insert_1", "executed": True},
+            ])
+            demo.write_json(root / "task_result.json", {
+                "completion_flag": False,
+                "mode": "live",
+                "last_stage": {"stage": "insert_1"},
+            })
+            context = demo.load_resume_context(root, c)
+            self.assertEqual(context["failed_stage"], "insert_1")
+            self.assertEqual(context["completed_stages"], {"inventory", "grasp_handover_1"})
+            self.assertNotIn("insert_1", context["completed_stages"])
+
+            changed = {**c, "motion_position_tolerance_m": 0.006}
+            with self.assertRaisesRegex(ValueError, "config_snapshot"):
+                demo.load_resume_context(root, changed)
+
+    def test_resume_rejects_ambiguous_grasp_or_release_failure(self):
+        c = config()
+        with tempfile.TemporaryDirectory() as temp:
+            context = {
+                "events": [],
+                "completed_stages": set(),
+                "failed_stage": "grasp_handover_1",
+                "attempt": 1,
+            }
+            task = demo.Demo(c, SKILL / "config/demo_1_vial_insert_extract.yaml",
+                             temp, "mock", resume_context=context)
+            with self.assertRaisesRegex(RuntimeError, "不能自动恢复"):
+                task.validate_resume_boundary()
+
+    def test_demo2_resume_skips_completed_objects_and_grasps(self):
+        for failed_stage in ('object_2', 'drop_area_2'):
+            with self.subTest(stage=failed_stage), tempfile.TemporaryDirectory() as temp:
+                c = {**config(2), 'count': 2, 'pick_arm': 'left'}
+                completed = {'grasp_handover_1', 'drop_1_right'}
+                if failed_stage == 'drop_area_2':
+                    completed.add('grasp_handover_2')
+                context = {'events': [
+                    {'stage': 'grasp_geometry_1', 'receiver': 'right'},
+                    {'stage': 'grasp_geometry_2', 'receiver': 'right'}],
+                    'completed_stages': completed, 'failed_stage': failed_stage, 'attempt': 1}
+                with redirect_stdout(io.StringIO()):
+                    task = demo.Demo(c, SKILL / 'config/demo_2_elongated_handover.yaml',
+                                     temp, 'mock', resume_context=context)
+                    with patch.object(task, 'verify_resume_holder') as verify:
+                        task.run()
+                stages = [e['stage'] for e in task.events]
+                self.assertNotIn('object_1', stages)
+                self.assertNotIn('grasp_handover_1', stages)
+                self.assertNotIn('drop_1_right', stages)
+                self.assertIn('drop_2_right', stages)
+                if failed_stage == 'drop_area_2':
+                    verify.assert_called_once_with(2, 'right')
+                    self.assertNotIn('grasp_handover_2', stages)
+                    self.assertNotIn('object_2', stages)
+                else:
+                    verify.assert_not_called()
+                    command = next(e['argv'] for e in task.events if e['stage'] == 'grasp_handover_2')
+                    self.assertEqual(command[command.index('--max-correction-iters') + 1], '15')
+                    self.assertIn('--continue-on-tolerance-miss', command)
+
+    def test_demo2_resume_rejects_ambiguous_physical_stages(self):
+        for stage in ('grasp_handover_1', 'open_before_grasp_1_left', 'drop_1_right'):
+            with self.subTest(stage=stage), tempfile.TemporaryDirectory() as temp:
+                context = {'events': [], 'completed_stages': set(), 'failed_stage': stage, 'attempt': 1}
+                with redirect_stdout(io.StringIO()):
+                    task = demo.Demo(config(2), SKILL / 'config/demo_2_elongated_handover.yaml',
+                                     temp, 'mock', resume_context=context)
+                with self.assertRaisesRegex(RuntimeError, '不能自动恢复'):
+                    task.validate_resume_boundary()
+
+    def test_resume_pose_helpers_use_last_saved_target_and_quaternion_distance(self):
+        payload = {
+            "stages": [
+                {"left_target": [0, 0, 0, 0, 0, 0]},
+                {"nested": {"right_target": [1, 2, 3, 0, 0, 0.2]}},
+                {"right_target": [4, 5, 6, 0, 0, 0.4]},
+            ]
+        }
+        self.assertEqual(demo.last_saved_holder_target(payload, "right"), [4, 5, 6, 0, 0, 0.4])
+        quaternion = demo.rotvec_to_quaternion([0, 0, 0.4])
+        self.assertAlmostEqual(demo.quaternion_distance_rad(quaternion, quaternion), 0.0)
+        self.assertAlmostEqual(
+            demo.quaternion_distance_rad(quaternion, [-value for value in quaternion]), 0.0
+        )
+
     def run_mock(self, c, folder):
         task = demo.Demo(c, SKILL / "config" / f"{demo.DEMO_NAMES[c['demo']]}.yaml", folder, "mock")
         with patch.object(demo.subprocess, "run", side_effect=AssertionError("offline must not spawn children")), redirect_stdout(io.StringIO()):
@@ -94,10 +189,10 @@ class DemoTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "已占用"):
             demo.validate(c)
         c = config()
-        c["cycles"][0]["extract"] = [2, 1]
+        c["cycles"][0]["extract"] = [3, 1]
         with self.assertRaisesRegex(ValueError, "空孔"):
             demo.validate(c)
-        c["initial_occupied"] = [[2, 1]]
+        c["initial_occupied"] = [[3, 1]]
         demo.validate(c)
 
     def test_hold_requires_single_object(self):
@@ -259,6 +354,45 @@ class DemoTests(unittest.TestCase):
         # Motion speed changes do not relax grasp arrival tolerances.
         self.assertEqual(argv[argv.index("--position-tolerance-m") + 1], "0.005")
 
+    def test_demo1_configures_all_grasp_tolerances_and_explicit_miss_continuation(self):
+        c = config()
+        with tempfile.TemporaryDirectory() as temp:
+            task = self.run_mock(c, temp)
+        argv = next(e["argv"] for e in task.events if e["stage"] == "grasp_handover_1")
+        self.assertEqual(float(argv[argv.index("--position-tolerance-m") + 1]), 0.005)
+        self.assertEqual(float(argv[argv.index("--rotation-tolerance-rad") + 1]), 0.20)
+        self.assertEqual(float(argv[argv.index("--pregrasp-xy-rotation-tolerance-rad") + 1]), 0.20)
+        self.assertEqual(int(argv[argv.index("--max-correction-iters") + 1]), 15)
+        self.assertEqual(float(argv[argv.index("--max-tracking-translation-bias-m") + 1]), 0.050)
+        self.assertEqual(float(argv[argv.index("--max-tracking-rotation-bias-rad") + 1]), 1.0)
+        self.assertIn("--continue-on-tolerance-miss", argv)
+
+        right_config = {**c, "pick_arm": "right"}
+        with tempfile.TemporaryDirectory() as temp:
+            right_task = self.run_mock(right_config, temp)
+        right_argv = next(e["argv"] for e in right_task.events if e["stage"] == "grasp_handover_1")
+        self.assertEqual(float(right_argv[right_argv.index("--position-tolerance-m") + 1]), 0.005)
+        self.assertEqual(float(right_argv[right_argv.index("--rotation-tolerance-rad") + 1]), 0.20)
+        self.assertEqual(float(right_argv[right_argv.index("--pregrasp-xy-rotation-tolerance-rad") + 1]), 0.20)
+
+        for key in ("left_grasp_position_tolerance_m", "left_grasp_rotation_tolerance_rad",
+                    "left_grasp_pregrasp_xy_rotation_tolerance_rad"):
+            for value in (0, -0.1, float("nan"), True, "0.15"):
+                invalid = {**c, key: value}
+                with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                    demo.validate(invalid)
+        for key in ("grasp_max_tracking_translation_bias_m", "grasp_max_tracking_rotation_bias_rad"):
+            for value in (0, -0.1, float("nan"), True, "0.05"):
+                invalid = {**c, key: value}
+                with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                    demo.validate(invalid)
+        for value in (-1, 1.5, True, "15"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                demo.validate({**c, "grasp_max_correction_iters": value})
+        for value in (0, 1, "true", None):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                demo.validate({**c, "grasp_continue_on_tolerance_miss": value})
+
     def test_invalid_p2p_config_rejected_before_motion(self):
         for value in (-0.1, 0, float("nan"), True, "fast"):
             c = config()
@@ -329,15 +463,43 @@ class DemoTests(unittest.TestCase):
         commands = [e["argv"] for e in task.events if e["stage"].startswith("extract_observe_")]
         self.assertEqual(len(commands), 4)
         for command in commands:
-            for flag, value in (("--max-correction-iters", "10"),
-                                ("--position-tolerance-m", "0.003"),
-                                ("--rotation-tolerance-rad", "0.03")):
+            for flag, value in (("--max-correction-iters", "15"),
+                                ("--position-tolerance-m", "0.005"),
+                                ("--rotation-tolerance-rad", "0.2"),
+                                ("--max-tracking-translation-bias-m", "0.05"),
+                                ("--max-tracking-rotation-bias-rad", "1.0")):
                 self.assertEqual(command[command.index(flag) + 1], value)
+            self.assertIn("--continue-on-tolerance-miss", command)
             self.assertEqual(command.count("--no-yield-non-holder-arm"), 1)
         for value in (0, -1, True, 1.5, "10"):
             c["extract_observe_max_correction_iters"] = value
             with self.subTest(value=value), self.assertRaises(ValueError):
                 demo.validate(c)
+
+    def test_demo1_forwards_unified_motion_policy_to_every_cartesian_subflow(self):
+        with tempfile.TemporaryDirectory() as temp:
+            task = self.run_mock(config(), temp)
+        commands = {
+            event["stage"]: event["argv"]
+            for event in task.events
+            if "argv" in event
+        }
+        selected = [
+            commands["grasp_handover_1"],
+            commands["insert_1"],
+            commands["extract_observe_1"],
+            commands["extract_1_right"],
+            commands["drop_1_right"],
+        ]
+        for argv in selected:
+            self.assertIn("--continue-on-tolerance-miss", argv)
+            self.assertEqual(float(argv[argv.index("--max-tracking-translation-bias-m") + 1]), 0.05)
+            self.assertEqual(float(argv[argv.index("--max-tracking-rotation-bias-rad") + 1]), 1.0)
+        insert = commands["insert_1"]
+        for prefix in ("observe", "wrist", "insert"):
+            self.assertEqual(float(insert[insert.index(f"--{prefix}-position-tolerance-m") + 1]), 0.005)
+            self.assertEqual(float(insert[insert.index(f"--{prefix}-rotation-tolerance-rad") + 1]), 0.20)
+            self.assertEqual(int(insert[insert.index(f"--{prefix}-max-correction-iters") + 1]), 15)
 
     def test_camera_reset_exhaustion_is_not_hidden_by_last_uvc_error(self):
         stderr = ('[tube-insertion] RealSense reset attempt 3/3 failed\n'
@@ -415,9 +577,34 @@ class DemoTests(unittest.TestCase):
                     drop = next(e['argv'] for e in task.events if e['stage'] == f'drop_{i}_{side}')
                     self.assertNotIn('--go-home-after-success', drop)
 
+    def test_extract_only_middle_slots_reach_plan_and_locator_in_order(self):
+        order = [[2, 2], '左上', [1, 2], [2, 1]]
+        expected = [[2, 2], [1, 1], [1, 2], [2, 1]]
+        for mode in ('dry_run', 'mock'):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temp:
+                c = {**config(4), 'extract_order': order}
+                demo.validate(c)
+                task = demo.Demo(c, SKILL / 'config/demo_4_vial_extract.yaml', temp, mode)
+                with redirect_stdout(io.StringIO()):
+                    task.plan() if mode == 'dry_run' else task.run()
+                stages = ([e for e in task.events if e['stage'] in
+                           [f'extract_{i}' for i in range(1, 5)]] if mode == 'dry_run' else
+                          [e for e in task.events if e['stage'].startswith('extract_selection_')])
+                self.assertEqual([e['slot'] for e in stages], expected)
+                for i, (row, col) in enumerate(expected, 1):
+                    for side in ('left', 'right'):
+                        generated = yaml.safe_load((Path(temp) / 'configs' / f'cap_{i}_{side}.yaml').read_text())
+                        self.assertIn(f'exactly row {row}, column {col}', generated['target']['description'])
+
     def test_extract_only_rejects_invalid_order_and_orientation_before_motion(self):
         for updates in ({'extract_order': ['左上'] * 4}, {'extract_order': ['左上', '左下', '右上']},
                         {'extract_order': ['左上', '左下', '右上', '中间']},
+                        {'extract_order': ['左上', [1, 1], [2, 1], [2, 2]]},
+                        {'extract_order': [[2, 1], [2, 1], [1, 1], [1, 2]]},
+                        {'extract_order': [[0, 1], [2, 1], [1, 1], [1, 2]]},
+                        {'extract_order': [[4, 1], [2, 1], [1, 1], [1, 2]]},
+                        {'extract_order': [[2, 3], [2, 1], [1, 1], [1, 2]]},
+                        {'extract_order': [None, [2, 1], [1, 1], [1, 2]]},
                         {'gripper_opening_direction': True}, {'gripper_opening_direction': 3},
                         {'extract_arm': 'auto'}):
             c = {**config(4), **updates}
@@ -466,75 +653,28 @@ class DemoTests(unittest.TestCase):
                     task.run()
             self.assertFalse(any(e['stage'].startswith('open_for_extract') for e in task.events))
 
-    def test_drop_must_be_right_and_cannot_fall_back_to_front(self):
-        c = config(4)
-        rack = [.4956, .0011, -.2024]
-        demo.validate_right_drop([.49, -.20, -.23], rack, c, surface=True)
-        for xyz in ([.3321, .0101, -.2221], [.49, .20, -.23], [.49, -.5, -.23],
-                    [.1, -.20, -.23], [.49, -.20, .1], [.49, float('nan'), -.23]):
-            with self.subTest(xyz=xyz), self.assertRaises(ValueError):
-                demo.validate_right_drop(xyz, rack, c, surface=True)
-
-    def test_rack_misidentified_as_table_is_rejected_in_image_space(self):
-        rack = {'intrinsics': {'width': 640, 'height': 480},
-                'detection': {'bbox': dict(x_min=353., y_min=148., x_max=452., y_max=261.)}}
-        wrong = {'intrinsics': rack['intrinsics'],
-                 'detection': {'bbox': dict(x_min=371.2, y_min=168., x_max=403.2, y_max=216.)}}
-        with self.assertRaisesRegex(ValueError, '红架图像右侧'):
-            demo.validate_drop_image(wrong, rack)
-        good = {'intrinsics': rack['intrinsics'],
-                'detection': {'bbox': dict(x_min=467.2, y_min=168., x_max=531.2, y_max=216.)}}
-        demo.validate_drop_image(good, rack)
-        with self.assertRaises(ValueError):
-            demo.validate_drop_image({**good, 'intrinsics': {'width': 1280, 'height': 720}}, rack)
-
-    def test_rejected_drop_relocalizes_before_exactly_one_drop_command(self):
-        with tempfile.TemporaryDirectory() as temp, redirect_stdout(io.StringIO()):
-            task = demo.Demo(config(4), SKILL / 'config/demo_4_vial_extract.yaml', temp, 'mock')
-            task.extract_rack_reference = task.locate('rack_before_extract_1', task.rack_config())
-            task.extract_rack_xyz = demo.validate_extract_rack(demo.read_json(task.extract_rack_reference), task.c)
-            original = task.locate
-            def bad_first(name, conf, **kwargs):
-                path = original(name, conf, **kwargs)
-                if name == 'drop_area_2':
-                    data = demo.read_json(path)
-                    data['detection']['bbox'].update(x_min=300, x_max=330)
-                    demo.write_json(path, data)
-                return path
-            with patch.object(task, 'locate', side_effect=bad_first) as locate:
-                task.drop(2, 'right')
-            self.assertEqual(locate.call_count, 2)
-            drops = [e for e in task.events if e['stage'] == 'drop_2_right']
-            self.assertEqual(len(drops), 1)
-            self.assertIn(str(Path(temp) / 'drop_area_2_retry_1.json'), drops[0]['argv'])
-            self.assertFalse(any(e['stage'].startswith(('extract_2', 'open_')) for e in task.events))
-            retry_config = yaml.safe_load((Path(temp) / 'configs/drop_2_retry_1.yaml').read_text())
-            self.assertIn('Previous candidate was REJECTED', retry_config['target']['description'])
-
-    def test_repeated_invalid_drop_stops_before_motion(self):
+    def test_demo4_drops_by_compact_relative_right_down_offsets_without_perception(self):
         c = config(4)
         with tempfile.TemporaryDirectory() as temp:
-            task = demo.Demo(c, SKILL / 'config/demo_4_vial_extract.yaml', temp, 'mock')
-            original = task.locate
-            def front_drop(name, conf, **kwargs):
-                path = original(name, conf, **kwargs)
-                if name.startswith('drop_area'):
-                    data = demo.read_json(path)
-                    data['points_base']['bbox_center']['base']['y_m'] = 0
-                    demo.write_json(path, data)
-                return path
-            with patch.object(task, 'locate', side_effect=front_drop), redirect_stdout(io.StringIO()):
-                with self.assertRaisesRegex(ValueError, '落料点不在红架右侧'):
-                    task.run()
-            self.assertFalse(any(e['stage'] in ('drop_1_right', 'extract_selection_2') for e in task.events))
-        with tempfile.TemporaryDirectory() as temp:
-            task = self.run_mock(config(4), temp)
-        for event in task.events:
-            if event['stage'].startswith('drop_') and event['stage'].endswith('_right'):
-                argv = event['argv']
-                self.assertIn('--keep-current-rotation', argv)
-                self.assertEqual(argv[argv.index('--retract-distance-m') + 1], '0')
-                self.assertEqual(argv[argv.index('--max-release-rise-m') + 1], '0.005')
+            task = self.run_mock(c, temp)
+        self.assertFalse(any(e['stage'].startswith('drop_area_') for e in task.events))
+        for index, expected in enumerate(c['drop_relative_offsets_m'], 1):
+            event = next(e for e in task.events if e['stage'] == f'drop_{index}_right')
+            argv = event['argv']
+            self.assertEqual(json.loads(argv[argv.index('--place-offset-xyz') + 1]), expected)
+            self.assertNotIn('--place-result-json', argv)
+            self.assertIn('--keep-current-rotation', argv)
+            self.assertEqual(argv[argv.index('--retract-distance-m') + 1], '0')
+            self.assertEqual(argv[argv.index('--max-release-rise-m') + 1], '0.005')
+            self.assertEqual(argv[argv.index('--max-correction-iters') + 1], '1')
+
+    def test_demo4_rejects_relative_drop_offsets_that_are_not_compact_right_and_down(self):
+        for offset in ([0, .14, -.06], [0, -.14, .06], [.10, -.14, -.06],
+                       [0, -.30, -.06], [0, -.14, -.15], [0, float('nan'), -.06]):
+            c = config(4)
+            c['drop_relative_offsets_m'][0] = offset
+            with self.subTest(offset=offset), self.assertRaises(ValueError):
+                demo.validate(c)
 
     def test_observation_tolerance_is_separate_from_extraction_precision(self):
         c = config(4)
@@ -560,9 +700,9 @@ class DemoTests(unittest.TestCase):
             self.assertEqual(parsed.approach_settle_time_sec, .6)
             self.assertEqual(parsed.settle_time_sec, .4)
             drop = next(e['argv'] for e in task.events if e['stage'] == f'drop_{i}_right')
-            self.assertEqual(float(drop[drop.index('--position-tolerance-m') + 1]), .010)
-            self.assertEqual(float(drop[drop.index('--rotation-tolerance-rad') + 1]), .10)
-            self.assertEqual(float(drop[drop.index('--settle-time-sec') + 1]), .3)
+            self.assertEqual(float(drop[drop.index('--position-tolerance-m') + 1]), .030)
+            self.assertEqual(float(drop[drop.index('--rotation-tolerance-rad') + 1]), .20)
+            self.assertEqual(float(drop[drop.index('--settle-time-sec') + 1]), .2)
         for key in ('extract_observe_position_tolerance_m', 'extract_observe_rotation_tolerance_rad',
                     'extract_position_tolerance_m', 'extract_rotation_tolerance_rad',
                     'extract_lift_position_tolerance_m', 'extract_lift_rotation_tolerance_rad',

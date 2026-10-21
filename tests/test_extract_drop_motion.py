@@ -16,7 +16,7 @@ spec.loader.exec_module(place)
 
 
 class DropMotionTests(unittest.TestCase):
-    def run_fake(self, xyz, *, retract='0', rise='0.005'):
+    def run_fake(self, xyz, *, retract='0', rise='0.005', relative=False):
         client = MagicMock()
         client.ping.return_value = True
         client.open_gripper.return_value = {'ok': True}
@@ -29,7 +29,8 @@ class DropMotionTests(unittest.TestCase):
             moves.append(kw)
             poses[kw['side']] = kw['active_target'].copy()
             return {'stage': kw['stage'], 'ok': True}
-        args = ['--side', 'right', '--place-xyz', json.dumps(xyz), '--execute',
+        target_arg = '--place-offset-xyz' if relative else '--place-xyz'
+        args = ['--side', 'right', target_arg, json.dumps(xyz), '--execute',
                 '--keep-current-rotation', '--max-release-rise-m', rise,
                 '--retract-distance-m', retract, '--release-sleep-sec', '0']
         with patch.object(place, '_load_rpc_module', return_value=rpc), \
@@ -52,6 +53,14 @@ class DropMotionTests(unittest.TestCase):
         np.testing.assert_allclose(moves[1]['active_target'], [.5, -.20, -.13, 2.2, 2.2, .01])
         client.open_gripper.assert_called_once_with('right_arm')
         client.go_home.assert_not_called()
+
+    def test_relative_right_then_down_release_uses_initial_tcp_pose(self):
+        result, moves, client = self.run_fake([-.01, -.14, -.06], relative=True)
+        self.assertEqual(result, 0)
+        self.assertEqual([m['stage'] for m in moves], ['move_xy_keep_current_z', 'move_to_release_xyz'])
+        np.testing.assert_allclose(moves[0]['active_target'], [.49, -.14, -.02, 2.2, 2.2, .01])
+        np.testing.assert_allclose(moves[1]['active_target'], [.49, -.14, -.08, 2.2, 2.2, .01])
+        client.open_gripper.assert_called_once_with('right_arm')
 
     def test_bad_release_height_fails_before_xy_motion_and_release(self):
         with self.assertRaisesRegex(ValueError, 'Release target would rise'):

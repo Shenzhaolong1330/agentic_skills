@@ -1198,10 +1198,13 @@ def move_dual_absolute(
 
     # Persist the intended stage before starting an RPC trajectory. Ctrl-C or a
     # lost reply must not erase the only record of the commanded target.
-    args.artifact_dir.mkdir(parents=True, exist_ok=True)
-    with (args.artifact_dir / "motion_stages.jsonl").open("a", encoding="utf-8") as stream:
-        stream.write(json.dumps({**plan, "event": "before_motion"}, ensure_ascii=False) + "\n")
-        stream.flush()
+    artifact_dir = getattr(args, "artifact_dir", None)
+    if artifact_dir is not None:
+        artifact_dir = Path(artifact_dir)
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        with (artifact_dir / "motion_stages.jsonl").open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps({**plan, "event": "before_motion"}, ensure_ascii=False) + "\n")
+            stream.flush()
     result = client.dual_robot_move_to_ee_pose(
         left_target.tolist(),
         right_target.tolist(),
@@ -1217,18 +1220,61 @@ def move_dual_absolute(
         position_tolerance_m=args.position_tolerance_m,
         rotation_tolerance_rad=args.rotation_tolerance_rad,
         max_correction_iters=args.max_correction_iters,
+        max_tracking_translation_bias_m=getattr(args, "max_tracking_translation_bias_m", 0.025),
+        max_tracking_rotation_bias_rad=getattr(args, "max_tracking_rotation_bias_rad", 0.20),
         max_steps=args.max_steps,
     )
-    with (args.artifact_dir / "motion_stages.jsonl").open("a", encoding="utf-8") as stream:
-        stream.write(json.dumps({**plan, "event": "after_motion", "result": result}, ensure_ascii=False, default=str) + "\n")
+    if artifact_dir is not None:
+        with (artifact_dir / "motion_stages.jsonl").open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps({**plan, "event": "after_motion", "result": result}, ensure_ascii=False, default=str) + "\n")
     return {**plan, "result": result}
 
 
-def p2p_stage_succeeded(stage: Mapping[str, Any]) -> bool:
+def p2p_tolerance_miss_reason(
+    stage: Mapping[str, Any], args: argparse.Namespace | None = None
+) -> str | None:
+    """Return the bounded, explicitly continuable reason for a P2P miss."""
+    if not bool(stage.get("execute")):
+        return None
+    result = stage.get("result")
+    if not isinstance(result, Mapping) or bool(result.get("ok")):
+        return None
+    stalled = result.get("stalled")
+    stalled_reason = stalled.get("reason") if isinstance(stalled, Mapping) else None
+    if stalled_reason == "tracking_compensation_limit":
+        return stalled_reason
+    final_error = result.get("final_error")
+    correction_index = final_error.get("correction_index") if isinstance(final_error, Mapping) else None
+    max_corrections = getattr(args, "max_correction_iters", None) if args is not None else None
+    if (
+        isinstance(correction_index, int)
+        and isinstance(max_corrections, int)
+        and correction_index >= max_corrections
+    ):
+        return "max_correction_iters"
+    return None
+
+
+def p2p_stage_succeeded(
+    stage: Mapping[str, Any], args: argparse.Namespace | None = None
+) -> bool:
     if not bool(stage.get("execute")):
         return True
     result = stage.get("result")
-    return isinstance(result, Mapping) and bool(result.get("ok"))
+    if isinstance(result, Mapping) and bool(result.get("ok")):
+        return True
+    reason = p2p_tolerance_miss_reason(stage, args)
+    if args is not None and bool(getattr(args, "continue_on_tolerance_miss", False)) and reason:
+        if isinstance(stage, dict):
+            stage["continued_after_tolerance_miss"] = True
+            stage["tolerance_miss_reason"] = reason
+        print(
+            f"WARNING: {stage.get('stage', 'p2p')} continuing after tolerance miss; reason={reason}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return True
+    return False
 
 
 def protected_insert(
@@ -1496,6 +1542,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--position_tolerance_m", "--position-tolerance-m", dest="position_tolerance_m", type=float, default=0.003)
     parser.add_argument("--rotation_tolerance_rad", "--rotation-tolerance-rad", dest="rotation_tolerance_rad", type=float, default=0.03)
     parser.add_argument("--max_correction_iters", "--max-correction-iters", dest="max_correction_iters", type=int, default=1)
+    parser.add_argument("--max-tracking-translation-bias-m", type=float, default=0.025)
+    parser.add_argument("--max-tracking-rotation-bias-rad", type=float, default=0.20)
+    parser.add_argument(
+        "--continue-on-tolerance-miss",
+        action="store_true",
+        help=(
+            "Continue later stages only after bounded tracking compensation or correction "
+            "iterations are exhausted; other failures still stop."
+        ),
+    )
     parser.add_argument("--max_steps", "--max-steps", dest="max_steps", type=int, default=3000)
     parser.add_argument("--compact", action="store_true")
     return parser
@@ -1512,6 +1568,10 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--yield-home-rate-hz must be a positive finite value")
     if not np.isfinite(args.rack_capture_ready_timeout_sec) or args.rack_capture_ready_timeout_sec <= 0.0:
         raise ValueError("--rack-capture-ready-timeout-sec must be a positive finite value")
+    for name in ("max_tracking_translation_bias_m", "max_tracking_rotation_bias_rad"):
+        value = float(getattr(args, name))
+        if not np.isfinite(value) or value <= 0.0:
+            raise ValueError(f"--{name.replace('_', '-')} must be a positive finite value")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1819,7 +1879,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 yield_stage["mode"] = "outward_y"
             report["stages"].append(yield_stage)
-            if not p2p_stage_succeeded(yield_stage):
+            if not p2p_stage_succeeded(yield_stage, args):
                 report["stopped_reason"] = "yield_non_holder_arm_failed"
                 print(json.dumps(report, indent=None if args.compact else 2, ensure_ascii=False, default=str))
                 return 3
@@ -1857,7 +1917,7 @@ def main(argv: list[str] | None = None) -> int:
                 execute=args.execute,
             )
             report["stages"].append(align_stage)
-            if not p2p_stage_succeeded(align_stage):
+            if not p2p_stage_succeeded(align_stage, args):
                 report["stopped_reason"] = "align_holder_tcp_vertical_failed"
                 print(json.dumps(report, indent=None if args.compact else 2, ensure_ascii=False, default=str))
                 return 3
@@ -1921,7 +1981,7 @@ def main(argv: list[str] | None = None) -> int:
             execute=args.execute,
         )
         report["stages"].append(observe_stage)
-        if not p2p_stage_succeeded(observe_stage):
+        if not p2p_stage_succeeded(observe_stage, args):
             report["stopped_reason"] = "move_holder_to_wrist_observation_pose_failed"
             print(json.dumps(report, indent=None if args.compact else 2, ensure_ascii=False, default=str))
             return 3
@@ -1954,7 +2014,7 @@ def main(argv: list[str] | None = None) -> int:
                     execute=args.execute,
                 )
                 report["stages"].append(post_observe_correction_stage)
-                if not p2p_stage_succeeded(post_observe_correction_stage):
+                if not p2p_stage_succeeded(post_observe_correction_stage, args):
                     report["stopped_reason"] = "correct_holder_tcp_vertical_after_observe_failed"
                     print(json.dumps(report, indent=None if args.compact else 2, ensure_ascii=False, default=str))
                     return 3
@@ -2047,7 +2107,7 @@ def main(argv: list[str] | None = None) -> int:
             execute=args.execute,
         )
         report["stages"].append(preinsert_stage)
-        if not p2p_stage_succeeded(preinsert_stage):
+        if not p2p_stage_succeeded(preinsert_stage, args):
             report["stopped_reason"] = "move_holder_to_preinsert_pose_failed"
             print(json.dumps(report, indent=None if args.compact else 2, ensure_ascii=False, default=str))
             return 3
@@ -2079,7 +2139,7 @@ def main(argv: list[str] | None = None) -> int:
             execute=args.execute_insertion,
         )
         report["stages"].append(insert_stage)
-        if not p2p_stage_succeeded(insert_stage):
+        if not p2p_stage_succeeded(insert_stage, args):
             report["stopped_reason"] = "move_holder_to_insert_pose_failed"
             print(json.dumps(report, indent=None if args.compact else 2, ensure_ascii=False, default=str))
             return 3
@@ -2113,7 +2173,7 @@ def main(argv: list[str] | None = None) -> int:
             finish_report["retract_target_pose"] = retract_pose.tolist()
             finish_report["retract_stage"] = retract_stage
             report["finish"] = finish_report
-            if not p2p_stage_succeeded(retract_stage):
+            if not p2p_stage_succeeded(retract_stage, args):
                 report["stopped_reason"] = "retract_holder_after_release_failed"
                 print(json.dumps(report, indent=None if args.compact else 2, ensure_ascii=False, default=str))
                 return 3

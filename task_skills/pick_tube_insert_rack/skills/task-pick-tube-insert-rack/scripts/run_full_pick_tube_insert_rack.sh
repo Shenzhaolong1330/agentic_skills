@@ -27,7 +27,7 @@ MODE="dry_run"
 EXECUTE=0
 STOP_AFTER_INVENTORY=0
 WAIT_BEFORE_MOTION=1
-RESET_AFTER_TUBE_ERROR=1
+RESET_AFTER_TUBE_ERROR=0
 ARTIFACT_DIR=""
 TUBE_RESULT_JSON=""
 RACK_RESULT_JSON=""
@@ -38,8 +38,12 @@ JAW_OPENING_AXIS="y"
 JAW_PERPENDICULAR_TURN="ccw"
 
 LOCATOR_ARGS=()
-GRASP_ARGS=()
-INSERTION_ARGS=()
+GRASP_ARGS=(--pregrasp-xy-position-tolerance-m 0.005 --max-correction-iters 15 --max-tracking-translation-bias-m 0.050
+    --max-tracking-rotation-bias-rad 1.0 --continue-on-tolerance-miss)
+INSERTION_ARGS=(--observe-max-correction-iters 15 --wrist-max-correction-iters 15
+    --wrist-max-posture-correction-iters 15 --insert-max-correction-iters 15
+    --max-tracking-translation-bias-m 0.050 --max-tracking-rotation-bias-rad 1.0
+    --continue-on-tolerance-miss)
 RUNNER_ARGS=()
 RESET_ARGS=()
 
@@ -79,7 +83,8 @@ Live flow options:
   --reset-script PATH      Full robot-reset wrapper used after a tube-stage error.
   --reset-config PATH      Robot reset config.
   --reset-arg ARG          Pass one extra argument to robot-reset; repeat as needed.
-  --no-reset-after-error   Do not reset after grasp/handover or insertion failure.
+  --no-reset-after-error   Stop on stage failure without reset (default).
+  --reset-after-error      Explicitly enable full reset and advance after stage failure.
   --locator-arg ARG       Pass one argument to the one-frame multi-tube locator; repeat as needed.
   --grasp-arg ARG         Pass one argument through to grasp_right_arm_xyz.sh; repeat as needed.
   --insertion-arg ARG     Pass one argument to run_manual_grip_to_insert.py; repeat as needed.
@@ -90,8 +95,8 @@ The live sequence is:
   -> for each cached tube: select tail-side arm -> grasp -> transition handover
   -> move to cached rack pose -> wrist locate current empty hole -> insert -> release -> retract
 
-This wrapper does not reset during a successful flow. By default, a failed
-grasp/handover or insertion stage triggers full robot-reset before the next tube.
+By default, failed stages stop without reset or advancing to the next tube.
+Use --reset-after-error only to explicitly enable the legacy reset policy.
 EOF
 }
 
@@ -140,6 +145,7 @@ while [[ $# -gt 0 ]]; do
         --reset-script) require_value "$@"; ROBOT_RESET_SCRIPT="$2"; shift 2 ;;
         --reset-config) require_value "$@"; ROBOT_RESET_CONFIG="$2"; shift 2 ;;
         --reset-arg) require_value "$@"; RESET_ARGS+=("$2"); shift 2 ;;
+        --reset-after-error) RESET_AFTER_TUBE_ERROR=1; shift ;;
         --no-reset-after-error) RESET_AFTER_TUBE_ERROR=0; shift ;;
         --locator-arg) require_value "$@"; LOCATOR_ARGS+=("$2"); shift 2 ;;
         --grasp-arg) require_value "$@"; GRASP_ARGS+=("$2"); shift 2 ;;
@@ -434,8 +440,8 @@ reset_after_tube_error() {
     local failed_stage="$2"
     local reset_log="$ARTIFACT_DIR/reset_after_tube_$(printf '%02d' "$tube_number")_${failed_stage}.log"
     if [[ "$RESET_AFTER_TUBE_ERROR" != "1" ]]; then
-        printf 'WARNING: reset after error is disabled; continuing without reset\n' >&2
-        return 0
+        printf 'ERROR: stage failed; automatic reset disabled; stopping without further motion\n' >&2
+        return 1
     fi
     printf '[full-flow] tube %d: %s failed; running full robot reset before continuing\n' \
         "$tube_number" "$failed_stage" >&2
@@ -471,6 +477,8 @@ for tube_array_index in "${!TUBE_RESULTS[@]}"; do
     require_fresh_realsense_frames "before_tube_${tube_number}_motion"
     printf '[full-flow] tube %d/%d: select arm, grasp, and hand over\n' \
         "$tube_number" "${#TUBE_RESULTS[@]}"
+    handover_result="$ARTIFACT_DIR/handover_tube_${tube_number}.json"
+    rm -f "$handover_result"
     GRASP_CMD=(
         python3 "$SELECT_AND_GRASP"
         --result-json "$tube_result"
@@ -478,8 +486,9 @@ for tube_array_index in "${!TUBE_RESULTS[@]}"; do
         --grasp-arg=--go-home-before-transition
     )
     for arg in "${GRASP_ARGS[@]}"; do
-        GRASP_CMD+=(--grasp-arg "$arg")
+        GRASP_CMD+=("--grasp-arg=$arg")
     done
+    GRASP_CMD+=(--grasp-arg=--handover-result-json "--grasp-arg=$handover_result")
     if "${GRASP_CMD[@]}"; then
         printf '[full-flow] tube %d/%d: grasp and handover completed\n' \
             "$tube_number" "${#TUBE_RESULTS[@]}"
@@ -493,6 +502,16 @@ for tube_array_index in "${!TUBE_RESULTS[@]}"; do
         fi
         exit 1
     fi
+
+    holder_side=$(python3 - "$handover_result" <<'PYHOLDER'
+import json, sys
+with open(sys.argv[1]) as stream:
+    result = json.load(stream)
+if result.get("handover_complete") is not True or result.get("receiver") not in ("left", "right"):
+    raise SystemExit("ERROR: missing confirmed handover receiver; refusing insertion")
+print(result["receiver"])
+PYHOLDER
+    )
 
     if [[ "$INSERT_LOG_FILE" == *.log ]]; then
         tube_insert_log="${INSERT_LOG_FILE%.log}_tube_$(printf '%02d' "$tube_number").log"
@@ -513,7 +532,7 @@ for tube_array_index in "${!TUBE_RESULTS[@]}"; do
     INSERT_CMD=(
         python3 "$INSERT_FLOW"
         --execute
-        --holder-side auto
+        --holder-side "$holder_side"
         --rack-config "$RACK_CONFIG"
         --rack-result-json "$RACK_RESULT_JSON"
         --rack-rgb "$ARTIFACT_DIR/initial_tube_inventory_rgb.jpg"

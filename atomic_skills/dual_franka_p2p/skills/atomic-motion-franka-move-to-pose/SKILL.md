@@ -54,10 +54,10 @@ Standalone scripts and Python callers default to `segmented` when
 - Child-process environment: `FRANKA_P2P_CONTROLLER=continuous_servo`.
 
 An explicit API/CLI controller overrides the environment. Only `segmented` and
-`continuous_servo` are valid. Continuous mode requires `smooth=True` and real
+`continuous_servo`, and `external_tracking` are valid. Continuous mode requires `smooth=True` and real
 timed dispatch; it rejects `smooth=False` and `sleep=False`.
 
-The console selects `continuous_servo` by default for free-space P2P subprocesses
+The console selects `external_tracking` by default for free-space P2P subprocesses
 through this environment variable. To roll those commands back to the retained
 implementation, set `"p2p_controller": "segmented"` in
 `/home/deepcybo/agent_ws/robot_agent_lab/configs/runtime.json` before a new console
@@ -65,7 +65,36 @@ task. The console routes contact insertion and Home/reset procedures through
 their existing policies; changing the free-space P2P controller does not replace
 those procedures. The `p2p_controller_selected` event records the actual route.
 
+`external_tracking` advances a quintic reference and applies bounded outer-loop
+feedback to position and attitude throughout the motion, then requires measured
+arrival and a stationary hold. The console currently selects `fast_tracking` for
+authorized repeated trials; the standalone default remains `conservative`.
+At the operator's request, the experimental 0.15 rad/s measured joint-speed stop
+and related predictive slowdown have been removed. Native robot faults and
+stationary start/arrival verification remain. See
+[FAST_FREE_SPACE.md](FAST_FREE_SPACE.md) for limits, selection and rollback.
+This profile retains intermediate attitude checks, the 0.20 rad command-bias
+cap and health/ownership checks. It is not `fast_endpoint`. A 5-second target is
+a reported performance metric, never a substitute for arrival or hold checks.
+The sections below describe the retained `continuous_servo` alternative.
+
 ## Continuous feedback controller
+
+The console can explicitly supply `FRANKA_P2P_ARRIVAL_POLICY` as JSON with
+`position_tolerance_m`, `rotation_tolerance_rad`, and `warning_multiplier`
+(between 1 and 2). This task policy overrides the standalone tolerance clamps
+below. For the current console policy, nominal arrival is 5 mm / 0.2 rad;
+arrival up to 10 mm / 0.4 rad is accepted with `p2p_arrival_warning`, and larger
+endpoint residuals cannot authorize the next stage. Continuous mode brakes at
+the accepted boundary and still requires its full native stationary hold;
+drift outside that boundary fails without settle reacquisition. Reports retain
+the nominal policy, acceptance limits, actual errors and warning status.
+Grasp independently checks fresh measured poses again before continuing.
+Faults, stale feedback, unexpected commands and unconfirmed RPC outcomes are
+never downgraded to tolerance warnings. Compensation caps and speed limits
+remain separate. The console does not inject this policy into contact insertion
+or Home/reset procedures. Without this explicit policy, existing behavior below
+is unchanged.
 
 `continuous_servo` runs a timed outer feedback loop targeting 20 Hz for console
 calls (at least 50 ms between dispatches; a lower requested rate is respected). Each successful

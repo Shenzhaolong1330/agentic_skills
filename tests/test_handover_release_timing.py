@@ -1,6 +1,8 @@
 """Offline handover timing with simulated gripper feedback and a virtual clock."""
 import importlib.util
 import io
+import json
+import tempfile
 from pathlib import Path
 import unittest
 from contextlib import redirect_stdout
@@ -65,11 +67,35 @@ class Grippers:
                  "stamp": {"sec": 1, "nanosec": 0 if self.mode == "stale" else self.reads}}
         if self.mode == "missing":
             state.pop("stamp")
-        return {self.donor: {"gripper": {"position": .8, "closed_position": 1.}},
+        donor_position = 0. if self.opened and self.clock.now - self.opened[-1][1] >= 1.0 else .8
+        return {self.donor: {"gripper": {"position": donor_position, "closed_position": 1.,
+                "open_position": 0., "stamp": {"sec": 1, "nanosec": self.reads}}},
                 self.receiver: {"gripper": state}}
 
 
 class HandoverTimingTests(unittest.TestCase):
+    def test_primary_close_waits_past_threshold_until_motion_settles(self):
+        clock = Clock()
+        client = Grippers(clock, 'right_arm', 'normal')
+        with patch.object(grasp.time, 'sleep', side_effect=clock.sleep), \
+                patch.object(grasp.time, 'monotonic', side_effect=clock.monotonic):
+            _, result = grasp.close_gripper_and_confirm(client, 'left_arm', timeout_sec=5,
+                poll_sec=.1, min_closed_fraction=.35, retries=0, stable_sec=.5)
+        self.assertTrue(result['ok'])
+        self.assertGreaterEqual(clock.now, 2.1)
+
+    def test_donor_open_stale_or_closed_feedback_times_out(self):
+        for mode in ('closed', 'stale'):
+            clock = Clock()
+            class Client:
+                def get_observation(self):
+                    return {'left_arm': {'gripper': {'position': .8 if mode == 'closed' else 0.,
+                        'open_position': 0., 'closed_position': 1., 'stamp': {'sec': 1}}}}
+            with patch.object(grasp.time, 'sleep', side_effect=clock.sleep), \
+                    patch.object(grasp.time, 'monotonic', side_effect=clock.monotonic), \
+                    self.assertRaisesRegex(RuntimeError, 'open feedback not confirmed'):
+                grasp.wait_gripper_open(Client(), 'left_arm', timeout_sec=1)
+
     def run_handover(self, side, mode, *, retreat=False):
         clock = Clock()
         client = Grippers(clock, side, mode)
@@ -83,6 +109,8 @@ class HandoverTimingTests(unittest.TestCase):
             client.target_events.append(("anchor", enabled))
 
         def move(_client, name, left, right, args, **kwargs):
+            if name == "stage4_return_transition":
+                self.assertEqual(kwargs['position_tolerance_m'], .005)
             if name.startswith("post_transfer_retreat_"):
                 client.target_events.append(("retreat", True))
                 client.retreats.append((name, left.copy(), right.copy(), kwargs, clock.now))
@@ -91,6 +119,7 @@ class HandoverTimingTests(unittest.TestCase):
             return (*poses, {})
 
         with (
+            tempfile.TemporaryDirectory() as folder,
             patch.object(grasp, "DualFrankaRobotiqRpcClient", return_value=client),
             patch.object(grasp, "read_ee_poses", return_value=poses),
             patch.object(grasp, "move_stage", side_effect=move),
@@ -103,9 +132,16 @@ class HandoverTimingTests(unittest.TestCase):
             argv = ["--xyz", "[0,0,0]", "--arm", side, "--keep-current-rotation",
                     "--after-close-sleep-sec", "0", "--gripper-close-retries", "0",
                     "--execute"]
+            argv += ['--transition-position-tolerance-m', '0.005']
+            report_path = Path(folder) / 'handover.json'
+            argv += ['--handover-result-json', str(report_path)]
             argv += ["--retreat-after-transfer-m", "0.20"] if retreat else ["--go-home-after-transfer"]
             if mode == "normal":
                 self.assertEqual(grasp.main(argv), 0)
+                result = json.loads(report_path.read_text())
+                self.assertEqual(result['receiver'], client.receiver.removesuffix('_arm'))
+                self.assertTrue(result['donor_open_confirmation']['ok'])
+                self.assertTrue(result['handover_complete'])
             elif mode == "home_failed":
                 with self.assertRaisesRegex(RuntimeError, "after_transfer failed"):
                     grasp.main(argv)

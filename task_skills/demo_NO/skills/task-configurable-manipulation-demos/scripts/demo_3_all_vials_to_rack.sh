@@ -38,7 +38,7 @@ MODE="dry_run"
 EXECUTE=0
 STOP_AFTER_INVENTORY=0
 WAIT_BEFORE_MOTION=1
-RESET_AFTER_TUBE_ERROR=1
+RESET_AFTER_TUBE_ERROR=0
 ARTIFACT_DIR=""
 TUBE_RESULT_JSON=""
 RACK_RESULT_JSON=""
@@ -49,8 +49,14 @@ JAW_OPENING_AXIS="y"
 JAW_PERPENDICULAR_TURN="ccw"
 
 LOCATOR_ARGS=()
-GRASP_ARGS=()
-INSERTION_ARGS=()
+GRASP_ARGS=(--pregrasp-xy-position-tolerance-m 0.005 --max-correction-iters 15 --max-tracking-translation-bias-m 0.050
+    --max-tracking-rotation-bias-rad 1.0 --continue-on-tolerance-miss)
+INSERTION_ARGS=(--observe-max-correction-iters 15 --wrist-max-correction-iters 15
+    --wrist-max-posture-correction-iters 15 --insert-max-correction-iters 15
+    --max-tracking-translation-bias-m 0.050 --max-tracking-rotation-bias-rad 1.0
+    --continue-on-tolerance-miss)
+RESUME=""
+CHECKPOINT="$DEMO_SCRIPT_DIR/demo_3_checkpoint.py"
 RUNNER_ARGS=()
 RESET_ARGS=()
 
@@ -70,6 +76,7 @@ Config defaults: config/demo_3_all_vials_to_rack.env (override via DEMO_CONFIG).
 
 Common options:
   --artifact-dir DIR      Trace/log directory.
+  --resume [DIR]          Resume at a recorded safe boundary; default newest incomplete run.
   --runner-arg ARG        Pass one argument to the non-live task harness; repeat as needed.
 
 Live-only execution gate:
@@ -92,7 +99,8 @@ Live flow options:
   --reset-script PATH      Full robot-reset wrapper used after a tube-stage error.
   --reset-config PATH      Robot reset config.
   --reset-arg ARG          Pass one extra argument to robot-reset; repeat as needed.
-  --no-reset-after-error   Do not reset after grasp/handover or insertion failure.
+  --no-reset-after-error   Stop on stage failure without reset (default).
+  --reset-after-error      Explicitly enable full reset and advance after stage failure.
   --locator-arg ARG       Pass one argument to the one-frame multi-tube locator; repeat as needed.
   --grasp-arg ARG         Pass one argument through to grasp_right_arm_xyz.sh; repeat as needed.
   --insertion-arg ARG     Pass one argument to run_manual_grip_to_insert.py; repeat as needed.
@@ -103,8 +111,8 @@ The live sequence is:
   -> for each cached tube: select tail-side arm -> grasp -> transition handover
   -> move to cached rack pose -> wrist locate current empty hole -> insert -> release -> retract
 
-This wrapper does not reset during a successful flow. By default, a failed
-grasp/handover or insertion stage triggers full robot-reset before the next tube.
+By default, failed stages stop without reset or advancing to the next tube.
+Use --reset-after-error only to explicitly enable the legacy reset policy.
 EOF
 }
 
@@ -125,6 +133,10 @@ while [[ $# -gt 0 ]]; do
         --stop-after-inventory) STOP_AFTER_INVENTORY=1; shift ;;
         --wait-before-motion) WAIT_BEFORE_MOTION=1; shift ;;
         --no-wait-before-motion) WAIT_BEFORE_MOTION=0; shift ;;
+        --resume)
+            RESUME="auto"; shift
+            if [[ $# -gt 0 && "$1" != --* ]]; then RESUME="$1"; shift; fi
+            ;;
         --artifact-dir) require_value "$@"; ARTIFACT_DIR="$2"; shift 2 ;;
         --locator)
             require_value "$@"
@@ -153,6 +165,7 @@ while [[ $# -gt 0 ]]; do
         --reset-script) require_value "$@"; ROBOT_RESET_SCRIPT="$2"; shift 2 ;;
         --reset-config) require_value "$@"; ROBOT_RESET_CONFIG="$2"; shift 2 ;;
         --reset-arg) require_value "$@"; RESET_ARGS+=("$2"); shift 2 ;;
+        --reset-after-error) RESET_AFTER_TUBE_ERROR=1; shift ;;
         --no-reset-after-error) RESET_AFTER_TUBE_ERROR=0; shift ;;
         --locator-arg) require_value "$@"; LOCATOR_ARGS+=("$2"); shift 2 ;;
         --grasp-arg) require_value "$@"; GRASP_ARGS+=("$2"); shift 2 ;;
@@ -191,6 +204,10 @@ fi
 if [[ "$RIGHT_HOLE_CONFIG" == "$ANY_POSE_ROOT/config_rack_empty_hole_right_wrist_generic_vlm.yaml" && ! -e "$RIGHT_HOLE_CONFIG" ]]; then
     RIGHT_HOLE_CONFIG="$ANY_POSE_ROOT/config_rack_empty_hole_right_wrist_vlm.yaml"
 fi
+if [[ -n "$RESUME" && ( "$MODE" != "live" || "$EXECUTE" != "1" || -n "$ARTIFACT_DIR" ) ]]; then
+    printf 'ERROR: --resume requires --mode live --execute and no --artifact-dir\n' >&2
+    exit 2
+fi
 if [[ "$MODE" != "live" ]]; then
     if [[ "$EXECUTE" == "1" || "$STOP_AFTER_INVENTORY" == "1" ]]; then
         printf 'ERROR: execution and hardware gate flags are only valid with --mode live\n' >&2
@@ -210,6 +227,9 @@ fi
 if [[ "$EXECUTE" != "1" ]]; then
     printf 'ERROR: live mode requires --execute\n' >&2
     exit 2
+fi
+if [[ -n "$RESUME" ]]; then
+    ARTIFACT_DIR="$(python3 "$CHECKPOINT" resolve "$RESUME")"
 fi
 STAMP="$(date +%Y%m%d_%H%M%S)"
 if [[ -z "$ARTIFACT_DIR" ]]; then
@@ -242,6 +262,15 @@ if [[ "$RESET_AFTER_TUBE_ERROR" == "1" ]]; then
         fi
     done
 fi
+
+# Validate persistent state before starting camera services or robot commands.
+CHECKPOINT_SIGNATURE=("$WRIST_PERCEPTION_MODE" "$JAW_OPENING_AXIS" "$JAW_PERPENDICULAR_TURN"
+    "$TUBE_RESULT_JSON" "$RACK_RESULT_JSON" "$RESET_AFTER_TUBE_ERROR"
+    "${GRASP_ARGS[@]}" INSERTION "${INSERTION_ARGS[@]}" LOCATOR "${LOCATOR_ARGS[@]}" RESET "${RESET_ARGS[@]}")
+CHECKPOINT_FILES=("$DEMO_CONFIG" "$TUBE_CONFIG" "$RACK_CONFIG" "$LEFT_HOLE_CONFIG" "$RIGHT_HOLE_CONFIG")
+NEXT_TUBE=$(python3 "$CHECKPOINT" prepare "$ARTIFACT_DIR" "${RESUME:-new}" \
+    --files "${CHECKPOINT_FILES[@]}" --signature "${CHECKPOINT_SIGNATURE[@]}")
+checkpoint() { python3 "$CHECKPOINT" "$1" "$ARTIFACT_DIR" "${2:-0}"; }
 
 mkdir -p "$ARTIFACT_DIR" "$(dirname "$TUBE_RESULT_JSON")" "$(dirname "$RACK_RESULT_JSON")" "$(dirname "$FULL_LOG_FILE")" "$(dirname "$INSERT_LOG_FILE")"
 exec > >(tee -a "$FULL_LOG_FILE") 2>&1
@@ -285,6 +314,7 @@ cleanup_sam_cache() {
 }
 trap cleanup_sam_cache EXIT
 export TASK_PICK_TUBE_SAM_SOCKET="$SAM_CACHE_SOCKET"
+rm -f "$SAM_CACHE_READY"
 printf '[full-flow] starting persistent SAM cache from local Hugging Face files\n'
 "$LOCATOR_PYTHON" "$SAM_CACHE_SERVICE" \
     --serve \
@@ -371,6 +401,7 @@ PY
 
 require_fresh_realsense_frames "startup"
 
+if [[ ! -f "$ARTIFACT_DIR/inventory_complete.json" ]]; then
 printf '[full-flow] stage 1: capture once and inventory all loose tubes plus rack\n'
 (
     cd "$ANY_POSE_ROOT"
@@ -397,6 +428,11 @@ printf '[full-flow] stage 1: capture once and inventory all loose tubes plus rac
     INVENTORY_CMD+=("${LOCATOR_ARGS[@]}")
     "${INVENTORY_CMD[@]}"
 )
+
+checkpoint inventory
+else
+    printf '[full-flow] resume: reuse cached inventory and rack\n'
+fi
 
 mapfile -t TUBE_RESULTS < <(
     "$LOCATOR_PYTHON" -c '
@@ -447,8 +483,8 @@ reset_after_tube_error() {
     local failed_stage="$2"
     local reset_log="$ARTIFACT_DIR/reset_after_tube_$(printf '%02d' "$tube_number")_${failed_stage}.log"
     if [[ "$RESET_AFTER_TUBE_ERROR" != "1" ]]; then
-        printf 'WARNING: reset after error is disabled; continuing without reset\n' >&2
-        return 0
+        printf 'ERROR: stage failed; automatic reset disabled; stopping without further motion\n' >&2
+        return 1
     fi
     printf '[full-flow] tube %d: %s failed; running full robot reset before continuing\n' \
         "$tube_number" "$failed_stage" >&2
@@ -481,9 +517,15 @@ PY
 for tube_array_index in "${!TUBE_RESULTS[@]}"; do
     tube_number=$((tube_array_index + 1))
     tube_result="${TUBE_RESULTS[$tube_array_index]}"
+    if (( tube_number < NEXT_TUBE )); then
+        printf '[full-flow] resume: skip completed tube %d\n' "$tube_number"
+        continue
+    fi
     require_fresh_realsense_frames "before_tube_${tube_number}_motion"
     printf '[full-flow] tube %d/%d: select arm, grasp, and hand over\n' \
         "$tube_number" "${#TUBE_RESULTS[@]}"
+    handover_result="$ARTIFACT_DIR/handover_tube_${tube_number}.json"
+    rm -f "$handover_result"
     GRASP_CMD=(
         python3 "$SELECT_AND_GRASP"
         --result-json "$tube_result"
@@ -491,13 +533,16 @@ for tube_array_index in "${!TUBE_RESULTS[@]}"; do
         --grasp-arg=--go-home-before-transition
     )
     for arg in "${GRASP_ARGS[@]}"; do
-        GRASP_CMD+=(--grasp-arg "$arg")
+        GRASP_CMD+=("--grasp-arg=$arg")
     done
+    checkpoint begin "$tube_number"
+    GRASP_CMD+=(--grasp-arg=--handover-result-json "--grasp-arg=$handover_result")
     if "${GRASP_CMD[@]}"; then
         printf '[full-flow] tube %d/%d: grasp and handover completed\n' \
             "$tube_number" "${#TUBE_RESULTS[@]}"
     else
         grasp_returncode=$?
+        checkpoint failed
         GRASP_FAILURE_COUNT=$((GRASP_FAILURE_COUNT + 1))
         printf 'WARNING: tube %d/%d grasp/handover returned %d\n' \
             "$tube_number" "${#TUBE_RESULTS[@]}" "$grasp_returncode" >&2
@@ -506,6 +551,16 @@ for tube_array_index in "${!TUBE_RESULTS[@]}"; do
         fi
         exit 1
     fi
+
+    holder_side=$(python3 - "$handover_result" <<'PYHOLDER'
+import json, sys
+with open(sys.argv[1]) as stream:
+    result = json.load(stream)
+if result.get("handover_complete") is not True or result.get("receiver") not in ("left", "right"):
+    raise SystemExit("ERROR: missing confirmed handover receiver; refusing insertion")
+print(result["receiver"])
+PYHOLDER
+    )
 
     if [[ "$INSERT_LOG_FILE" == *.log ]]; then
         tube_insert_log="${INSERT_LOG_FILE%.log}_tube_$(printf '%02d' "$tube_number").log"
@@ -526,7 +581,7 @@ for tube_array_index in "${!TUBE_RESULTS[@]}"; do
     INSERT_CMD=(
         python3 "$INSERT_FLOW"
         --execute
-        --holder-side auto
+        --holder-side "$holder_side"
         --rack-config "$RACK_CONFIG"
         --rack-result-json "$RACK_RESULT_JSON"
         --rack-rgb "$ARTIFACT_DIR/initial_tube_inventory_rgb.jpg"
@@ -552,10 +607,12 @@ for tube_array_index in "${!TUBE_RESULTS[@]}"; do
         if [[ -n "$target_slot_id" ]]; then
             "$LOCATOR_PYTHON" "$RACK_GRID_STATE" --grid "$ARTIFACT_DIR/rack_grid.json" --slot "$target_slot_id" --mark occupied >/dev/null
         fi
+        checkpoint complete "$tube_number"
         printf '[full-flow] tube %d/%d: insertion flow completed\n' \
             "$tube_number" "${#TUBE_RESULTS[@]}"
     else
         insert_returncode=$?
+        checkpoint failed
         INSERT_FAILURE_COUNT=$((INSERT_FAILURE_COUNT + 1))
         if [[ -n "$target_slot_id" ]]; then
             "$LOCATOR_PYTHON" "$RACK_GRID_STATE" --grid "$ARTIFACT_DIR/rack_grid.json" --slot "$target_slot_id" --mark unknown >/dev/null
@@ -575,3 +632,5 @@ printf '[full-flow] log=%s\n' "$FULL_LOG_FILE"
 if [[ "$GRASP_FAILURE_COUNT" -gt 0 || "$INSERT_FAILURE_COUNT" -gt 0 ]]; then
     exit 1
 fi
+
+checkpoint finish

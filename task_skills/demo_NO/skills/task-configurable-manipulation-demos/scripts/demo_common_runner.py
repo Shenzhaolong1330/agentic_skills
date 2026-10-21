@@ -93,6 +93,116 @@ def write_json(path, data):
     Path(path).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def latest_failed_run(demo_name, root=Path("/tmp/agentic_skills_runs")):
+    candidates = []
+    for path in root.glob(f"{demo_name}_*"):
+        result_path = path / "task_result.json"
+        if not result_path.is_file():
+            continue
+        try:
+            result = read_json(result_path)
+        except (OSError, ValueError):
+            continue
+        if result.get("completion_flag") is not True:
+            candidates.append(path)
+    if not candidates:
+        raise ValueError(f"没有找到可恢复的失败运行: {root / (demo_name + '_*')}")
+    return max(candidates, key=lambda path: path.stat().st_mtime)
+
+
+def load_resume_context(artifacts, config):
+    artifacts = Path(artifacts).resolve()
+    result_path = artifacts / "task_result.json"
+    plan_path = artifacts / "command_plan.json"
+    snapshot_path = artifacts / "config_snapshot.json"
+    for path in (result_path, plan_path, snapshot_path):
+        if not path.is_file():
+            raise ValueError(f"恢复目录缺少必要文件: {path}")
+    result = read_json(result_path)
+    if result.get("completion_flag") is True:
+        raise ValueError(f"运行已经完成，不能恢复: {artifacts}")
+    if result.get("mode") != "live":
+        raise ValueError("--resume 只接受之前的 live 运行目录")
+    expected = {**config, "p2p": p2p_settings(config)}
+    if read_json(snapshot_path) != expected:
+        raise ValueError("当前配置与失败运行的 config_snapshot.json 不一致；拒绝恢复")
+    events = read_json(plan_path)
+    if not isinstance(events, list):
+        raise ValueError(f"无效 command_plan.json: {plan_path}")
+    failed_stage = (result.get("last_stage") or {}).get("stage")
+    state_path = artifacts / "stage_state.json"
+    if state_path.is_file():
+        state = read_json(state_path)
+        completed = set(state.get("completed_stages", []))
+        origin_stage = state.get("resume_origin_stage")
+        if isinstance(origin_stage, str):
+            failed_stage = origin_stage
+    else:
+        failed_index = max(
+            (index for index, event in enumerate(events) if event.get("stage") == failed_stage),
+            default=len(events),
+        )
+        completed = {
+            event.get("stage")
+            for event in events[:failed_index]
+            if event.get("executed") is True and isinstance(event.get("stage"), str)
+        }
+    if not isinstance(failed_stage, str) or not failed_stage:
+        raise ValueError("task_result.json 没有可恢复的失败阶段")
+    return {
+        "artifacts": artifacts,
+        "events": events,
+        "completed_stages": completed,
+        "failed_stage": failed_stage,
+        "attempt": int((read_json(state_path).get("resume_attempt", 0) if state_path.is_file() else 0)) + 1,
+    }
+
+
+def archive_for_resume(path):
+    path = Path(path)
+    if not path.exists():
+        return None
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    archived = path.with_name(f"{path.stem}.before_resume_{stamp}{path.suffix}")
+    path.replace(archived)
+    return archived
+
+
+def last_saved_holder_target(value, side):
+    targets = []
+
+    def visit(item):
+        if isinstance(item, dict):
+            target = item.get(f"{side}_target")
+            if isinstance(target, list) and len(target) == 6:
+                targets.append(target)
+            for child in item.values():
+                visit(child)
+        elif isinstance(item, list):
+            for child in item:
+                visit(child)
+
+    visit(value)
+    return targets[-1] if targets else None
+
+
+def rotvec_to_quaternion(rotvec):
+    angle = math.sqrt(sum(float(value) ** 2 for value in rotvec))
+    if angle < 1e-12:
+        return [0.0, 0.0, 0.0, 1.0]
+    scale = math.sin(angle / 2.0) / angle
+    return [float(value) * scale for value in rotvec] + [math.cos(angle / 2.0)]
+
+
+def quaternion_distance_rad(first, second):
+    norm_first = math.sqrt(sum(float(value) ** 2 for value in first))
+    norm_second = math.sqrt(sum(float(value) ** 2 for value in second))
+    if norm_first < 1e-12 or norm_second < 1e-12:
+        raise ValueError("invalid zero-norm quaternion")
+    dot = abs(sum(float(a) * float(b) for a, b in zip(first, second)) / (norm_first * norm_second))
+    return 2.0 * math.acos(max(-1.0, min(1.0, dot)))
+
+
 def failure_reason(stderr, stdout):
     """Surface the current child's failure instead of a generic exit code."""
     detail = (stderr + "\n" + stdout).strip()
@@ -194,35 +304,42 @@ def extract_tcp_rotvec(choice, jaw_axis="y"):
 
 
 def validate_extract_only(config):
-    retries = config.get("drop_perception_retries", 1)
-    if type(retries) is not int or not 0 <= retries <= 2:
-        raise ValueError("drop_perception_retries must be an integer from 0 to 2")
     if config.get("vlm_reasoning_effort") not in (None, "minimal", "low", "medium", "high"):
         raise ValueError("vlm_reasoning_effort must be minimal/low/medium/high or null")
     if config.get("extract_arm") not in ("left", "right"):
         raise ValueError("extract_arm must be left or right")
     extract_tcp_rotvec(config.get("gripper_opening_direction"), config.get("jaw_opening_axis", "y"))
     order = config.get("extract_order")
-    corners = {"左上", "左下", "右上", "右下"}
-    if not isinstance(order, list) or len(order) != 4 or any(not isinstance(p, str) for p in order) or set(order) != corners:
-        raise ValueError("extract_order 必须恰好包含左上、左下、右上、右下各一次")
-    for key in ("grasp_z_offset_m", "extract_lift_m", "drop_height_m"):
+    if not isinstance(order, list) or len(order) != 4:
+        raise ValueError("extract_order 必须包含四个不同孔位，可写 [行,列] 或四角名称")
+    positions = [tuple(slot(p)) for p in order]
+    if len(set(positions)) != 4:
+        raise ValueError("extract_order 孔位不能重复（四角名称和坐标按同一孔位检查）")
+    for key in ("grasp_z_offset_m", "extract_lift_m"):
         value = config.get(key)
         if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
             raise ValueError(f"{key} must be finite and nonnegative")
-    if min(config["extract_lift_m"], config["drop_height_m"]) <= 0:
-        raise ValueError("extract_lift_m and drop_height_m must be positive")
+    if config["extract_lift_m"] <= 0:
+        raise ValueError("extract_lift_m must be positive")
     for key, default in (("rack_z_range_m", [-0.25, -0.10]),
-                         ("extract_cap_z_range_m", [-0.02, 0.12]),
-                         ("drop_lateral_range_m", [0.12, 0.30])):
+                         ("extract_cap_z_range_m", [-0.02, 0.12])):
         values = config.get(key, default)
         if (not isinstance(values, list) or len(values) != 2 or
                 any(type(v) not in (int, float) or not math.isfinite(v) for v in values) or values[0] >= values[1]):
             raise ValueError(f"{key} must be an increasing finite [min, max]")
-    if config.get("drop_lateral_range_m", [0.12, 0.30])[0] <= 0:
-        raise ValueError("drop_lateral_range_m must stay strictly right of the rack")
+    offsets = config.get("drop_relative_offsets_m")
+    if not isinstance(offsets, list) or len(offsets) != 4:
+        raise ValueError("drop_relative_offsets_m must contain four [dX,dY,dZ] offsets")
+    for index, offset in enumerate(offsets, 1):
+        vector(offset, f"drop_relative_offsets_m[{index - 1}]")
+        if offset[1] >= 0 or offset[2] >= 0:
+            raise ValueError(f"drop_relative_offsets_m[{index - 1}] must move right (-Y) and down (-Z)")
+        if abs(offset[0]) > 0.05 or not 0.08 <= -offset[1] <= 0.25 or not 0.02 <= -offset[2] <= 0.10:
+            raise ValueError(f"drop_relative_offsets_m[{index - 1}] is outside the compact drop limits")
+    drop_corrections = config.get("drop_max_correction_iters", 1)
+    if type(drop_corrections) is not int or drop_corrections < 0:
+        raise ValueError("drop_max_correction_iters must be a non-negative integer")
     for key, default in (("extract_observe_height_m", 0.12), ("extract_cap_max_xy_m", 0.10),
-                         ("drop_max_fore_aft_m", 0.15),
                          ("extract_pregrasp_xy_position_tolerance_m", 0.003),
                          ("extract_pregrasp_xy_rotation_tolerance_rad", 0.03),
                          ("extract_pregrasp_xy_settle_time_sec", 2.0),
@@ -242,11 +359,7 @@ def validate_extract_only(config):
     corrections = config.get("extract_observe_max_correction_iters", 10)
     if type(corrections) is not int or corrections < 1:
         raise ValueError("extract_observe_max_correction_iters must be a positive integer")
-    if not isinstance(config.get("drop_description"), str) or not config["drop_description"].strip():
-        raise ValueError("drop_description is required")
     for side in ("left", "right"):
-        if config["drop_xyz"][side] is not None:
-            vector(config["drop_xyz"][side], f"drop_xyz.{side}")
         view = config["wrist_view"][side]
         if view["row1_at"] not in ("top", "bottom", "left", "right") or view["col1_at"] not in ("top", "bottom", "left", "right"):
             raise ValueError("wrist_view directions must be top/bottom/left/right")
@@ -256,6 +369,18 @@ def validate_extract_only(config):
 
 def validate(config):
     p2p_settings(config)
+    for key, default in (("motion_position_tolerance_m", 0.005),
+                         ("motion_rotation_tolerance_rad", 0.20),
+                         ("motion_max_tracking_translation_bias_m", 0.050),
+                         ("motion_max_tracking_rotation_bias_rad", 1.0)):
+        value = config.get(key, default)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+            raise ValueError(f"{key} must be a positive finite number")
+    motion_corrections = config.get("motion_max_correction_iters", 15)
+    if type(motion_corrections) is not int or motion_corrections < 0:
+        raise ValueError("motion_max_correction_iters must be a non-negative integer")
+    if type(config.get("motion_continue_on_tolerance_miss", False)) is not bool:
+        raise ValueError("motion_continue_on_tolerance_miss must be a boolean")
     for key, default in (("extract_observe_position_tolerance_m", 0.003),
                          ("extract_observe_rotation_tolerance_rad", 0.03)):
         observe_tolerance = config.get(key, default)
@@ -277,6 +402,26 @@ def validate(config):
     retreat = config.get("handover_retreat_distance_m", 0.20)
     if isinstance(retreat, bool) or not isinstance(retreat, (float, int)) or not math.isfinite(retreat) or retreat <= 0:
         raise ValueError("handover_retreat_distance_m must be a positive finite number")
+    for side in ("left", "right"):
+        for suffix, default in (("grasp_position_tolerance_m", 0.005),
+                                ("grasp_rotation_tolerance_rad", 0.05),
+                                ("grasp_pregrasp_xy_rotation_tolerance_rad", 0.05)):
+            key = f"{side}_{suffix}"
+            value = config.get(key, default)
+            if (isinstance(value, bool) or not isinstance(value, (float, int))
+                    or not math.isfinite(value) or value <= 0):
+                raise ValueError(f"{key} must be a positive finite number")
+    correction_iters = config.get("grasp_max_correction_iters", 10)
+    if type(correction_iters) is not int or correction_iters < 0:
+        raise ValueError("grasp_max_correction_iters must be a non-negative integer")
+    for key, default in (("grasp_max_tracking_translation_bias_m", 0.025),
+                         ("grasp_max_tracking_rotation_bias_rad", 0.20)):
+        value = config.get(key, default)
+        if (isinstance(value, bool) or not isinstance(value, (float, int))
+                or not math.isfinite(value) or value <= 0):
+            raise ValueError(f"{key} must be a positive finite number")
+    if type(config.get("grasp_continue_on_tolerance_miss", False)) is not bool:
+        raise ValueError("grasp_continue_on_tolerance_miss must be a boolean")
     if config.get("demo") not in (1, 2):
         raise ValueError("demo must be 1, 2 or 4")
     if type(config.get("grasp_position")) is not int or config["grasp_position"] not in (1, 2):
@@ -439,7 +584,8 @@ def run_logged_command(argv, cwd, stdout_path, stderr_path):
 
 
 class Demo:
-    def __init__(self, config, config_path, artifacts, mode, wait=True, stop_after_inventory=False):
+    def __init__(self, config, config_path, artifacts, mode, wait=True, stop_after_inventory=False,
+                 resume_context=None):
         validate(config)
         if stop_after_inventory and config["demo"] != 1:
             raise ValueError("--stop-after-inventory 仅适用于 Demo 1")
@@ -447,11 +593,36 @@ class Demo:
         config = {**config, "p2p": p2p_settings(config)}
         self.c, self.config_path, self.out, self.mode, self.wait = config, Path(config_path), Path(artifacts), mode, wait
         self.out.mkdir(parents=True, exist_ok=True)
-        self.events = []
+        self.resume_context = resume_context
+        self.events = list(resume_context["events"]) if resume_context else []
+        self.completed_stages = set(resume_context["completed_stages"]) if resume_context else set()
+        self.active_stage = None
+        self.resume_origin_stage = resume_context["failed_stage"] if resume_context else None
+        self.resume_attempt = int(resume_context["attempt"]) if resume_context else 0
         self.extract_rack_reference = None
         self.extract_rack_xyz = None
         self.python = config.get("robot_python", "python3")
         self.locator_python = str(LOCATOR / ".venv/bin/python")
+        if resume_context:
+            self.record("resume_started", failed_stage=self.resume_origin_stage,
+                        resume_attempt=self.resume_attempt, artifacts=str(self.out))
+            self._write_stage_state()
+
+    def _write_stage_state(self):
+        write_json(self.out / "stage_state.json", {
+            "completed_stages": sorted(self.completed_stages),
+            "active_stage": self.active_stage,
+            "resume_origin_stage": self.resume_origin_stage,
+            "resume_attempt": self.resume_attempt,
+        })
+
+    def stage_completed(self, name):
+        return name in self.completed_stages
+
+    def mark_completed(self, name):
+        self.completed_stages.add(name)
+        self.active_stage = None
+        self._write_stage_state()
 
     def record(self, name, **data):
         self.events.append({"stage": name, **data})
@@ -461,6 +632,9 @@ class Demo:
     def command(self, name, argv):
         argv = [str(x) for x in argv]
         self.record(name, argv=argv, executed=self.mode == "live")
+        self.active_stage = name
+        self.resume_origin_stage = name
+        self._write_stage_state()
         if self.mode == "live":
             trace_host = self.c.get("rpc_trace_ssh_host")
             if trace_host and name.startswith("grasp_handover_"):
@@ -486,7 +660,9 @@ class Demo:
             if result.returncode:
                 reason = failure_reason(result.stderr, result.stdout)
                 raise RuntimeError(f"{name} failed ({result.returncode}): {reason}; see {self.out / 'demo.log'}")
+            self.mark_completed(name)
             return result.stdout
+        self.mark_completed(name)
         return ""
 
     def legacy(self, name, script, *args):
@@ -544,6 +720,17 @@ class Demo:
         xyz, direction, arm = grasp_geometry(read_json(source), choice, self.c["pick_arm"])
         receiver = opposite(arm)
         branch = arm if self.c["handover_transition_branch"] == "active" else receiver
+        position_tolerance = self.c.get(
+            f"{arm}_grasp_position_tolerance_m",
+            self.c.get("motion_position_tolerance_m", 0.005),
+        )
+        rotation_tolerance = self.c.get(
+            f"{arm}_grasp_rotation_tolerance_rad",
+            self.c.get("motion_rotation_tolerance_rad", 0.20),
+        )
+        pregrasp_rotation_tolerance = self.c.get(
+            f"{arm}_grasp_pregrasp_xy_rotation_tolerance_rad", rotation_tolerance
+        )
         self.record(f"grasp_geometry_{index}", choice=choice, xyz=xyz, axis=direction, pick_arm=arm, receiver=receiver,
                     source=str(source), fraction_from_tail=0.2 if choice == 1 else 0.8, p2p=self.c["p2p"])
         # The legacy helper does not open the grasping/receiving grippers itself.
@@ -558,8 +745,19 @@ class Demo:
                     "--partner-gripper-stable-sec", self.c.get("handover_receiver_stable_sec", 0.5),
                     "--partner-gripper-close-timeout-sec", self.c.get("handover_close_timeout_sec", 5.0),
                     "--after-partner-close-sleep-sec", self.c.get("handover_release_delay_sec", 2.0),
-                    "--settle-time-sec", "0.7", "--max-correction-iters", "10", "--position-tolerance-m", "0.005",
-                    "--rotation-tolerance-rad", "0.05", "--transition-rotation-tolerance-rad", "0.06", *p2p_args(self.c))
+                    "--settle-time-sec", "0.7", "--max-correction-iters",
+                    self.c.get("grasp_max_correction_iters", self.c.get("motion_max_correction_iters", 10)),
+                    "--max-tracking-translation-bias-m",
+                    self.c.get("grasp_max_tracking_translation_bias_m", self.c.get("motion_max_tracking_translation_bias_m", 0.025)),
+                    "--max-tracking-rotation-bias-rad",
+                    self.c.get("grasp_max_tracking_rotation_bias_rad", self.c.get("motion_max_tracking_rotation_bias_rad", 0.20)),
+                    "--position-tolerance-m", position_tolerance,
+                    "--rotation-tolerance-rad", rotation_tolerance,
+                    "--pregrasp-xy-rotation-tolerance-rad", pregrasp_rotation_tolerance,
+                    "--transition-rotation-tolerance-rad", self.c.get("motion_rotation_tolerance_rad", 0.20),
+                    *(["--continue-on-tolerance-miss"]
+                      if self.c.get("grasp_continue_on_tolerance_miss", self.c.get("motion_continue_on_tolerance_miss", False)) else []),
+                    *p2p_args(self.c))
         return receiver
 
     def transition_path(self):
@@ -580,12 +778,86 @@ class Demo:
                 object_name="vial cap at specified rack position" if occupied else "specified empty red rack hole")
         return paths
 
-    def insert(self, index, receiver, position):
+    def recorded_receiver(self, index):
+        stage = f"grasp_geometry_{index}"
+        for event in reversed(self.events):
+            if event.get("stage") == stage and event.get("receiver") in ("left", "right"):
+                return event["receiver"]
+        raise ValueError(f"恢复记录缺少 {stage} 的 receiver；拒绝猜测持管手")
+
+    def verify_resume_holder(self, index, receiver):
+        stdout = self.command(
+            f"resume_status_insert_{index}_{receiver}",
+            [self.python, GRIPPER, "status", "--side", receiver, "--include-eef-pose"],
+        )
+        try:
+            status = json.loads(stdout)["results"][receiver]
+            state = status["gripper"]
+            position = float(state["position"])
+            open_position = float(state["open_position"])
+            closed_position = float(state["closed_position"])
+            fraction = (position - open_position) / (closed_position - open_position)
+        except (KeyError, TypeError, ValueError, ZeroDivisionError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"无法验证恢复时 {receiver} 夹爪状态；不继续运动") from exc
+        self.record(f"resume_holder_verified_{index}", side=receiver, closed_fraction=fraction,
+                    threshold=0.35, physical_tube_presence_verified=False)
+        if not math.isfinite(fraction) or fraction < 0.35:
+            raise RuntimeError(
+                f"恢复前 {receiver} 夹爪闭合比例仅 {fraction:.3f}，不能确认仍夹持试管；不继续运动"
+            )
+        result_path = self.out / f"insert_{index}" / "result.json"
+        if result_path.is_file():
+            target = last_saved_holder_target(read_json(result_path), receiver)
+            eef_pose = status.get("eef_pose")
+            current_position = eef_pose.get("position") if isinstance(eef_pose, dict) else None
+            current_quaternion = eef_pose.get("orientation_xyzw") if isinstance(eef_pose, dict) else None
+            if target is not None:
+                if not (isinstance(current_position, list) and len(current_position) == 3
+                        and isinstance(current_quaternion, list) and len(current_quaternion) == 4):
+                    raise RuntimeError("恢复前无法读取当前末端位姿；不继续运动")
+                position_error = math.dist([float(value) for value in current_position], target[:3])
+                rotation_error = quaternion_distance_rad(
+                    current_quaternion, rotvec_to_quaternion(target[3:])
+                )
+                position_limit = (
+                    float(self.c.get("motion_max_tracking_translation_bias_m", 0.05))
+                    + float(self.c.get("motion_position_tolerance_m", 0.005))
+                )
+                rotation_limit = (
+                    float(self.c.get("motion_max_tracking_rotation_bias_rad", 1.0))
+                    + float(self.c.get("motion_rotation_tolerance_rad", 0.20))
+                )
+                self.record(
+                    f"resume_pose_verified_{index}",
+                    side=receiver,
+                    position_error_m=position_error,
+                    rotation_error_rad=rotation_error,
+                    position_limit_m=position_limit,
+                    rotation_limit_rad=rotation_limit,
+                )
+                if position_error > position_limit or rotation_error > rotation_limit:
+                    raise RuntimeError(
+                        "当前末端位姿与失败运行保存状态不一致："
+                        f"位置差 {position_error * 1000:.1f} mm / 上限 {position_limit * 1000:.1f} mm，"
+                        f"姿态差 {rotation_error:.3f} rad / 上限 {rotation_limit:.3f} rad；不继续运动"
+                    )
+
+    def insert(self, index, receiver, position, *, resume=False):
         configs = self.hole_configs(index, position)
         dest = self.out / f"insert_{index}"
         rack_config = self.rack_config()
-        rack = self.locate(f"rack_before_insert_{index}", rack_config)
+        cached_rack = self.out / f"rack_before_insert_{index}.json"
+        if resume and cached_rack.is_file():
+            point(read_json(cached_rack), "bbox_center")
+            rack = cached_rack
+            self.record(f"resume_reuse_rack_before_insert_{index}", result_json=str(rack))
+        else:
+            rack = self.locate(f"rack_before_insert_{index}", rack_config)
         result_path = dest / "result.json"
+        if resume:
+            archived = archive_for_resume(result_path)
+            if archived is not None:
+                self.record(f"resume_archive_insert_result_{index}", archived_result_json=str(archived))
         self.command(f"insert_{index}", [self.python, Path(__file__).with_name("demo_1_insert.py"), "--execute", "--holder-side", receiver,
                     "--output-json", result_path,
                     "--rack-config", rack_config, "--rack-result-json", rack,
@@ -593,7 +865,23 @@ class Demo:
                     "--wrist-perception-mode", "legacy-vlm", "--artifact-dir", dest, "--log-file", dest / "insert.log",
                     "--jaw-perpendicular-to-rack", "--jaw-opening-axis", self.c["jaw_opening_axis"],
                     "--jaw-perpendicular-turn", self.c["jaw_perpendicular_turn"],
-                    "--insert-depth-m", self.c["insert_depth_m"], "--hole-standoff-m", self.c["hole_standoff_m"]])
+                    "--insert-depth-m", self.c["insert_depth_m"], "--hole-standoff-m", self.c["hole_standoff_m"],
+                    "--observe-position-tolerance-m", self.c.get("motion_position_tolerance_m", 0.005),
+                    "--observe-rotation-tolerance-rad", self.c.get("motion_rotation_tolerance_rad", 0.20),
+                    "--observe-max-correction-iters", self.c.get("motion_max_correction_iters", 15),
+                    "--wrist-position-tolerance-m", self.c.get("motion_position_tolerance_m", 0.005),
+                    "--wrist-rotation-tolerance-rad", self.c.get("motion_rotation_tolerance_rad", 0.20),
+                    "--wrist-max-correction-iters", self.c.get("motion_max_correction_iters", 15),
+                    "--wrist-max-posture-correction-iters", self.c.get("motion_max_correction_iters", 15),
+                    "--wrist-max-roll-error-rad", self.c.get("motion_rotation_tolerance_rad", 0.20),
+                    "--wrist-max-pitch-error-rad", self.c.get("motion_rotation_tolerance_rad", 0.20),
+                    "--insert-position-tolerance-m", self.c.get("motion_position_tolerance_m", 0.005),
+                    "--insert-rotation-tolerance-rad", self.c.get("motion_rotation_tolerance_rad", 0.20),
+                    "--insert-max-correction-iters", self.c.get("motion_max_correction_iters", 15),
+                    "--max-tracking-translation-bias-m", self.c.get("motion_max_tracking_translation_bias_m", 0.050),
+                    "--max-tracking-rotation-bias-rad", self.c.get("motion_max_tracking_rotation_bias_rad", 1.0),
+                    *(["--continue-on-tolerance-miss"]
+                      if self.c.get("motion_continue_on_tolerance_miss", False) else [])])
         if self.mode == "live":
             try:
                 report = read_json(result_path)
@@ -607,8 +895,13 @@ class Demo:
                         physical_verified=report.get("physical_verified", False))
 
     def drop(self, index, side):
-        xyz = self.c["drop_xyz"][side]
-        if xyz is None:
+        if self.c["demo"] == 4:
+            offset = self.c["drop_relative_offsets_m"][index - 1]
+            args = ["--place-offset-xyz", json.dumps(offset)]
+            xyz = None
+        else:
+            xyz = self.c["drop_xyz"][side]
+        if self.c["demo"] != 4 and xyz is None:
             description = self.c["drop_description"]
             retries = 0
             rack_payload = None
@@ -646,9 +939,7 @@ class Demo:
                     feedback = (f" Previous candidate was REJECTED: {exc}. Choose a different bare-tabletop box"
                                 " fully to the right of the rack; do not return the rack or reuse the rejected area.")
             args = ["--place-result-json", source, "--place-z-offset-m", self.c["drop_height_m"]]
-        else:
-            if self.c["demo"] == 4:
-                validate_right_drop(xyz, self.extract_rack_xyz, self.c)
+        elif self.c["demo"] != 4:
             args = ["--place-xyz", json.dumps(xyz)]
         # The extraction-only demo stays in Cartesian control between vials.
         # Its drop helper releases and retracts without a joint-home switch.
@@ -659,8 +950,16 @@ class Demo:
             args += ["--position-tolerance-m", self.c.get("drop_position_tolerance_m", 0.005),
                      "--rotation-tolerance-rad", self.c.get("drop_rotation_tolerance_rad", 0.035),
                      "--settle-time-sec", self.c.get("drop_settle_time_sec", 1.0)]
+        else:
+            args += ["--position-tolerance-m", self.c.get("motion_position_tolerance_m", 0.005),
+                     "--rotation-tolerance-rad", self.c.get("motion_rotation_tolerance_rad", 0.20)]
         self.legacy(f"drop_{index}_{side}", "place_held_object_on_table.py", "--side", side, *args,
-                    *home_args, "--max-correction-iters", "10")
+                    *home_args,
+                    "--max-correction-iters", self.c.get("drop_max_correction_iters", self.c.get("motion_max_correction_iters", 10)),
+                    "--max-tracking-translation-bias-m", self.c.get("motion_max_tracking_translation_bias_m", 0.025),
+                    "--max-tracking-rotation-bias-rad", self.c.get("motion_max_tracking_rotation_bias_rad", 0.20),
+                    *(["--continue-on-tolerance-miss"]
+                      if self.c.get("motion_continue_on_tolerance_miss", False) else []))
 
     def extract(self, index, receiver, position, *, pause_before_motion=False):
         configs = self.hole_configs(index, position, occupied=True)
@@ -689,9 +988,13 @@ class Demo:
                     "--rack-config", rack_config, "--rack-result-json", rack, "--artifact-dir", observation,
                     "--roll-target-rad", math.pi, "--pitch-zero-rad", "0",
                     *orientation,
-                    "--max-correction-iters", self.c.get("extract_observe_max_correction_iters", 10),
-                    "--position-tolerance-m", self.c.get("extract_observe_position_tolerance_m", 0.003),
-                    "--rotation-tolerance-rad", self.c.get("extract_observe_rotation_tolerance_rad", 0.03),
+                    "--max-correction-iters", self.c.get("extract_observe_max_correction_iters", self.c.get("motion_max_correction_iters", 10)),
+                    "--position-tolerance-m", self.c.get("extract_observe_position_tolerance_m", self.c.get("motion_position_tolerance_m", 0.005)),
+                    "--rotation-tolerance-rad", self.c.get("extract_observe_rotation_tolerance_rad", self.c.get("motion_rotation_tolerance_rad", 0.20)),
+                    "--max-tracking-translation-bias-m", self.c.get("motion_max_tracking_translation_bias_m", 0.025),
+                    "--max-tracking-rotation-bias-rad", self.c.get("motion_max_tracking_rotation_bias_rad", 0.20),
+                    *(["--continue-on-tolerance-miss"]
+                      if self.c.get("motion_continue_on_tolerance_miss", False) else []),
                     "--stop-after-observe")
         runtime = self.out / "configs" / f"cap_runtime_{index}.yaml"
         self.command(f"bind_wrist_calibration_{index}", [self.locator_python, OLD / "prepare_runtime_wrist_locator_config.py",
@@ -704,16 +1007,21 @@ class Demo:
         self.legacy(f"extract_{index}_{receiver}", "grasp_right_arm_xyz.py", "--arm", receiver,
                     "--result-json", cap, "--result-grasp-point", "bbox_center", "--no-result-orientation",
                     "--keep-current-rotation", "--grasp-target-z-offset-m", self.c["grasp_z_offset_m"],
-                    "--lift-after-grasp-m", self.c["extract_lift_m"], "--no-return-transition", "--max-correction-iters", "10",
+                    "--lift-after-grasp-m", self.c["extract_lift_m"], "--no-return-transition",
+                    "--max-correction-iters", self.c.get("motion_max_correction_iters", 10),
+                    "--max-tracking-translation-bias-m", self.c.get("motion_max_tracking_translation_bias_m", 0.025),
+                    "--max-tracking-rotation-bias-rad", self.c.get("motion_max_tracking_rotation_bias_rad", 0.20),
+                    "--position-tolerance-m", self.c.get("extract_position_tolerance_m", self.c.get("motion_position_tolerance_m", 0.005)),
+                    "--rotation-tolerance-rad", self.c.get("extract_rotation_tolerance_rad", self.c.get("motion_rotation_tolerance_rad", 0.20)),
+                    "--lift-position-tolerance-m", self.c.get("extract_lift_position_tolerance_m", self.c.get("motion_position_tolerance_m", 0.005)),
+                    "--lift-rotation-tolerance-rad", self.c.get("extract_lift_rotation_tolerance_rad", self.c.get("motion_rotation_tolerance_rad", 0.20)),
+                    "--pregrasp-xy-position-tolerance-m", self.c.get("extract_pregrasp_xy_position_tolerance_m", self.c.get("motion_position_tolerance_m", 0.005)),
+                    "--pregrasp-xy-rotation-tolerance-rad", self.c.get("extract_pregrasp_xy_rotation_tolerance_rad", self.c.get("motion_rotation_tolerance_rad", 0.20)),
+                    *(["--continue-on-tolerance-miss"]
+                      if self.c.get("motion_continue_on_tolerance_miss", False) else []),
                     *([*p2p_args(self.c),
                        "--settle-time-sec", self.c.get("extract_lift_settle_time_sec", 2.0),
                        "--approach-settle-time-sec", self.c.get("extract_approach_settle_time_sec", 2.0),
-                       "--position-tolerance-m", self.c.get("extract_position_tolerance_m", 0.003),
-                       "--rotation-tolerance-rad", self.c.get("extract_rotation_tolerance_rad", 0.03),
-                       "--lift-position-tolerance-m", self.c.get("extract_lift_position_tolerance_m", self.c.get("extract_position_tolerance_m", 0.003)),
-                       "--lift-rotation-tolerance-rad", self.c.get("extract_lift_rotation_tolerance_rad", self.c.get("extract_rotation_tolerance_rad", 0.03)),
-                       "--pregrasp-xy-position-tolerance-m", self.c.get("extract_pregrasp_xy_position_tolerance_m", 0.003),
-                       "--pregrasp-xy-rotation-tolerance-rad", self.c.get("extract_pregrasp_xy_rotation_tolerance_rad", 0.03),
                        "--pregrasp-xy-settle-time-sec", self.c.get("extract_pregrasp_xy_settle_time_sec", 2.0)]
                       if self.c["demo"] == 4 else []))
         self.drop(index, receiver)
@@ -742,11 +1050,9 @@ class Demo:
                             rotation_tolerance_rad=self.c.get("extract_rotation_tolerance_rad", 0.03),
                             lift_position_tolerance_m=self.c.get("extract_lift_position_tolerance_m", self.c.get("extract_position_tolerance_m", 0.003)),
                             lift_rotation_tolerance_rad=self.c.get("extract_lift_rotation_tolerance_rad", self.c.get("extract_rotation_tolerance_rad", 0.03)))
-                self.record(f"drop_{i}", xyz=self.c["drop_xyz"], table_height_offset_m=self.c["drop_height_m"],
-                            direction="right (base -Y)", lateral_range_m=self.c.get("drop_lateral_range_m", [0.12, 0.30]),
+                self.record(f"drop_{i}", relative_offset_xyz=self.c["drop_relative_offsets_m"][i - 1],
+                            direction="right then down in selected arm base frame",
                             retract_m=0, max_release_rise_m=0.005,
-                            perception_retries=self.c.get("drop_perception_retries", 1),
-                            image_right_of_rack_margin_px=5,
                             settle_time_sec=self.c.get("drop_settle_time_sec", 1.0),
                             position_tolerance_m=self.c.get("drop_position_tolerance_m", 0.005),
                             rotation_tolerance_rad=self.c.get("drop_rotation_tolerance_rad", 0.035))
@@ -785,8 +1091,36 @@ class Demo:
                     configs={k: str(v) for k, v in configs.items()}, handover=False)
         self.record(f"drop_{i}", xyz=self.c["drop_xyz"], table_height_offset_m=self.c["drop_height_m"])
 
+    def validate_resume_boundary(self):
+        if not self.resume_context:
+            return
+        stage = self.resume_origin_stage or ""
+        safe = (
+            stage == "inventory"
+            or re.fullmatch(r"rack_before_insert_\d+", stage)
+            or re.fullmatch(r"insert_\d+", stage)
+            or re.fullmatch(r"resume_status_insert_\d+_(left|right)", stage)
+            or re.fullmatch(r"rack_before_extract_\d+", stage)
+            or re.fullmatch(r"extract_observe_\d+", stage)
+            or re.fullmatch(r"bind_wrist_calibration_\d+", stage)
+            or re.fullmatch(r"extract_cap_\d+", stage)
+        )
+        if self.c["demo"] == 2:
+            safe = (re.fullmatch(r"object_\d+", stage)
+                    or re.fullmatch(r"drop_area_\d+", stage)
+                    or re.fullmatch(r"resume_status_insert_\d+_(left|right)", stage))
+        if not safe:
+            raise RuntimeError(
+                f"失败阶段 {stage!r} 可能已经改变夹持/释放状态，不能自动恢复。"
+                "请先人工处置工件，再开始新的运行"
+            )
+
+    def extraction_completed(self, index, receiver):
+        return self.stage_completed(f"drop_{index}_{receiver}")
+
     def run(self):
         write_json(self.out / "config_snapshot.json", self.c)
+        self.validate_resume_boundary()
         if self.mode == "dry_run":
             self.plan()
             return
@@ -826,10 +1160,13 @@ class Demo:
         receivers = []
         if self.c["demo"] == 1:
             inventory = self.out / "inventory.json"
-            self.command("inventory", [self.locator_python, Path(__file__).with_name("demo_1_inventory.py"),
-                         "--config", LOCATOR / "config_test_tube_cleanup_leftmost_vlm_head.yaml", "--rack-config", self.rack_config(),
-                         "--output-dir", self.out / "tubes", "--inventory-json", inventory,
-                         "--rack-result-json", self.out / "initial_rack.json", "--save-rgb", self.out / "inventory_rgb.jpg"])
+            if self.resume_context and inventory.is_file() and self.stage_completed("inventory"):
+                self.record("resume_reuse_inventory", inventory_json=str(inventory))
+            else:
+                self.command("inventory", [self.locator_python, Path(__file__).with_name("demo_1_inventory.py"),
+                             "--config", LOCATOR / "config_test_tube_cleanup_leftmost_vlm_head.yaml", "--rack-config", self.rack_config(),
+                             "--output-dir", self.out / "tubes", "--inventory-json", inventory,
+                             "--rack-result-json", self.out / "initial_rack.json", "--save-rgb", self.out / "inventory_rgb.jpg"])
             if self.mode == "mock":
                 sources = [self.locate(f"mock_tube_{i}", "mock_config", mock_key="head") for i in range(1, 5)]
             else:
@@ -843,9 +1180,33 @@ class Demo:
             if self.stop_after_inventory:
                 self.record("inventory_verified", count=len(sources), motion_started=False)
                 return
+            if self.resume_context:
+                print(
+                    f"将从失败阶段 {self.resume_origin_stage} 恢复；不会重做已完成的抓取/插入。"
+                    "请确认机械臂、夹爪和试管仍保持失败时状态。",
+                    flush=True,
+                )
             self.pause()
             for i, source in enumerate(sources, 1):
                 cycle = self.c["cycles"][i-1]
+                grasp_stage = f"grasp_handover_{i}"
+                insert_stage = f"insert_{i}"
+                if self.resume_context and self.stage_completed(insert_stage):
+                    receiver = self.recorded_receiver(i)
+                    receivers.append(receiver)
+                    self.record(f"resume_skip_completed_insert_{i}", receiver=receiver)
+                    if (self.c["extract_timing"] == "after_each_insert"
+                            and not self.extraction_completed(i, receiver)):
+                        self.extract(i, receiver, cycle["extract"])
+                    continue
+                if self.resume_context and self.stage_completed(grasp_stage):
+                    receiver = self.recorded_receiver(i)
+                    self.verify_resume_holder(i, receiver)
+                    receivers.append(receiver)
+                    self.insert(i, receiver, cycle["insert"], resume=True)
+                    if self.c["extract_timing"] == "after_each_insert":
+                        self.extract(i, receiver, cycle["extract"])
+                    continue
                 receiver = self.grasp(source, cycle.get("grasp_position", self.c["grasp_position"]), i)
                 receivers.append(receiver)
                 self.insert(i, receiver, cycle["insert"])
@@ -853,6 +1214,9 @@ class Demo:
                     self.extract(i, receiver, cycle["extract"])
             if self.c["extract_timing"] == "after_all_inserts":
                 for i, receiver in enumerate(receivers, 1):
+                    if self.resume_context and self.extraction_completed(i, receiver):
+                        self.record(f"resume_skip_completed_extract_{i}", receiver=receiver)
+                        continue
                     self.extract(i, receiver, self.c["cycles"][i-1]["extract"])
         else:
             conf = self.locator_config("elongated_object", "config_test_tube_cleanup_leftmost_vlm_head.yaml",
@@ -860,9 +1224,18 @@ class Demo:
                 "head_px defines the FRONT and tail_px the TAIL. " + self.c["front_definition"],
                 object_name="loose elongated object", refine=False)
             for i in range(1, self.c["count"] + 1):
+                if self.resume_context and self.stage_completed(f"grasp_handover_{i}"):
+                    receiver = self.recorded_receiver(i)
+                    if self.c["after_handover"] == "hold" or self.stage_completed(f"drop_{i}_{receiver}"):
+                        self.record(f"resume_skip_completed_object_{i}", receiver=receiver)
+                        continue
+                    self.pause()
+                    self.verify_resume_holder(i, receiver)
+                    self.drop(i, receiver)
+                    continue
                 source = self.locate(f"object_{i}", conf, mock_key="head")
                 grasp_geometry(read_json(source), self.c["grasp_position"], self.c["pick_arm"])
-                if i == 1:
+                if i == 1 or self.resume_context:
                     self.pause()
                 receiver = self.grasp(source, self.c["grasp_position"], i)
                 if self.c["after_handover"] == "drop":
@@ -877,6 +1250,16 @@ def main(argv=None):
     parser.add_argument("--mock", dest="mode", action="store_const", const="mock")
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--artifact-dir", type=Path)
+    parser.add_argument(
+        "--resume",
+        nargs="?",
+        const="auto",
+        metavar="ARTIFACT_DIR",
+        help=(
+            "Resume a failed live run in the same artifact directory. Without a path, use the "
+            "newest failed run for this demo. Completed physical stages are not replayed."
+        ),
+    )
     parser.add_argument("--no-wait-before-motion", action="store_true")
     parser.add_argument("--stop-after-inventory", action="store_true",
                         help="Demo 1: capture and validate all four vials, then exit before any robot command.")
@@ -887,17 +1270,37 @@ def main(argv=None):
     validate(config)
     if args.stop_after_inventory and config["demo"] != 1:
         parser.error("--stop-after-inventory 仅适用于 Demo 1")
-    artifacts = (args.artifact_dir or Path("/tmp/agentic_skills_runs") / f"{DEMO_NAMES[config['demo']]}_{datetime.now():%Y%m%d_%H%M%S_%f}").resolve()
-    if args.mode == "live" and artifacts.exists() and any(artifacts.iterdir()):
+    if args.resume is not None and (args.mode != "live" or not args.execute):
+        parser.error("--resume 只能与 --mode live --execute 一起使用")
+    if args.resume is not None and args.artifact_dir is not None:
+        parser.error("--resume 已指定恢复目录，不能同时使用 --artifact-dir")
+    if args.resume is not None and config["demo"] not in (1, 2):
+        parser.error("当前仅 Demo 1/2 支持 --resume")
+    resume_context = None
+    if args.resume is not None:
+        artifacts = (
+            latest_failed_run(DEMO_NAMES[config["demo"]])
+            if args.resume == "auto"
+            else Path(args.resume).resolve()
+        )
+        resume_context = load_resume_context(artifacts, config)
+    else:
+        artifacts = (args.artifact_dir or Path("/tmp/agentic_skills_runs") / f"{DEMO_NAMES[config['demo']]}_{datetime.now():%Y%m%d_%H%M%S_%f}").resolve()
+    if args.mode == "live" and args.resume is None and artifacts.exists() and any(artifacts.iterdir()):
         parser.error("live artifact-dir 必须是新的空目录，避免读取前一次运行结果")
     demo = Demo(config, args.config.resolve(), artifacts, args.mode, not args.no_wait_before_motion,
-                stop_after_inventory=args.stop_after_inventory)
+                stop_after_inventory=args.stop_after_inventory, resume_context=resume_context)
     try:
         demo.run()
     except (Exception, KeyboardInterrupt) as exc:
         write_json(artifacts / "task_result.json", {"completion_flag": False, "physical_verified": False,
                    "mode": args.mode, "robot_stop_confirmed": False,
-                   "stopped_reason": str(exc) or "interrupted", "last_stage": demo.events[-1] if demo.events else None})
+                   "resumed": resume_context is not None,
+                   "resume_attempt": demo.resume_attempt,
+                   "stopped_reason": str(exc) or "interrupted",
+                   "last_stage": next((event for event in reversed(demo.events)
+                                       if event.get("stage") == demo.active_stage),
+                                      demo.events[-1] if demo.events else None)})
         print(f"ERROR: {str(exc) or 'interrupted'}; no further commands; robot stop unconfirmed. "
               f"必要时使用现场急停。Artifacts: {artifacts}", file=sys.stderr)
         return 1
@@ -905,7 +1308,8 @@ def main(argv=None):
                "inventory_only": args.stop_after_inventory,
                "inventory_complete": args.stop_after_inventory and args.mode != "dry_run",
                "mode": args.mode, "planned_only": args.mode == "dry_run", "mock": args.mode == "mock",
-               "held_at_end": config["demo"] == 2 and config["after_handover"] == "hold"})
+               "held_at_end": config["demo"] == 2 and config["after_handover"] == "hold",
+               "resumed": resume_context is not None, "resume_attempt": demo.resume_attempt})
     print(f"Artifacts: {artifacts}")
     return 0
 

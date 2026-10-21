@@ -42,7 +42,7 @@ if [[ "$STOP_BEFORE_HANDOVER_CLOSE" == "1" || "$STOP_BEFORE_HANDOVER_CLOSE" == "
     EXTRA_ARGS+=(--stop-before-partner-close)
 fi
 
-# User-approved relaxed grasp position tolerance (25 mm).
+# Keep stage tolerances; allow at most ten same-target P2P calls per stage.
 python3 -u "$SCRIPT_DIR/grasp_right_arm_xyz.py" \
     --arm "$ARM" \
     --result-json "$RESULT_JSON" \
@@ -51,10 +51,13 @@ python3 -u "$SCRIPT_DIR/grasp_right_arm_xyz.py" \
     --directional-orientation \
     --settle-time-sec 0.7 \
     --max-correction-iters 10 \
-    --recover-stalled-controller \
+    --detect-stalled-motion \
+    --p2p-retries 9 \
+    --warn-and-retry-stall \
+    --p2p-retry-min-progress-ratio 0.02 \
     --controller-stall-translation-epsilon-m 0.0005 \
     --controller-stall-rotation-epsilon-rad 0.005 \
-    --max-stalled-correction-iters 1 \
+    --max-stalled-correction-iters 3 \
     --controller-recovery-settle-time-sec 1.0 \
     --max-translation-speed 0.12 \
     --max-rotation-speed 0.6 \
@@ -71,5 +74,6 @@ python3 -u "$SCRIPT_DIR/grasp_right_arm_xyz.py" \
     --position-tolerance-m 0.015 \
     --rotation-tolerance-rad 0.1 \
     --transition-rotation-tolerance-rad 0.06 \
+    --transition-position-tolerance-m 0.005 \
     --compact \
     "${EXTRA_ARGS[@]}"

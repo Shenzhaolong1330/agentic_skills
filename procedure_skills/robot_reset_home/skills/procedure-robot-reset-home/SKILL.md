@@ -13,16 +13,26 @@ Choose the narrowest command that matches the requested operation.
 
 Run the configured `robot-reset` workflow:
 
+In the active workspace, use the existing `le_nero` environment and command:
+
+```bash
+cd /home/deepcybo/agent_ws/Le-nero/dual_arm_teleop
+robot-reset
+```
+
+The wrapper below resolves the workspace's `envs/le_nero/bin/python` by default,
+also accepts `--python PATH`, and retains the legacy conda fallback when that
+workspace environment is absent.
+
 ```bash
 /home/deepcybo/agentic_skills/procedure_skills/robot_reset_home/skills/procedure-robot-reset-home/scripts/run_robot_reset.sh
 ```
 
 What it does:
 
-1. sources `/home/deepcybo/miniconda3/etc/profile.d/conda.sh`
-2. activates `le_nero`
-3. changes to `/home/deepcybo/Le-nero/dual_arm_teleop`
-4. runs `robot-reset`
+1. selects the workspace `le_nero` Python or the requested interpreter (legacy conda fallback if unavailable)
+2. changes to the workspace `Le-nero/dual_arm_teleop`
+3. runs the same `scripts.core.reset_robot` entry point as `robot-reset`
 
 `robot-reset` still internally loads its default `scripts/config/record_cfg.yaml` to select `record.robot_type`. Reset behavior such as `reset_go_home`, `go_home_duration_sec`, and `reset_opens_grippers` lives in the robot detail config, for Franka:
 

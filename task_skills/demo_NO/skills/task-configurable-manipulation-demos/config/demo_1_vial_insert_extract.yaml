@@ -18,6 +18,22 @@ grasp_position: 1
 pick_arm: auto
 count: 4
 grasp_z_offset_m: 0.01
+# Demo 1 全部笛卡尔子流程统一使用这套容差、纠偏和有界补偿策略。
+motion_position_tolerance_m: 0.005
+motion_rotation_tolerance_rad: 0.20
+motion_max_correction_iters: 15
+motion_max_tracking_translation_bias_m: 0.050
+motion_max_tracking_rotation_bias_rad: 1.0
+motion_continue_on_tolerance_miss: true
+# 兼容抓取阶段原有的逐手覆盖项；数值与统一策略一致。
+left_grasp_position_tolerance_m: 0.005
+left_grasp_rotation_tolerance_rad: 0.20
+left_grasp_pregrasp_xy_rotation_tolerance_rad: 0.20
+# 抓取旧参数名继续保留，便于单独运行旧入口时获得相同策略。
+grasp_max_correction_iters: 15
+grasp_max_tracking_translation_bias_m: 0.050
+grasp_max_tracking_rotation_bias_rad: 1.0
+grasp_continue_on_tolerance_miss: true
 lift_m: 0.1
 extract_lift_m: 0.12
 drop_height_m: 0.1
@@ -43,8 +59,8 @@ transition_json: null
 jaw_opening_axis: y
 jaw_perpendicular_turn: ccw
 extract_timing: after_all_inserts
-# 拔出前观察/转姿的最多纠偏次数；到位容差仍为 3 mm / 0.03 rad。
-extract_observe_max_correction_iters: 10
+# 拔出前观察/转姿也使用统一运动策略。
+extract_observe_max_correction_iters: 15
 initial_occupied: []
 wrist_view:
   left:
@@ -57,19 +73,19 @@ cycles:
 - insert:
   - 1
   - 1
-  extract: 左上
+  extract: [2, 2]
 - insert:
-  - 3
+  - 2
   - 1
-  extract: 左下
+  extract: [1, 2]
 - insert:
   - 1
   - 2
-  extract: 右上
+  extract: [2, 1]
 - insert:
-  - 3
   - 2
-  extract: 右下
+  - 2
+  extract: [1, 1]
 
 # 抓取、转姿、提升、交接的 P2P 参数；与旧 demo 的速度/步长一致。
 # speed 单位分别是 m/s、rad/s；step 单位分别是 m、rad。

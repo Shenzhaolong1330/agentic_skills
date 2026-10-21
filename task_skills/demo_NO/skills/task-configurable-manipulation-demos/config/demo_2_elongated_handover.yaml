@@ -9,9 +9,16 @@
 # count 是本次处理件数；after_handover=hold 时必须 count: 1。
 demo: 2
 grasp_position: 1
-pick_arm: auto
+pick_arm: right
 count: 4
 grasp_z_offset_m: 0.01
+# 抓取/提升/交接最多纠偏 15 次；次数或补偿额度耗尽后记录警告并继续。
+# 2026-09-19 交接观察：第 9 次已耗尽原 25 mm 平移补偿，仍差 10.8 mm。
+# 补偿是命令相对原目标的偏置上限，不是允许的到位误差。
+grasp_max_correction_iters: 15
+grasp_max_tracking_translation_bias_m: 0.050
+grasp_max_tracking_rotation_bias_rad: 0.20
+grasp_continue_on_tolerance_miss: true
 lift_m: 0.1
 extract_lift_m: 0.12
 drop_height_m: 0.1

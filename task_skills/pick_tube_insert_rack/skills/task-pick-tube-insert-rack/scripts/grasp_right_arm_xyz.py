@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import importlib.util
 import json
 import math
@@ -193,10 +194,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rotation_tolerance_rad", "--rotation-tolerance-rad", dest="rotation_tolerance_rad", type=float, default=0.03)
     parser.add_argument("--pregrasp-xy-position-tolerance-m", type=float,
                         help="Stage1 XY positioning only; otherwise uses --position-tolerance-m.")
+    parser.add_argument("--approach-position-tolerance-m", type=float,
+                        help="Optional precision target for the final pre-contact descent only; other stages keep the task arrival policy.")
     parser.add_argument("--pregrasp-xy-rotation-tolerance-rad", type=float,
                         help="Stage1 XY positioning only; otherwise uses --rotation-tolerance-rad.")
     parser.add_argument("--pregrasp-xy-settle-time-sec", type=float,
                         help="Stage1 XY positioning only; otherwise uses --settle-time-sec.")
+    parser.add_argument("--pregrasp-xy-max-translation-speed", type=float,
+                        help="Stage1 empty-hand XY transit only; descent and lift limits are unchanged.")
+    parser.add_argument("--pregrasp-xy-max-translation-step", type=float,
+                        help="Stage1 empty-hand XY transit command step only.")
+    parser.add_argument("--orient-before-xy", action="store_true",
+                        help="Align the empty gripper at its current XYZ before horizontal approach; avoids carrying a handover attitude across the table.")
+    parser.add_argument("--require-contact-before-lift", action="store_true",
+                        help="Require three fresh native closing-contact samples before lifting. A confirmed empty close ends normally without lift; unknown feedback fails.")
     parser.add_argument("--lift-position-tolerance-m", type=float,
                         help="Post-grasp lift only; otherwise uses --position-tolerance-m.")
     parser.add_argument("--lift-rotation-tolerance-rad", type=float,
@@ -289,7 +300,8 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--max_steps", "--max-steps", dest="max_steps", type=int, default=3000)
-    parser.add_argument("--down_pitch_rad", "--down-pitch-rad", dest="down_pitch_rad", type=float, default=0.0)
+    parser.add_argument("--down_pitch_rad", "--down-pitch-rad", dest="down_pitch_rad", type=float, default=0.0,
+                        help="Pitch about a fixed roll=pi downward posture; 0 makes TCP +Z point along torso -Z.")
     parser.add_argument(
         "--orientation-vector",
         type=parse_vector3,
@@ -306,6 +318,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Match orientation-vector direction exactly instead of allowing a 180 degree parallel flip.",
     )
+    parser.add_argument('--prefer-wrist-yaw-margin', action='store_true',
+        help='For near-half-turn downward empty-hand orientation, prefer the yaw route that centers measured joint 7; an observation-based heuristic, not full-arm IK.')
     parser.add_argument(
         "--keep-current-rotation",
         action="store_true",
@@ -516,6 +530,54 @@ def gripper_state_summary(state: dict[str, Any]) -> dict[str, Any]:
         "stamp",
     )
     return {key: state[key] for key in keys if key in state}
+
+
+def native_contact_before_lift(client, side):
+    """Read only. Closure by position is not evidence of an object between jaws."""
+    samples, kinds = [], []
+    for index in range(3):
+        state = gripper_state_from_observation(client.get_observation(), side)
+        driver = state.get('driver_status', {})
+        registers = driver.get('registers', {})
+        code, status = driver.get('object_detection_code'), registers.get('status_byte')
+        sequence, source_time = driver.get('sample_sequence'), driver.get('source_ros_timestamp_ns')
+        if (driver.get('schema') != 'aoe.robotiq-register-status.v1'
+                or any(driver.get(k) is not True for k in ('sample_valid', 'sample_fresh', 'ready', 'activated', 'go_to_requested'))
+                or type(status) is not int or status & 1 != 1 or (status >> 3) & 1 != 1
+                or (status >> 4) & 3 != 3 or (status >> 6) & 3 != code
+                or registers.get('fault_byte') != 0 or code not in (2, 3)
+                or type(sequence) is not int or type(source_time) is not int
+                or abs(time.time() - source_time/1e9) > 1
+                or not driver.get('source_session_id')
+                or type(state.get('velocity')) not in (int, float) or not math.isfinite(state['velocity'])
+                or abs(state['velocity']) > .01):
+            raise RuntimeError('Unverified native gripper feedback before lift; no lift or release')
+        requested, position = registers.get('requested_position_raw'), registers.get('position_raw')
+        if any(type(v) is not int or not 0 <= v <= 255 for v in (requested, position)):
+            raise RuntimeError('Invalid native gripper positions before lift')
+        contact = (code == 2 and driver.get('contact_direction') == 'closing'
+                   and driver.get('requested_position_reached') is False
+                   and state.get('object_detected') is True and driver.get('object_detected') is True
+                   and requested - position >= 3)
+        empty = (code == 3 and driver.get('requested_position_reached') is True
+                 and state.get('object_detected') is False and driver.get('object_detected') is False)
+        if not contact and not empty:
+            raise RuntimeError('Inconsistent contact registers before lift')
+        samples.append({'session':driver['source_session_id'], 'sequence':sequence, 'time_ns':source_time,
+                        'requested':requested, 'position':position, 'status_byte':status})
+        kinds.append('contact' if contact else 'empty')
+        if index < 2:
+            time.sleep(.2)
+    if (len(set(kinds)) != 1 or len({s['session'] for s in samples}) != 1
+            or len({s['requested'] for s in samples}) != 1
+            or not samples[0]['sequence'] < samples[1]['sequence'] < samples[2]['sequence']
+            or not samples[0]['time_ns'] < samples[1]['time_ns'] < samples[2]['time_ns']
+            or samples[2]['time_ns'] - samples[0]['time_ns'] < 300_000_000
+            or max(s['position'] for s in samples) - min(s['position'] for s in samples) > 3):
+        raise RuntimeError('Unstable native contact before lift; no lift or release')
+    report = {'event':'grasp_contact_before_lift', 'side':side, 'state':kinds[0], 'samples':samples}
+    print(json.dumps(report), flush=True)
+    return kinds[0] == 'contact'
 
 
 def close_gripper_and_confirm(
@@ -735,7 +797,51 @@ def pose_error(current: np.ndarray, target: np.ndarray) -> dict[str, Any]:
 
 def gripper_down_rotvec(current_pose: np.ndarray, down_pitch_rad: float) -> np.ndarray:
     rpy = R.from_rotvec(current_pose[3:]).as_euler("xyz")
-    return R.from_euler("xyz", [rpy[0], down_pitch_rad, rpy[2]]).as_rotvec()
+    # Current roll includes tracking drift. Inheriting it turns that drift into
+    # the next nominal goal; roll=pi, pitch=0 defines TCP +Z along torso -Z.
+    return R.from_euler("xyz", [math.pi, down_pitch_rad, rpy[2]]).as_rotvec()
+
+
+def wrist_yaw_waypoint(current_rotvec, target_rotvec, joint7):
+    """Choose a winding for nearly downward half-turns without changing the goal.
+
+    Joint 7's positive tool-axis rotation is negative torso yaw when pointing
+    down. Projecting q7 - delta_yaw is a local centering heuristic, not an IK
+    solution or a claim that any joint limit has been verified. Native tracking
+    and wrench checks still govern both segments.
+    """
+    if not math.isfinite(joint7):
+        raise ValueError('Non-finite native joint 7')
+    current, target = R.from_rotvec(current_rotvec), R.from_rotvec(target_rotvec)
+    current_tilt, target_tilt = (
+        math.acos(float(np.clip(-rotation.as_matrix()[2, 2], -1., 1.)))
+        for rotation in (current, target))
+    # Home is about 0.27 rad from downward. It must be eligible for the
+    # empty-hand winding choice too; the waypoint and final grasp remain down.
+    if current_tilt > .4 or target_tilt > .15:
+        return None, None
+    start, end = float(current.as_euler('xyz')[2]), float(target.as_euler('xyz')[2])
+    shortest = (end - start + math.pi) % (2*math.pi) - math.pi
+    if abs(shortest) < 2.6:
+        return None, None
+    alternate = shortest - math.copysign(2*math.pi, shortest)
+    if abs(joint7-alternate) + .25 >= abs(joint7-shortest):
+        return None, None
+    middle = R.from_euler('xyz', [math.pi, 0., start + alternate/2]).as_rotvec()
+    return middle, {'method':'downward_joint7_centering_heuristic', 'native_joint7_rad':joint7,
+        'start_downward_tilt_rad':current_tilt, 'target_downward_tilt_rad':target_tilt,
+        'shortest_yaw_delta_rad':shortest, 'selected_yaw_delta_rad':alternate,
+        'projected_shortest_joint7_rad':joint7-shortest,
+        'projected_selected_joint7_rad':joint7-alternate, 'full_arm_ik_verified':False}
+
+
+def measured_wrist_yaw_waypoint(client, side, current_rotvec, target_rotvec):
+    observation = client.get_observation()
+    check_motion_observation(observation, require_native=True)
+    joints = observation[side]['native_robot_state'].get('joint_positions')
+    if not isinstance(joints, list) or len(joints) != 7 or not all(math.isfinite(v) for v in joints):
+        raise RuntimeError('Missing finite native joints for wrist-yaw route selection')
+    return wrist_yaw_waypoint(current_rotvec, target_rotvec, joints[6])
 
 
 def _nearest_angle(angle: float, reference: float, period: float) -> float:
@@ -769,7 +875,7 @@ def gripper_parallel_rotvec(
     target_xy = vector_xy / vector_xy_norm
     target_yaw = math.atan2(float(target_xy[1]), float(target_xy[0]))
     rpy = R.from_rotvec(current_pose[3:]).as_euler("xyz")
-    roll = float(rpy[0])
+    roll = math.pi
     current_yaw = float(rpy[2])
     period = 2.0 * math.pi if directional else math.pi
 
@@ -801,8 +907,41 @@ def gripper_parallel_rotvec(
         "directional": directional,
         "axis_xy_unit": axis_xy.tolist(),
         "parallel_score": score,
+        "target_tool_z_torso": R.from_rotvec(rotvec).apply([0.0, 0.0, 1.0]).tolist(),
     }
     return rotvec, alignment
+
+
+def check_grasp_orientation(current_pose: np.ndarray, target_rotvec: np.ndarray,
+                            args: argparse.Namespace, stage: str) -> dict[str, Any]:
+    """Check the latest measured posture before descent/closure, without motion."""
+    current = np.asarray(current_pose, dtype=float).reshape(6)
+    target = np.asarray(target_rotvec, dtype=float).reshape(3)
+    if not np.all(np.isfinite(current)) or not np.all(np.isfinite(target)):
+        raise ValueError("Grasp orientation requires finite measured and target poses")
+    measured_rotation = R.from_rotvec(current[3:])
+    target_rotation = R.from_rotvec(target)
+    measured_axis = measured_rotation.apply([0.0, 0.0, 1.0])
+    target_axis = target_rotation.apply([0.0, 0.0, 1.0])
+    error = float((target_rotation * measured_rotation.inv()).magnitude())
+    policy = franka_rpc.arrival_policy(args.position_tolerance_m, args.rotation_tolerance_rad)
+    nominal = policy["rotation_tolerance_rad"]
+    limit = nominal * policy["warning_multiplier"]
+    status = "within_tolerance" if error <= nominal else "warning" if error <= limit else "outside_tolerance"
+    report = {
+        "event": "grasp_orientation_check", "stage": stage, "side": args.arm,
+        "frame": "torso", "target_tool_z": target_axis.tolist(),
+        "measured_tool_z": measured_axis.tolist(),
+        "target_tilt_from_down_rad": float(math.acos(np.clip(-target_axis[2], -1.0, 1.0))),
+        "measured_tilt_from_down_rad": float(math.acos(np.clip(-measured_axis[2], -1.0, 1.0))),
+        "rotation_error_rad": error, "rotation_tolerance_rad": nominal,
+        "stop_rotation_error_rad": limit, "status": status,
+    }
+    print(json.dumps(report, ensure_ascii=False), flush=True)
+    if status == "outside_tolerance":
+        raise RuntimeError(f"{stage}: grasp orientation error {error:.6f} rad exceeds {limit:.6f} rad; "
+                           "no subsequent motion or gripper commands")
+    return report
 
 
 def _xyz_rotvec_from_mapping(value: Any, name: str) -> np.ndarray:
@@ -873,6 +1012,9 @@ def move_stage(
     effective_rotation_tolerance_rad = float(
         args.rotation_tolerance_rad if rotation_tolerance_rad is None else rotation_tolerance_rad
     )
+    arrival_policy = franka_rpc.arrival_policy(effective_position_tolerance_m, effective_rotation_tolerance_rad)
+    effective_position_tolerance_m = arrival_policy['position_tolerance_m']
+    effective_rotation_tolerance_rad = arrival_policy['rotation_tolerance_rad']
     effective_max_translation_speed = float(
         args.max_translation_speed if max_translation_speed is None else max_translation_speed
     )
@@ -1083,6 +1225,14 @@ def move_stage(
             and right_error["translation_norm_m"] <= effective_position_tolerance_m
             and right_error["rotation_norm_rad"] <= effective_rotation_tolerance_rad
         )
+        if arrival_policy['configured']:
+            observed_error = {
+                f'{side}_{component}_error_{unit}': values[key]
+                for side, values in (('left', left_error), ('right', right_error))
+                for component, unit, key in (('translation', 'm', 'translation_norm_m'),
+                                              ('rotation', 'rad', 'rotation_norm_rad'))}
+            result['independent_arrival_check'] = franka_rpc.arrival_check(observed_error, arrival_policy, emit=True)
+            residual_ok = result['independent_arrival_check']['accepted']
         if residual_ok:
             if not result_ok:
                 print(f"{name}: accepting RPC ok=false because observed residual is within configured tolerance")
@@ -1207,11 +1357,39 @@ def move_stage(
         )
 
 
+@contextmanager
+def descent_precision(args):
+    """Do not use a broad transit warning band as grasp contact accuracy."""
+    value = args.approach_position_tolerance_m
+    if value is None:
+        yield
+        return
+    key = franka_rpc.ARRIVAL_POLICY_ENV
+    previous = os.environ.get(key)
+    policy = franka_rpc.arrival_policy(args.position_tolerance_m, args.rotation_tolerance_rad)
+    precise = {key: policy[key] for key in ('position_tolerance_m', 'rotation_tolerance_rad', 'warning_multiplier')}
+    precise['precision_position_tolerance_m'] = min(value, policy['position_tolerance_m'],
+                                                  policy.get('precision_position_tolerance_m', value))
+    try:
+        os.environ[key] = json.dumps(precise, allow_nan=False)
+        print(json.dumps({'event':'grasp_descent_accuracy', 'policy':precise,
+                          'task_arrival_policy':policy}), flush=True)
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = previous
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if not math.isfinite(args.down_pitch_rad):
+        raise ValueError("--down-pitch-rad must be finite")
     if not math.isfinite(args.p2p_retry_min_progress_ratio) or not 0 < args.p2p_retry_min_progress_ratio < 1:
         raise ValueError("--p2p-retry-min-progress-ratio must be in (0, 1)")
-    for name in ("pregrasp_xy_position_tolerance_m", "pregrasp_xy_rotation_tolerance_rad",
+    for name in ("pregrasp_xy_position_tolerance_m", "approach_position_tolerance_m", "pregrasp_xy_rotation_tolerance_rad",
+                 "pregrasp_xy_max_translation_speed", "pregrasp_xy_max_translation_step",
                  "pregrasp_xy_settle_time_sec", "lift_position_tolerance_m", "lift_rotation_tolerance_rad"):
         value = getattr(args, name)
         if value is not None and (not math.isfinite(value) or value <= 0):
@@ -1286,6 +1464,8 @@ def main(argv: list[str] | None = None) -> int:
             "result_base_frame": args.result_base_frame,
             "result_grasp_point": args.result_grasp_point,
             "orientation_vector": None if args.orientation_vector is None else args.orientation_vector.tolist(),
+            "grasp_orientation_policy": "keep_current" if args.keep_current_rotation else "fixed_downward_roll",
+            "grasp_down_pitch_rad": args.down_pitch_rad,
             "grasp_arrival_observed_z_offset_m": float(args.grasp_arrival_observed_z_offset_m),
             "stages": [
                 "stage1_move_xy_keep_z",
@@ -1331,6 +1511,33 @@ def main(argv: list[str] | None = None) -> int:
         left_current, right_current = read_ee_poses(client)
         active_current = pose_for_side(left_current, right_current, active_side)
         partner_current = pose_for_side(left_current, right_current, partner_side)
+        if args.orient_before_xy and not args.keep_current_rotation:
+            if args.orientation_vector is None:
+                transit_rotation = gripper_down_rotvec(active_current, args.down_pitch_rad)
+            else:
+                transit_rotation, _ = gripper_parallel_rotvec(active_current, args.orientation_vector,
+                    args.down_pitch_rad, args.gripper_parallel_axis, args.directional_orientation)
+            target = np.r_[active_current[:3], transit_rotation]
+            if args.prefer_wrist_yaw_margin:
+                middle, route = measured_wrist_yaw_waypoint(client, active_side,
+                                                          active_current[3:], transit_rotation)
+                if middle is not None:
+                    print(json.dumps({'event':'pregrasp_yaw_route', **route}), flush=True)
+                    waypoint = np.r_[active_current[:3], middle]
+                    left_target, right_target = target_pair_for_active_side(active_side, waypoint, partner_current)
+                    left_current, right_current, _ = move_stage(client,
+                        f"stage0_{active_label}_wrist_yaw_waypoint", left_target, right_target, args,
+                        recover_stalled_side=active_side)
+                    check_grasp_orientation(pose_for_side(left_current, right_current, active_side),
+                                            middle, args, 'before_final_yaw')
+                    partner_current = pose_for_side(left_current, right_current, partner_side)
+            left_target, right_target = target_pair_for_active_side(active_side, target, partner_current)
+            left_current, right_current, _ = move_stage(client,
+                f"stage0_{active_label}_orient_before_xy", left_target, right_target, args,
+                recover_stalled_side=active_side)
+            active_current = pose_for_side(left_current, right_current, active_side)
+            check_grasp_orientation(active_current, transit_rotation, args, "before_xy")
+            partner_current = pose_for_side(left_current, right_current, partner_side)
         stage1_active = np.array(
             [
                 args.xyz[0],
@@ -1351,6 +1558,8 @@ def main(argv: list[str] | None = None) -> int:
             args,
             position_tolerance_m=args.pregrasp_xy_position_tolerance_m,
             rotation_tolerance_rad=args.pregrasp_xy_rotation_tolerance_rad,
+            max_translation_speed=args.pregrasp_xy_max_translation_speed,
+            max_translation_step=args.pregrasp_xy_max_translation_step,
             settle_time_sec=args.pregrasp_xy_settle_time_sec,
             recover_stalled_side=active_side,
         )
@@ -1396,27 +1605,33 @@ def main(argv: list[str] | None = None) -> int:
         if not args.skip_z:
             reanchor(client, enabled=not args.no_reanchor)
             left_current, right_current = read_ee_poses(client)
+            if not args.keep_current_rotation:
+                check_grasp_orientation(pose_for_side(left_current, right_current, active_side),
+                                        down_rotvec, args, "before_descent")
             partner_current = pose_for_side(left_current, right_current, partner_side)
             stage3_active = np.array([args.xyz[0], args.xyz[1], args.xyz[2], *down_rotvec], dtype=float)
             left_target, right_target = target_pair_for_active_side(active_side, stage3_active, partner_current)
-            left_current, right_current, _ = move_stage(
-                client,
-                f"stage3_{active_label}_move_z_to_target",
-                left_target,
-                right_target,
-                args,
-                max_translation_speed=args.approach_max_translation_speed,
-                max_rotation_speed=args.approach_max_rotation_speed,
-                max_translation_step=args.approach_max_translation_step,
-                max_rotation_step=args.approach_max_rotation_step,
-                settle_time_sec=args.approach_settle_time_sec,
-                arrival_observed_z_offset_side=active_side,
-                arrival_observed_z_offset_m=args.grasp_arrival_observed_z_offset_m,
-                recover_stalled_side=active_side,
-            )
+            with descent_precision(args):
+                left_current, right_current, _ = move_stage(
+                    client,
+                    f"stage3_{active_label}_move_z_to_target",
+                    left_target,
+                    right_target,
+                    args,
+                    max_translation_speed=args.approach_max_translation_speed,
+                    max_rotation_speed=args.approach_max_rotation_speed,
+                    max_translation_step=args.approach_max_translation_step,
+                    max_rotation_step=args.approach_max_rotation_step,
+                    settle_time_sec=args.approach_settle_time_sec,
+                    arrival_observed_z_offset_side=active_side,
+                    arrival_observed_z_offset_m=args.grasp_arrival_observed_z_offset_m,
+                    recover_stalled_side=active_side,
+                )
 
         final_left, final_right = read_ee_poses(client)
         final_active = pose_for_side(final_left, final_right, active_side)
+        if not args.keep_current_rotation:
+            check_grasp_orientation(final_active, down_rotvec, args, "before_gripper_close")
         print("\n=== final ===")
         print_pose("left_final", final_left)
         print_pose("right_final", final_right)
@@ -1460,6 +1675,9 @@ def main(argv: list[str] | None = None) -> int:
                 )
             if args.after_close_sleep_sec > 0:
                 time.sleep(args.after_close_sleep_sec)
+            if args.require_contact_before_lift and not native_contact_before_lift(client, active_side):
+                print(json.dumps({'grasp_empty': True, 'lift_skipped': True, 'release_skipped': True}), flush=True)
+                return 0
 
         if args.lift_after_grasp_m > 0.0:
             print("\n=== post_grasp_lift ===")

@@ -270,6 +270,18 @@ and cannot use warning-based stall retries.
 
 ### Shared grasp and perception checks
 
+The default tabletop grasp sets roll to pi and pitch to zero: TCP local +Z
+points along torso -Z. Object alignment changes yaw only; it never inherits
+the measured roll tilt from the preceding XY move. `--down-pitch-rad` remains
+an explicit standalone pitch override, and `--keep-current-rotation` retains
+its explicit extraction behavior. The console tabletop adapter pins pitch=0.
+Fresh measured posture is checked before descent and before closing, using the
+same configured arrival tolerance and warning multiplier as P2P. Structured
+`grasp_orientation_check` records contain target/measured TCP axes, vertical
+tilt and rotation residual; warning acceptance is not proof of zero tilt.
+An orientation outside the acceptance limit stops before the next stage,
+without an automatic motion replay or gripper action.
+
 Grasping now waits for fresh closure feedback stable for 0.5 seconds before lifting.
 The shared grasp shell sets `--transition-position-tolerance-m 0.005` for the
 handover pose separately from the general position tolerance. The 00:27 and 00:34
@@ -493,3 +505,19 @@ Artifacts are written under `artifact_dir`, default `/tmp/agentic_skills_runs/<r
 - Multi-candidate empty-hole support is wrapped in task logic; native object_locator candidate output should be added later for live perception.
 - In the Python task runner, live health, reset recovery, tube localization, grasp/handover, and insertion subprocesses are dispatched by `CommandRunner` only after their manifest entrypoint passes `HardwareGate`. The single-flow shell wrapper is documented separately above and does not use the operator-token `HardwareGate`.
 - A successful live return still reports warnings for the current contact/force verification and retract-versus-full-home limitations.
+
+### Optional empty-hand pregrasp orientation
+
+`grasp_right_arm_xyz.py --orient-before-xy` aligns the empty gripper to its
+geometry-derived downward grasp orientation at the current XYZ before horizontal
+approach. It retains the normal descent and pre-close orientation checks and all
+transport/feedback limits. The console enables this for tabletop elongated-object
+grasps, to avoid translating across the table in the previous handover attitude.
+Standalone calls keep the original XY-first order unless explicitly selected.
+This option is skipped with `--keep-current-rotation`; extraction does not enable
+it. It is a fixed skill phase, not model-generated Cartesian control code.
+
+
+控制台可显式启用 `--require-contact-before-lift`。闭爪后读取三个新鲜原生 Robotiq 寄存器样本，确认稳定闭合接触才提升；一致证明空夹时正常返回并标记 `grasp_empty/lift_skipped/release_skipped`，不再派发提升、松爪或回位。未知、陈旧、故障或不一致反馈则失败停止。该接触判断不是抓取成功证明，控制台仍须验证实际提升高度和提升后的独立持握证据。
+
+`--approach-position-tolerance-m` 是可选的最终下探精度，仅作用于 stage3 的闭爪前下降。控制台桌面抓取使用 2 mm，防止自由空间的较宽到位警告区使闭爪高度偏深；该作用域结束或异常都会恢复任务原容差。未设置时保持原行为，观察接近和架上拔取不启用此覆盖。

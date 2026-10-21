@@ -57,6 +57,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--server-port", type=int, default=int(os.environ.get("FRANKA_RPC_PORT", "4242")))
     parser.add_argument("--rpc-timeout-sec", type=float, default=float(os.environ.get("FRANKA_RPC_TIMEOUT_SEC", "30")))
     parser.add_argument("--execute", action="store_true", help="Send gripper command. Status never needs this.")
+    parser.add_argument(
+        "--include-eef-pose",
+        action="store_true",
+        help="With status, include the read-only end-effector position and orientation for resume checks.",
+    )
     parser.add_argument("--compact", action="store_true")
     return parser
 
@@ -81,7 +86,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "status":
             obs = client.get_observation()
             for side in sides:
-                report["results"][side] = gripper_state(obs.get(side_to_arm(side), {}) if isinstance(obs, dict) else {})
+                side_obs = obs.get(side_to_arm(side), {}) if isinstance(obs, dict) else {}
+                status = gripper_state(side_obs)
+                if args.include_eef_pose:
+                    robot_state = side_obs.get("robot_state", {}) if isinstance(side_obs, dict) else {}
+                    status = {"gripper": status, "eef_pose": robot_state.get("eef_pose")}
+                report["results"][side] = status
         elif not args.execute:
             report["planned"] = [f"{args.command}_{side}" for side in sides]
         else:

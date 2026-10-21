@@ -55,6 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--server-port", type=int, default=int(os.environ.get("FRANKA_RPC_PORT", "4242")))
     parser.add_argument("--rpc-timeout-sec", type=float, default=float(os.environ.get("FRANKA_RPC_TIMEOUT_SEC", "30")))
     parser.add_argument("--side", choices=("left", "right"), default="left")
+    parser.add_argument("--artifact-dir", type=Path, default=None)
     parser.add_argument("--execute", action="store_true", help="Actually send motion and gripper commands.")
     parser.add_argument("--insert-depth-m", type=float, default=0.01, help="Total downward base-z TCP motion.")
     parser.add_argument(
@@ -115,6 +116,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=3,
         help="Maximum force-monitored tolerance-correction passes after the initial descent.",
     )
+    parser.add_argument("--max-tracking-translation-bias-m", type=float, default=0.025)
+    parser.add_argument("--max-tracking-rotation-bias-rad", type=float, default=0.20)
     parser.add_argument("--max-steps", type=int, default=5000)
     parser.add_argument("--compact", action="store_true")
     return parser
@@ -125,6 +128,7 @@ def _move_args(args: argparse.Namespace, *, motion_profile: str = "insert") -> a
         raise ValueError(f"unsupported motion profile: {motion_profile!r}")
     retract = motion_profile == "retract"
     return argparse.Namespace(
+        artifact_dir=args.artifact_dir,
         rate_hz=float(args.rate_hz),
         max_translation_speed=float(
             args.retract_max_translation_speed if retract else args.max_translation_speed
@@ -142,6 +146,9 @@ def _move_args(args: argparse.Namespace, *, motion_profile: str = "insert") -> a
         position_tolerance_m=float(args.position_tolerance_m),
         rotation_tolerance_rad=float(args.rotation_tolerance_rad),
         max_correction_iters=int(args.max_correction_iters),
+        max_tracking_translation_bias_m=float(args.max_tracking_translation_bias_m),
+        max_tracking_rotation_bias_rad=float(args.max_tracking_rotation_bias_rad),
+        continue_on_tolerance_miss=bool(args.continue_on_p2p_failure),
         max_steps=int(args.max_steps),
     )
 
@@ -232,11 +239,14 @@ def _move_side(
     )
 
 
-def _stage_ok(stage: Mapping[str, Any], *, execute: bool) -> bool:
+def _stage_ok(
+    stage: Mapping[str, Any], *, execute: bool, args: argparse.Namespace | None = None
+) -> bool:
     if not execute:
         return True
-    result = stage.get("result", {}) if isinstance(stage, Mapping) else {}
-    return isinstance(result, Mapping) and bool(result.get("ok"))
+    stage_for_check = dict(stage)
+    stage_for_check.setdefault("execute", True)
+    return skill.p2p_stage_succeeded(stage_for_check, args)
 
 
 def should_abort_before_release(
@@ -640,6 +650,7 @@ def guarded_vertical_insert(
         "rotation_step_limit_rad": rotation_step,
         "settle_time_sec": float(args.settle_time_sec),
         "max_correction_iters": max_correction_iters,
+        "correction_index": correction_index,
         "correction_reports": correction_reports,
         "samples": samples,
         "last_step": last_step,
@@ -834,6 +845,7 @@ def main(argv: list[str] | None = None) -> int:
         guarded_success_kind: str | None = None
         guarded_force_failure = False
         guarded_path_failure = False
+        continued_after_tolerance_miss = False
         if args.monitor_force_during_insert:
             guarded_stage = guarded_vertical_insert(
                 client=client,
@@ -848,6 +860,22 @@ def main(argv: list[str] | None = None) -> int:
             guarded_success_kind = guarded_stage.get("insert_success_kind")
             guarded_force_failure = bool(guarded_stage.get("force_guard_failure"))
             guarded_path_failure = bool(guarded_stage.get("path_guard_failure"))
+            correction_index = guarded_stage.get("correction_index")
+            continued_after_tolerance_miss = bool(
+                args.continue_on_p2p_failure
+                and guarded_stage.get("stopped_reason")
+                in ("guarded_pose_tolerance_not_reached", "guarded_depth_not_reached")
+                and isinstance(correction_index, int)
+                and correction_index >= int(args.max_correction_iters)
+            )
+            if continued_after_tolerance_miss:
+                guarded_stage["continued_after_tolerance_miss"] = True
+                print(
+                    "WARNING: guarded insertion correction budget exhausted; "
+                    "continuing release/retract by explicit configuration",
+                    file=sys.stderr,
+                    flush=True,
+                )
         else:
             remaining_depth = insert_depth
             segment_depths = [
@@ -874,7 +902,7 @@ def main(argv: list[str] | None = None) -> int:
                     ),
                 )
                 report["stages"].append(insert_stage)
-                stage_ok = _stage_ok(insert_stage, execute=bool(args.execute))
+                stage_ok = _stage_ok(insert_stage, execute=bool(args.execute), args=args)
                 insert_stage_ok = bool(insert_stage_ok and stage_ok)
                 if not stage_ok:
                     break
@@ -903,13 +931,17 @@ def main(argv: list[str] | None = None) -> int:
         )
         report["insert_success_kind"] = guarded_success_kind
         report["insert_success_confirmed"] = bool(
-            not guarded_force_failure and not guarded_path_failure
-            and (
-                report["insert_depth_reached"]
-                or report["insert_depth_near_reached"]
-                or guarded_success_kind == "seated_axial_contact"
+            continued_after_tolerance_miss
+            or (
+                not guarded_force_failure and not guarded_path_failure
+                and (
+                    report["insert_depth_reached"]
+                    or report["insert_depth_near_reached"]
+                    or guarded_success_kind == "seated_axial_contact"
+                )
             )
         )
+        report["continued_after_tolerance_miss"] = continued_after_tolerance_miss
         report["after_insert_force"] = _force_summary(observation, args.side)
         release_after_success = bool(
             args.release_after_insert and report["insert_success_confirmed"]
@@ -919,7 +951,7 @@ def main(argv: list[str] | None = None) -> int:
         if guarded_path_failure or should_abort_before_release(
             insert_stage_ok=insert_stage_ok,
             release_after_insert=release_after_success,
-            continue_on_p2p_failure=False,
+            continue_on_p2p_failure=bool(args.continue_on_p2p_failure),
         ):
             report["stopped_reason"] = "insert_down_stage_failed"
             print(json.dumps(report, indent=None if args.compact else 2, ensure_ascii=False, default=str))
@@ -950,7 +982,7 @@ def main(argv: list[str] | None = None) -> int:
                     motion_profile="retract",
                 )
                 report["stages"].append(retract_stage)
-                retract_ok = _stage_ok(retract_stage, execute=bool(args.execute))
+                retract_ok = _stage_ok(retract_stage, execute=bool(args.execute), args=args)
                 if not retract_ok:
                     report.setdefault("cleanup_warnings", []).append(
                         "retract_after_release_p2p_failed"
@@ -980,6 +1012,17 @@ def main(argv: list[str] | None = None) -> int:
             final_closed_fraction is not None and final_closed_fraction <= 0.20
         )
         if not insert_stage_ok:
+            if continued_after_tolerance_miss and bool(report["release_confirmed_open"]):
+                report["completion_status"] = "completed_with_insert_tolerance_warning"
+                report["completion_flag"] = True
+                report["physical_verified"] = False
+                report["insert_stage_warning"] = (
+                    "Insertion correction budget was exhausted; explicit configuration allowed "
+                    "release/retract/home to continue without pose/depth confirmation"
+                )
+                report["stopped_reason"] = None
+                print(json.dumps(report, indent=None if args.compact else 2, ensure_ascii=False, default=str))
+                return 0
             if insertion_warning_is_completed(
                 achieved_depth_m=achieved_insert_depth_m,
                 requested_depth_m=insert_depth,

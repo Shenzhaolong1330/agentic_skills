@@ -124,11 +124,33 @@ def _move(
         position_tolerance_m=args.position_tolerance_m,
         rotation_tolerance_rad=args.rotation_tolerance_rad,
         max_correction_iters=args.max_correction_iters,
+        max_tracking_translation_bias_m=args.max_tracking_translation_bias_m,
+        max_tracking_rotation_bias_rad=args.max_tracking_rotation_bias_rad,
         max_steps=args.max_steps,
     )
     report["result"] = result
     if not isinstance(result, Mapping) or not bool(result.get("ok")):
-        raise RuntimeError(f"{stage} failed: {result}")
+        stalled = result.get("stalled") if isinstance(result, Mapping) else None
+        stalled_reason = stalled.get("reason") if isinstance(stalled, Mapping) else None
+        final_error = result.get("final_error") if isinstance(result, Mapping) else None
+        correction_index = final_error.get("correction_index") if isinstance(final_error, Mapping) else None
+        tolerance_reason = (
+            "tracking_compensation_limit"
+            if stalled_reason == "tracking_compensation_limit"
+            else "max_correction_iters"
+            if isinstance(correction_index, int) and correction_index >= int(args.max_correction_iters)
+            else None
+        )
+        if args.continue_on_tolerance_miss and tolerance_reason:
+            report["continued_after_tolerance_miss"] = True
+            report["tolerance_miss_reason"] = tolerance_reason
+            print(
+                f"WARNING: {stage} continuing after tolerance miss; reason={tolerance_reason}",
+                file=sys.stderr,
+                flush=True,
+            )
+        else:
+            raise RuntimeError(f"{stage} failed: {result}")
     return report
 
 
@@ -209,6 +231,11 @@ def build_parser() -> argparse.ArgumentParser:
     place_group = parser.add_mutually_exclusive_group(required=True)
     place_group.add_argument("--place-xyz", type=parse_xyz, help="TCP xyz in robot base frame at release.")
     place_group.add_argument("--place-result-json", type=Path, help="Object-locator result for an empty tabletop area.")
+    place_group.add_argument(
+        "--place-offset-xyz",
+        type=parse_xyz,
+        help="Release xyz offset from the current TCP pose, in the robot base frame.",
+    )
     parser.add_argument("--place-z-offset-m", type=float, default=0.10, help="Height added above a VLM table-surface point.")
     parser.add_argument(
         "--down-pitch-rad",
@@ -233,6 +260,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--position-tolerance-m", type=float, default=0.005)
     parser.add_argument("--rotation-tolerance-rad", type=float, default=0.035)
     parser.add_argument("--max-correction-iters", type=int, default=2)
+    parser.add_argument("--max-tracking-translation-bias-m", type=float, default=0.025)
+    parser.add_argument("--max-tracking-rotation-bias-rad", type=float, default=0.20)
+    parser.add_argument("--continue-on-tolerance-miss", action="store_true")
     parser.add_argument("--max-steps", type=int, default=3000)
     parser.add_argument(
         "--release-on-motion-failure",
@@ -272,6 +302,8 @@ def _validate_args(args: argparse.Namespace) -> None:
         "settle_time_sec",
         "position_tolerance_m",
         "rotation_tolerance_rad",
+        "max_tracking_translation_bias_m",
+        "max_tracking_rotation_bias_rad",
         "failure_home_duration_sec",
         "failure_home_rate_hz",
         "success_home_duration_sec",
@@ -296,22 +328,28 @@ def main(argv: list[str] | None = None) -> int:
     if args.max_release_rise_m is not None and (not math.isfinite(args.max_release_rise_m) or args.max_release_rise_m < 0):
         raise ValueError("--max-release-rise-m must be finite and non-negative")
     place_xyz_values = args.place_xyz
+    place_offset_xyz = None if args.place_offset_xyz is None else np.asarray(args.place_offset_xyz, dtype=float)
     detected_surface_xyz: list[float] | None = None
-    place_source = "cli"
+    place_source = "relative_current_pose" if place_offset_xyz is not None else "cli"
     if args.place_result_json is not None:
         detected_surface_xyz = load_place_xyz(args.place_result_json)
         place_xyz_values = detected_surface_xyz
         place_source = "object_locator"
-    place_xyz = np.asarray(place_xyz_values, dtype=float)
-    if args.place_result_json is not None:
+    place_xyz = None if place_xyz_values is None else np.asarray(place_xyz_values, dtype=float)
+    if args.place_result_json is not None and place_xyz is not None:
         place_xyz[2] += float(args.place_z_offset_m)
     report: dict[str, Any] = {
         "execute": bool(args.execute),
         "side": args.side,
-        "place_xyz_base_m": place_xyz.tolist(),
+        "place_xyz_base_m": None if place_xyz is None else place_xyz.tolist(),
+        "place_offset_xyz_base_m": None if place_offset_xyz is None else place_offset_xyz.tolist(),
         "place_source": place_source,
         "place_result_json": None if args.place_result_json is None else str(args.place_result_json.expanduser()),
-        "place_point_source": "points_base.bbox_center.base" if detected_surface_xyz is not None else "cli",
+        "place_point_source": (
+            "points_base.bbox_center.base" if detected_surface_xyz is not None
+            else "current_tcp_plus_offset" if place_offset_xyz is not None
+            else "cli"
+        ),
         "detected_surface_xyz_base_m": detected_surface_xyz,
         "place_z_offset_m": float(args.place_z_offset_m) if args.place_result_json is not None else 0.0,
         "placement_orientation": "keep_current" if args.keep_current_rotation else "vertical_down",
@@ -349,6 +387,11 @@ def main(argv: list[str] | None = None) -> int:
         left_current = _pose_from_observation(rpc, observation, "left")
         right_current = _pose_from_observation(rpc, observation, "right")
         active_current = left_current if args.side == "left" else right_current
+        if place_offset_xyz is not None:
+            place_xyz = active_current[:3] + place_offset_xyz
+            report["place_xyz_base_m"] = place_xyz.tolist()
+        if place_xyz is None:
+            raise RuntimeError("placement target was not resolved")
         if args.max_release_rise_m is not None and place_xyz[2] - active_current[2] > args.max_release_rise_m:
             raise ValueError(f"Release target would rise by {place_xyz[2] - active_current[2]:.4f} m; "
                              "placement cancelled before motion or gripper release")

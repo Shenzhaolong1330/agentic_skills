@@ -184,6 +184,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--observe-position-tolerance-m", type=float, default=0.008)
     parser.add_argument("--observe-rotation-tolerance-rad", type=float, default=0.10)
     parser.add_argument("--observe-max-correction-iters", type=int, default=10)
+    parser.add_argument("--max-tracking-translation-bias-m", type=float, default=0.025)
+    parser.add_argument("--max-tracking-rotation-bias-rad", type=float, default=0.20)
+    parser.add_argument(
+        "--continue-on-tolerance-miss",
+        action="store_true",
+        help="Apply bounded tolerance-miss continuation to every Cartesian child stage.",
+    )
     parser.add_argument(
         "--non-holder-yield-mode",
         choices=("home", "outward-y"),
@@ -203,6 +210,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--wrist-rotation-tolerance-rad", type=float, default=0.035)
     parser.add_argument("--wrist-max-correction-iters", type=int, default=6)
     parser.add_argument("--wrist-max-posture-correction-iters", type=int, default=4)
+    parser.add_argument("--wrist-max-roll-error-rad", type=float, default=0.035)
+    parser.add_argument("--wrist-max-pitch-error-rad", type=float, default=0.035)
 
     parser.add_argument("--insert-depth-m", type=float, default=0.055)
     parser.add_argument(
@@ -218,6 +227,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--insert-max-translation-speed", type=float, default=0.01)
     parser.add_argument("--insert-max-translation-step", type=float, default=0.001)
     parser.add_argument("--insert-position-tolerance-m", type=float, default=0.006)
+    parser.add_argument("--insert-rotation-tolerance-rad", type=float, default=0.05)
     parser.add_argument("--insert-settle-time-sec", type=float, default=0.8)
     parser.add_argument(
         "--insert-max-correction-iters",
@@ -428,6 +438,11 @@ def build_stage_commands(args: argparse.Namespace, *, holder_side: str) -> list[
             _str(args.observe_rotation_tolerance_rad),
             "--max-correction-iters",
             _str(args.observe_max_correction_iters),
+            "--max-tracking-translation-bias-m",
+            _str(args.max_tracking_translation_bias_m),
+            "--max-tracking-rotation-bias-rad",
+            _str(args.max_tracking_rotation_bias_rad),
+            *(["--continue-on-tolerance-miss"] if args.continue_on_tolerance_miss else []),
             "--non-holder-yield-mode",
             args.non_holder_yield_mode,
             "--yield-home-duration-sec",
@@ -474,6 +489,15 @@ def build_stage_commands(args: argparse.Namespace, *, holder_side: str) -> list[
             _str(args.wrist_max_correction_iters),
             "--max-posture-correction-iters",
             _str(args.wrist_max_posture_correction_iters),
+            "--max-roll-error-rad",
+            _str(args.wrist_max_roll_error_rad),
+            "--max-pitch-error-rad",
+            _str(args.wrist_max_pitch_error_rad),
+            "--max-tracking-translation-bias-m",
+            _str(args.max_tracking_translation_bias_m),
+            "--max-tracking-rotation-bias-rad",
+            _str(args.max_tracking_rotation_bias_rad),
+            *(["--continue-on-tolerance-miss"] if args.continue_on_tolerance_miss else []),
             "--wrist-perception-mode",
             args.wrist_perception_mode,
             *([] if args.rack_grid_json is None else ["--rack-grid-json", _str(args.rack_grid_json)]),
@@ -489,6 +513,7 @@ def build_stage_commands(args: argparse.Namespace, *, holder_side: str) -> list[
         *_common_rpc_args(args),
         "--side",
         holder_side,
+        *([] if artifact_dir is None else ["--artifact-dir", _str(artifact_dir / "insert_release_retract")]),
         *_maybe_execute(args),
         "--insert-depth-m",
         _str(args.insert_depth_m),
@@ -504,10 +529,17 @@ def build_stage_commands(args: argparse.Namespace, *, holder_side: str) -> list[
         _str(args.insert_max_translation_step),
         "--position-tolerance-m",
         _str(args.insert_position_tolerance_m),
+        "--rotation-tolerance-rad",
+        _str(args.insert_rotation_tolerance_rad),
         "--settle-time-sec",
         _str(args.insert_settle_time_sec),
         "--max-correction-iters",
         _str(args.insert_max_correction_iters),
+        "--max-tracking-translation-bias-m",
+        _str(args.max_tracking_translation_bias_m),
+        "--max-tracking-rotation-bias-rad",
+        _str(args.max_tracking_rotation_bias_rad),
+        *(["--continue-on-p2p-failure"] if args.continue_on_tolerance_miss else []),
         "--retract-max-translation-speed",
         _str(args.retract_max_translation_speed),
         "--retract-max-rotation-speed",

@@ -244,6 +244,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--position-tolerance-m", type=float, default=0.006)
     parser.add_argument("--rotation-tolerance-rad", type=float, default=0.035)
     parser.add_argument("--max-correction-iters", type=int, default=2)
+    parser.add_argument("--max-tracking-translation-bias-m", type=float, default=0.025)
+    parser.add_argument("--max-tracking-rotation-bias-rad", type=float, default=0.20)
+    parser.add_argument(
+        "--continue-on-tolerance-miss",
+        action="store_true",
+        help="Continue after bounded compensation/correction exhaustion; force and data failures still stop.",
+    )
     parser.add_argument("--max-steps", type=int, default=6000)
     parser.add_argument("--compact", action="store_true")
     return parser
@@ -267,6 +274,7 @@ def force_exceeds_release_threshold(force_summary: Mapping[str, Any], threshold_
 
 def _move_args(args: argparse.Namespace) -> argparse.Namespace:
     return argparse.Namespace(
+        artifact_dir=args.artifact_dir,
         rate_hz=args.rate_hz,
         max_translation_speed=args.max_translation_speed,
         max_rotation_speed=args.max_rotation_speed,
@@ -276,6 +284,9 @@ def _move_args(args: argparse.Namespace) -> argparse.Namespace:
         position_tolerance_m=args.position_tolerance_m,
         rotation_tolerance_rad=args.rotation_tolerance_rad,
         max_correction_iters=args.max_correction_iters,
+        max_tracking_translation_bias_m=args.max_tracking_translation_bias_m,
+        max_tracking_rotation_bias_rad=args.max_tracking_rotation_bias_rad,
+        continue_on_tolerance_miss=args.continue_on_tolerance_miss,
         max_steps=args.max_steps,
     )
 
@@ -838,7 +849,7 @@ def run_vertical_posture_correction(
         # is safe and the measured roll/pitch has improved.  Let the dedicated
         # vertical posture gate decide whether another correction is needed.
         # Only a missing/invalid result or excessive translation aborts early.
-        if not translation_check["ok"]:
+        if not translation_check["ok"] and not skill.p2p_stage_succeeded(correction_stage, args):
             motion_ok = False
             break
     return {
@@ -882,7 +893,7 @@ def release_and_optional_retract(
         )
         report["retract_stage"] = retract_stage
         release_observation, retract_poses = skill.read_ee_poses(client)
-        report["retract_ok"] = skill.p2p_stage_succeeded(retract_stage)
+        report["retract_ok"] = skill.p2p_stage_succeeded(retract_stage, args)
     report["force_after_release"] = _force_summary(release_observation, side)
     return report, retract_poses
 
@@ -963,7 +974,7 @@ def run_segmented_vertical_descent(
                 f"(force_norm={force_summary['force_norm']:.3f}N)"
             )
             return report, poses
-        if not arrival_check["ok"]:
+        if not arrival_check["ok"] and not skill.p2p_stage_succeeded(stage, args):
             report.update({"ok": False, "stopped_reason": "segmented_descent_move_failed"})
             report["stages"].append(segment_report)
             _log("segmented descent move failed; stopping")
@@ -978,7 +989,16 @@ def run_segmented_vertical_descent(
         )
         segment_report["posture"] = posture_report
         report["stages"].append(segment_report)
-        if not posture_report["motion_ok"] or not posture_report["final_check"]["ok"]:
+        posture_exhausted = len(posture_report["corrections"]) >= max(
+            0, int(args.max_posture_correction_iters)
+        )
+        posture_allowed = bool(
+            args.continue_on_tolerance_miss and posture_exhausted and posture_report["motion_ok"]
+        )
+        if posture_allowed and not posture_report["final_check"]["ok"]:
+            posture_report["continued_after_tolerance_miss"] = True
+            _log("vertical posture correction budget exhausted; continuing by explicit configuration")
+        if (not posture_report["motion_ok"] or not posture_report["final_check"]["ok"]) and not posture_allowed:
             report.update({"ok": False, "stopped_reason": "segmented_descent_posture_failed"})
             _log("segmented descent posture correction failed; stopping")
             return report, poses
@@ -1376,7 +1396,7 @@ def main(argv: list[str] | None = None) -> int:
                     require_rotation=False,
                 )
                 report["xy_posture_approach_arrival_check"] = approach_arrival_check
-                if not approach_arrival_check["ok"]:
+                if not approach_arrival_check["ok"] and not skill.p2p_stage_succeeded(approach_stage, args):
                     report["stopped_reason"] = "xy_posture_approach_failed"
                     _log("XY/posture approach failed; not descending")
                     print(json.dumps(report, indent=None if args.compact else 2, ensure_ascii=False, default=str))
@@ -1394,10 +1414,21 @@ def main(argv: list[str] | None = None) -> int:
                     float(item.get("elapsed_sec", 0.0))
                     for item in approach_posture_report["corrections"]
                 )
+                posture_exhausted = len(approach_posture_report["corrections"]) >= max(
+                    0, int(args.max_posture_correction_iters)
+                )
+                posture_allowed = bool(
+                    args.continue_on_tolerance_miss
+                    and posture_exhausted
+                    and approach_posture_report["motion_ok"]
+                )
+                if posture_allowed and not approach_posture_report["final_check"]["ok"]:
+                    approach_posture_report["continued_after_tolerance_miss"] = True
+                    _log("pre-descent posture correction budget exhausted; continuing by explicit configuration")
                 if (
                     not approach_posture_report["motion_ok"]
                     or not approach_posture_report["final_check"]["ok"]
-                ):
+                ) and not posture_allowed:
                     report["stopped_reason"] = "vertical_tcp_posture_before_descent_failed"
                     _log("vertical TCP posture check failed before descent; not descending")
                     print(json.dumps(report, indent=None if args.compact else 2, ensure_ascii=False, default=str))
@@ -1464,7 +1495,7 @@ def main(argv: list[str] | None = None) -> int:
                     require_rotation=False,
                 )
                 report["move_arrival_check"] = arrival_check
-                if not arrival_check["ok"]:
+                if not arrival_check["ok"] and not skill.p2p_stage_succeeded(stage, args):
                     report["stopped_reason"] = "move_to_standoff_failed"
                     _log("move failed XY arrival/feedback check; not releasing gripper")
                     print(json.dumps(report, indent=None if args.compact else 2, ensure_ascii=False, default=str))
@@ -1490,7 +1521,16 @@ def main(argv: list[str] | None = None) -> int:
                     float(item.get("elapsed_sec", 0.0))
                     for item in posture_report["corrections"]
                 )
-                if not posture_report["motion_ok"] or not posture_check["ok"]:
+                posture_exhausted = len(posture_report["corrections"]) >= max(
+                    0, int(args.max_posture_correction_iters)
+                )
+                posture_allowed = bool(
+                    args.continue_on_tolerance_miss and posture_exhausted and posture_report["motion_ok"]
+                )
+                if posture_allowed and not posture_check["ok"]:
+                    posture_report["continued_after_tolerance_miss"] = True
+                    _log("post-move posture correction budget exhausted; continuing by explicit configuration")
+                if (not posture_report["motion_ok"] or not posture_check["ok"]) and not posture_allowed:
                     report["stopped_reason"] = "vertical_tcp_posture_failed"
                     _log(
                         "vertical TCP posture check failed after correction; not releasing gripper "

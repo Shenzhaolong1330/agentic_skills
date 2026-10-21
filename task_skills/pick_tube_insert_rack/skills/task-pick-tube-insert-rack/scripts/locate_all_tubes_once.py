@@ -338,6 +338,32 @@ def detect_all_candidates(
     return candidates[:max_tubes]
 
 
+def inventory_detection_from_normalized(raw, width, height, label):
+    """Inventory uses one explicit 0..1000 contract; never infer box units from points."""
+    box = raw.get("box_2d", {})
+    values = [float(box[k]) for k in ("x1", "y1", "x2", "y2")]
+    if not all(np.isfinite(v) and 0 <= v <= 1000 for v in values):
+        raise ValueError("inventory box must contain finite normalized 0..1000 coordinates")
+    if values[0] >= values[2] or values[1] >= values[3]:
+        raise ValueError("inventory box has invalid bounds")
+    points = []
+    for name in ("head_1000", "tail_1000"):
+        point = raw.get("orientation", {}).get(name)
+        if not isinstance(point, dict):
+            raise ValueError(f"inventory missing normalized {name}; refusing coordinate-unit guessing")
+        x, y = float(point["x"]), float(point["y"])
+        if not all(np.isfinite(v) and 0 <= v <= 1000 for v in (x, y)):
+            raise ValueError(f"inventory {name} must use finite normalized 0..1000 coordinates")
+        if not (values[0] <= x <= values[2] and values[1] <= y <= values[3]):
+            raise ValueError(f"inventory {name} lies outside its tube box")
+        points.append(PixelPoint(min(width - 1, x * width / 1000), min(height - 1, y * height / 1000)))
+    # No orientation passed to the generic parser: its pixel-box recovery is
+    # intentionally inapplicable to this explicitly normalized inventory API.
+    detection = _detection_from_json({"found": True, **raw, "orientation": {}},
+                                    width, height, fallback_label=label)
+    return replace(detection, head_px=points[0], tail_px=points[1])
+
+
 def detect_all_with_vlm(
     image_bgr: np.ndarray,
     config: Any,
@@ -372,20 +398,20 @@ def detect_all_with_vlm(
             "orientation": {
                 "type": "object",
                 "properties": {
-                    "head_px": {
+                    "head_1000": {
                         "type": "object",
                         "properties": {"x": {"type": "number"}, "y": {"type": "number"}},
                         "required": ["x", "y"],
                         "additionalProperties": False,
                     },
-                    "tail_px": {
+                    "tail_1000": {
                         "type": "object",
                         "properties": {"x": {"type": "number"}, "y": {"type": "number"}},
                         "required": ["x", "y"],
                         "additionalProperties": False,
                     },
                 },
-                "required": ["head_px", "tail_px"],
+                "required": ["head_1000", "tail_1000"],
                 "additionalProperties": False,
             },
             "notes": {"type": "string"},
@@ -432,20 +458,20 @@ def detect_all_with_vlm(
         else "Return tubes in left-to-right order by box center. "
     )
     head_tail_instruction = (
-        "head_px is the topmost visible point of the tube and tail_px is the opposite lower visible end. "
+        "head_1000 is the topmost visible point of the tube and tail_1000 is the opposite lower visible end. "
         if upright_target
-        else "head_px is the black cap/open rim center and tail_px is the opposite closed end. "
+        else "head_1000 is the black cap/open rim center and tail_1000 is the opposite closed end. "
     )
     prompt = (
         f"{target_instruction}The image size is {width}x{height}. "
         "Return one tight box per complete tube, including partially transparent body pixels. "
         f"{exclusion_instruction}"
         "Do not merge nearby tubes. box_2d uses normalized 0-1000 coordinates ordered "
-        "y1(top), x1(left), y2(bottom), x2(right). orientation points use original image pixels; "
+        "y1(top), x1(left), y2(bottom), x2(right). orientation points also use normalized 0-1000 coordinates (x scaled by image width, y by image height), never pixels; "
         f"{head_tail_instruction}"
         f"{ordering_instruction}Return only one complete JSON object with a tubes array. "
         'Each tube must have label, confidence, box_2d {y1,x1,y2,x2}, '
-        'orientation {head_px:{x,y},tail_px:{x,y}}, and notes. '
+        'orientation {head_1000:{x,y},tail_1000:{x,y}}, and notes. '
         'If none are visible, return {"tubes":[]}.'
     )
     payload: dict[str, Any] = {
@@ -472,6 +498,8 @@ def detect_all_with_vlm(
             "json_schema": {"name": "loose_test_tube_inventory", "strict": True, "schema": schema},
         },
     }
+    # Inventory can contain many boxes/endpoints; reserve budget for the JSON.
+    payload["reasoning"] = {"effort": getattr(config.openrouter, "reasoning_effort", None) or "low"}
     if client.require_parameters:
         payload["provider"] = {"require_parameters": True}
     if not config.openrouter.use_json_schema:
@@ -495,38 +523,36 @@ def detect_all_with_vlm(
                 f"Inventory fallback failed: {fallback_exc}; initial structured request error: {schema_error}",
                 status_code=fallback_exc.status_code,
             ) from fallback_exc
-    content, _finish_reason = _extract_message_content(response)
-    if raw_response_path is not None:
-        raw_response_path.parent.mkdir(parents=True, exist_ok=True)
-        raw_response_path.write_text(
-            json.dumps(
-                {
-                    "model": client.model,
-                    "schema_attempt_error": schema_error,
-                    "content": content,
-                    "usage": response.get("usage"),
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-    raw_tubes = parse_multi_vlm_content(content)
+    attempts = []
+    for attempt in range(2):
+        content, finish_reason = _extract_message_content(response)
+        attempts.append({"content": content, "finish_reason": finish_reason,
+                         "max_tokens": payload["max_tokens"],
+                         "use_json_schema": "response_format" in payload,
+                         "reasoning": payload.get("reasoning"), "usage": response.get("usage")})
+        if raw_response_path is not None:
+            raw_response_path.parent.mkdir(parents=True, exist_ok=True)
+            raw_response_path.write_text(json.dumps({
+                "model": client.model, "schema_attempt_error": schema_error,
+                "content": content, "finish_reason": finish_reason,
+                "usage": response.get("usage"), "attempts": attempts,
+            }, ensure_ascii=False, indent=2), encoding="utf-8")
+        try:
+            if finish_reason == "length":
+                raise ValueError("multi-object VLM response truncated: finish_reason=length")
+            raw_tubes = parse_multi_vlm_content(content)
+            break
+        except ValueError as exc:
+            if attempt == 1:
+                raise ValueError(f"inventory JSON failed after one same-image retry: {exc}") from exc
+            payload["max_tokens"] = max(payload["max_tokens"], min(8192, payload["max_tokens"] * 2))
+            progress(f"inventory response incomplete/invalid ({exc}); retrying same image once with max_tokens={payload['max_tokens']}")
+            response = client._post_payload(payload)
     detections: list[DetectionResult] = []
     for raw in raw_tubes[:max_tubes]:
         if not isinstance(raw, dict):
             continue
-        if "orientation" not in raw and ("head_px" in raw or "tail_px" in raw):
-            raw = {
-                **raw,
-                "orientation": {
-                    "head_px": raw.get("head_px"),
-                    "tail_px": raw.get("tail_px"),
-                },
-            }
-        detection = _detection_from_json(
-            {"found": True, **raw}, width, height, fallback_label=config.target.name
-        )
+        detection = inventory_detection_from_normalized(raw, width, height, config.target.name)
         if detection.found and detection.confidence >= min_confidence:
             detections.append(detection)
     # VLMs occasionally repeat a box. Use the same class-agnostic NMS policy.

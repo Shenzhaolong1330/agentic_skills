@@ -1,4 +1,5 @@
 import contextlib
+import argparse
 import io
 import json
 import sys
@@ -19,6 +20,32 @@ import run_manual_grip_to_insert as insertion_flow
 
 
 class InsertionRetryLogicTests(unittest.TestCase):
+    def test_tolerance_continuation_accepts_only_bounded_exhaustion(self):
+        args = argparse.Namespace(max_correction_iters=15, continue_on_tolerance_miss=True)
+        compensation = {
+            "stage": "align",
+            "execute": True,
+            "result": {
+                "ok": False,
+                "stalled": {"reason": "tracking_compensation_limit"},
+                "final_error": {"correction_index": 9},
+            },
+        }
+        exhausted = {
+            "stage": "align",
+            "execute": True,
+            "result": {"ok": False, "final_error": {"correction_index": 15}},
+        }
+        unrelated = {
+            "stage": "align",
+            "execute": True,
+            "result": {"ok": False, "stalled": {"reason": "controller_stalled"}},
+        }
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertTrue(insertion_flow.skill.p2p_stage_succeeded(compensation, args))
+            self.assertTrue(insertion_flow.skill.p2p_stage_succeeded(exhausted, args))
+        self.assertFalse(insertion_flow.skill.p2p_stage_succeeded(unrelated, args))
+
     def test_force_classifier_treats_observed_axial_contact_as_seated(self):
         state = insert_down.classify_insert_force(
             force_delta=np.array([1.5108, 1.2558, 9.1460]),

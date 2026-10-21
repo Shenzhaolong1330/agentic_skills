@@ -14,6 +14,32 @@ import locate_all_tubes_once as inventory
 
 
 class InventoryFallbackTests(unittest.TestCase):
+    def test_normalized_endpoints_do_not_shift_box_to_empty_table(self):
+        raw = {'box_2d': {'y1':177, 'x1':288, 'y2':262, 'x2':362},
+               'orientation': {'head_1000': {'x':349, 'y':242},
+                               'tail_1000': {'x':301, 'y':198}}, 'confidence': .99}
+        result = inventory.inventory_detection_from_normalized(raw, 640, 480, 'vial')
+        self.assertAlmostEqual(result.bbox.x_min, 184.32)
+        self.assertAlmostEqual(result.bbox.y_min, 84.96)
+        self.assertAlmostEqual(result.head_px.x, 223.36)
+        self.assertAlmostEqual(result.head_px.y, 116.16)
+        self.assertAlmostEqual(result.tail_px.x, 192.64)
+        self.assertAlmostEqual(result.tail_px.y, 95.04)
+
+    def test_mixed_units_and_invalid_normalized_points_rejected(self):
+        base = {'box_2d': {'y1':177, 'x1':288, 'y2':262, 'x2':362},
+                'orientation': {'head_1000': {'x':349, 'y':242},
+                                'tail_1000': {'x':301, 'y':198}}}
+        for point in ({'x':223, 'y':116}, {'x':1001, 'y':242}, {'x':float('nan'), 'y':242}):
+            raw = copy.deepcopy(base)
+            raw['orientation']['head_1000'] = point
+            with self.assertRaises(ValueError):
+                inventory.inventory_detection_from_normalized(raw, 640, 480, 'vial')
+        raw = copy.deepcopy(base)
+        raw['orientation']['head_px'] = raw['orientation'].pop('head_1000')
+        with self.assertRaisesRegex(ValueError, 'missing normalized'):
+            inventory.inventory_detection_from_normalized(raw, 640, 480, 'vial')
+
     def setUp(self):
         self.client = inventory.OpenRouterVLMClient(api_key="sk-or-test-key", model="test-model")
         self.config = SimpleNamespace(target=SimpleNamespace(name="vial", description="loose vial"),
@@ -62,6 +88,39 @@ class InventoryFallbackTests(unittest.TestCase):
                 patch.object(self.client, "_post_payload", return_value=self.success) as post:
             self.detect()
         self.assertNotIn("response_format", post.call_args.args[0])
+
+    def test_length_retry_keeps_schema_and_image_and_increases_budget(self):
+        calls = []
+        def post(payload):
+            calls.append(copy.deepcopy(payload))
+            if len(calls) == 1:
+                # Even parseable content is unacceptable when explicitly truncated.
+                return {'choices': [{'message': {'content': '{"tubes":[]}'}, 'finish_reason': 'length'}]}
+            return self.success
+        with patch.object(inventory.OpenRouterVLMClient, 'from_env', return_value=self.client), \
+                patch.object(self.client, '_post_payload', side_effect=post):
+            self.assertEqual(self.detect(), [])
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[1]['max_tokens'], 8192)
+        self.assertEqual(calls[1]['reasoning'], {'effort': 'low'})
+        self.assertEqual(calls[0]['messages'], calls[1]['messages'])
+        self.assertEqual(calls[0]['response_format'], calls[1]['response_format'])
+
+    def test_invalid_fallback_json_retries_once(self):
+        invalid = {'choices': [{'message': {'content': '```json\n{"tubes":['}, 'finish_reason': 'stop'}]}
+        with patch.object(inventory.OpenRouterVLMClient, 'from_env', return_value=self.client), \
+                patch.object(self.client, '_post_payload', side_effect=[
+                    inventory.OpenRouterError('invalid schema', status_code=400), invalid, self.success]) as post:
+            self.assertEqual(self.detect(), [])
+            self.assertEqual(post.call_count, 3)
+
+    def test_repeated_truncation_stops(self):
+        truncated = {'choices': [{'message': {'content': '{"tubes":[]}'}, 'finish_reason': 'length'}]}
+        with patch.object(inventory.OpenRouterVLMClient, 'from_env', return_value=self.client), \
+                patch.object(self.client, '_post_payload', return_value=truncated) as post:
+            with self.assertRaisesRegex(ValueError, 'after one same-image retry.*length'):
+                self.detect()
+            self.assertEqual(post.call_count, 2)
 
 
 if __name__ == "__main__":
