@@ -1,0 +1,4 @@
+interface:
+  display_name: "Jev + Astra 原子技能编排"
+  short_description: "Astra 规划、Jev 决策，调用双臂原子技能并核验执行反馈"
+  default_prompt: "使用 $jev-astra 理解我的任务，结合 Jev 决策并调用 atomic_skills 下的原子技能完成操作。"
