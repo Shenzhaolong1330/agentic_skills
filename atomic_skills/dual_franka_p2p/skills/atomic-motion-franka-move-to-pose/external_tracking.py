@@ -148,10 +148,19 @@ def path_duration(initial, goal, config, *, minimum=.5):
                (5.773502692 * error['rotation_rad'] / config.max_rotation_acceleration_rad_s2)**.5)
 
 
-def reference_start(initial, goal, config, profile):
-    if (profile.use_satisfied_goal_orientation and
-            g._error(initial, goal)['rotation_rad'] <= config.rotation_tolerance_rad):
-        return g.Pose(initial.position_m, goal.quaternion_xyzw)
+def reference_start(initial, goal, config, profile, *, saved=None, rotation_tolerance_rad=None):
+    # A warning/stop band is not evidence that the requested rotation is already
+    # satisfied. Anchor only inside the nominal path tolerance AND the existing
+    # saved-command cap; otherwise track a real path from the measured start.
+    tolerance = min(config.rotation_tolerance_rad,
+        g._positive(rotation_tolerance_rad, 'path rotation tolerance')
+        if rotation_tolerance_rad is not None else config.rotation_tolerance_rad)
+    anchor = g.Pose(initial.position_m, goal.quaternion_xyzw)
+    compatible = (saved is None or g._error(anchor, saved)['rotation_rad']
+                  <= config.max_rotation_bias_rad + 4 * g._ROUNDING)
+    if (profile.use_satisfied_goal_orientation and compatible
+            and g._error(initial, goal)['rotation_rad'] <= tolerance):
+        return anchor
     return initial
 
 
@@ -178,7 +187,8 @@ class TrackingServo(g.ContinuousPoseServo):
         if not isinstance(goal, g.Pose) or goal.frame != 'torso':
             raise ValueError('goal must be a validated torso Pose')
         self.orientation_reference = 'measured_start'
-        anchored = reference_start(initial, goal, config, self.feedback)
+        anchored = reference_start(initial, goal, config, self.feedback, saved=saved,
+            rotation_tolerance_rad=self.path_rotation_tolerance_rad)
         if confirmed_orientation_reference is not None:
             # This reference is accepted only with the driver's complete prior
             # success receipt and fresh matching command/session evidence.

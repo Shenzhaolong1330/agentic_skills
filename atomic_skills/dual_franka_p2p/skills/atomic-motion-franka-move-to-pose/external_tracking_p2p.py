@@ -133,7 +133,8 @@ class TrackingRun(base._Run):
             config=config, nominal_rotation=path_rotation_tolerance, geometry=tracking.g)
             if profile.name == 'fast_tracking' else {})
         starts = {s: (base.Pose(self.initial[s].position_m, references[s]) if s in references else
-                      tracking.reference_start(self.initial[s], self.goals[s], config, profile)) for s in SIDES}
+                      tracking.reference_start(self.initial[s], self.goals[s], config, profile,
+                          saved=self.saved[s], rotation_tolerance_rad=path_rotation_tolerance)) for s in SIDES}
         duration = max(tracking.path_duration(
                            starts[s], self.goals[s], config, minimum=minimum)
                        for s in SIDES)
