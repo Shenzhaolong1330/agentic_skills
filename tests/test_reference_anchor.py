@@ -1,6 +1,7 @@
 """Warning-band reference selection: synthetic poses/plant, no hardware."""
 import io
 import json
+import math
 import os
 import unittest
 from contextlib import redirect_stderr
@@ -30,6 +31,30 @@ class ReferenceAnchorTests(unittest.TestCase):
         servo = self.servo(.1, saved_angle=-.25)
         self.assertEqual(servo.orientation_reference, 'measured_start')
         self.assertAlmostEqual(servo.initial_bias['rotation_rad'], .25)
+
+    def test_reference_choice_is_invariant_under_rotation_and_quaternion_sign(self):
+        # Home poses can straddle the +/-pi rotation-vector branch. The same
+        # physical reference decision must survive q/-q and a common rotation.
+        config = adapter.tracking.command_config(g.ServoConfig(
+            rotation_tolerance_rad=.4, max_rotation_bias_rad=.3), profile='fast_tracking')
+        for angle in (.19, .20001, .30746310483436007):
+            for saved_angle in (0., -.25):
+                expected = self.servo(angle, saved_angle)
+                for rotation in ((0.,0.,0.), (math.pi-1e-8,0.,0.), (2.4,-1.9,.1)):
+                    start_q = g._quat_from_rotvec(rotation)
+                    goal_q = g._quat_multiply(start_q, g._quat_from_rotvec((0.,0.,angle)))
+                    saved_q = g._quat_multiply(start_q, g._quat_from_rotvec((0.,0.,saved_angle)))
+                    for sign in (1., -1.):
+                        with self.subTest(angle=angle, saved=saved_angle, rotation=rotation, sign=sign):
+                            initial = g.Pose((0.,0.,0.), start_q)
+                            goal = g.Pose(initial.position_m, tuple(sign*v for v in goal_q))
+                            saved = g.Pose(initial.position_m, tuple(-sign*v for v in saved_q))
+                            servo = adapter.tracking.TrackingServo(initial, goal, saved, config, 5.,
+                                profile='fast_tracking', path_rotation_tolerance_rad=.2)
+                            self.assertEqual(servo.orientation_reference, expected.orientation_reference)
+                            self.assertAlmostEqual(servo.initial_bias['rotation_rad'],
+                                                   expected.initial_bias['rotation_rad'])
+                            self.assertLessEqual(servo.initial_bias['rotation_rad'], .3 + 4e-12)
 
     def test_invalid_saved_bias_still_rejects(self):
         with self.assertRaisesRegex(ValueError, 'bias cap'):
