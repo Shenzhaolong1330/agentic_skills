@@ -1,0 +1,239 @@
+{
+  "source_run": "web-20261020-233940-f9f4aa96",
+  "source_log": "action-003-align-hole.stderr.log",
+  "validation": "recorded_input_only_no_physical_success",
+  "progress": {
+    "event": "p2p_servo_progress",
+    "controller": "external_tracking",
+    "phase": "servo",
+    "step_count": 17170,
+    "commands": 637,
+    "elapsed_monotonic_s": 32.375809156976175,
+    "final_error": {
+      "left_error_delta": [
+        0.0013718903064727783,
+        3.8416852417344494e-05,
+        -0.0001288429158965987,
+        0.03677987130849518,
+        -0.0034587541810526786,
+        -0.004622920996510469
+      ],
+      "right_error_delta": [
+        -3.5762786865234375e-07,
+        2.780868821050664e-06,
+        2.053835684252825e-06,
+        1.5963685020012735e-06,
+        -3.0500668505888544e-06,
+        4.238866468808382e-06
+      ],
+      "left_translation_error_m": 0.001378462681584223,
+      "right_translation_error_m": 3.475538823008426e-06,
+      "left_rotation_error_rad": 0.03723027413939352,
+      "right_rotation_error_rad": 5.460704087169607e-06,
+      "max_translation_error_m": 0.001378462681584223,
+      "max_rotation_error_rad": 0.03723027413939352
+    },
+    "tracking": {
+      "left_arm": {
+        "reference": {
+          "position_m": [
+            0.4596387445926666,
+            -0.04139113016240353,
+            -0.02879809865025701
+          ],
+          "quaternion_xyzw": [
+            0.6636859880241088,
+            -0.748011302922932,
+            4.415765265860404e-17,
+            -5.903617203453128e-17
+          ]
+        },
+        "tracking_error": {
+          "translation_m": 1.8924322183855255e-05,
+          "rotation_rad": 0.037245234815142275,
+          "translation_vector_m": [
+            -6.139278411865234e-06,
+            -1.2939082492724463e-05,
+            1.2370100037850662e-05
+          ],
+          "rotation_vector_rad": [
+            0.03678408641750765,
+            -0.0034634419254485458,
+            -0.004705642665296721
+          ]
+        },
+        "governor_scale": 0.0,
+        "requested_scale": 0.0,
+        "path_fraction": 0.0,
+        "stage": "governor_wait",
+        "bias_frame": "current_reference",
+        "orientation_deadband_rad": 0.01,
+        "orientation_reference": "confirmed_previous_reference",
+        "capture_ready": false,
+        "stationary_warning_capture": false,
+        "anti_windup_active": false,
+        "moving_reference_inward_projection": [],
+        "command_to_measured": {
+          "translation_m": 0.04336919401241459,
+          "rotation_rad": 0.31983430969526505,
+          "translation_vector_m": [
+            0.027047121491021453,
+            -0.03384427537688886,
+            0.001976166124013204
+          ],
+          "rotation_vector_rad": [
+            0.20088715871727153,
+            0.24147187489446206,
+            -0.06024673232385099
+          ]
+        },
+        "measured_joint_speed_rad_s": 0.0022294740192592144
+      }
+    },
+    "servo": {
+      "left_arm": {
+        "command": {
+          "position_m": [
+            0.48669200536209994,
+            -0.07522246645679967,
+            -0.026834302626281656
+          ],
+          "quaternion_xyzw": [
+            -0.6373214804135713,
+            0.7563919680194894,
+            0.14258977326269764,
+            -0.03688736748468648
+          ],
+          "frame": "torso"
+        },
+        "proposed_delta": [
+          -9.332249332368037e-07,
+          -1.9668556441553583e-06,
+          1.880365249382532e-06,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "errors": {
+          "translation_m": 0.001382295292540139,
+          "rotation_rad": 0.037234003230696776,
+          "translation_vector_m": [
+            0.0013755559921264648,
+            4.0987810176473793e-05,
+            -0.00013002302765488527
+          ],
+          "rotation_vector_rad": [
+            0.03678424050362188,
+            -0.0034617912924534214,
+            -0.004615912499466913
+          ]
+        },
+        "bias": {
+          "translation_m": 0.0433623653476983,
+          "rotation_rad": 0.3000000000009982,
+          "translation_vector_m": [
+            0.027053260769433318,
+            -0.033831336294396136,
+            0.0019637960239753532
+          ],
+          "rotation_vector_rad": [
+            0.16497221650214366,
+            0.24537311931116593,
+            -0.050756281409073824
+          ]
+        },
+        "within_tolerance": false,
+        "command_stationary": false,
+        "at_cap": {
+          "translation": false,
+          "rotation": true
+        },
+        "status": "governor_wait",
+        "command_velocity": {
+          "translation_m_s": [
+            -1.8417835235595703e-05,
+            -3.881724747817339e-05,
+            3.7110300113551986e-05
+          ],
+          "rotation_rad_s": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "dt_s": 0.05066963197896257,
+        "arrival_latched": false
+      }
+    }
+  },
+  "config": {
+    "event": "p2p_tracking_config",
+    "controller": "external_tracking",
+    "nominal_duration_s": 2.553473619409301,
+    "total_budget_s": 32.5534736194093,
+    "command_config": {
+      "translation_integral_gain_per_s": 3.0,
+      "rotation_integral_gain_per_s": 3.0,
+      "max_translation_speed_m_s": 0.011999999999999999,
+      "max_rotation_speed_rad_s": 0.12,
+      "max_translation_step_m": 0.0006,
+      "max_rotation_step_rad": 0.006,
+      "max_translation_acceleration_m_s2": 0.1,
+      "max_rotation_acceleration_rad_s2": 0.2,
+      "max_translation_bias_m": null,
+      "max_rotation_bias_rad": 0.3,
+      "position_tolerance_m": 0.001,
+      "rotation_tolerance_rad": 0.035,
+      "max_dt_s": 0.2
+    },
+    "performance": {
+      "target_s": 5.0,
+      "nominal_motion_s": 2.553473619409301,
+      "minimum_hold_s": 0.5,
+      "nominal_with_hold_s": 3.053473619409301,
+      "nominal_exceeds_target": false,
+      "step_and_rate_accounted": true
+    },
+    "wrench_policy": {
+      "force_stop_n": 10,
+      "torque_warn_nm": 3,
+      "torque_stop_nm": 5
+    },
+    "feedback_profile": {
+      "name": "fast_tracking",
+      "translation_gain_per_s": 3.0,
+      "translation_speed_m_s": 0.03,
+      "rotation_gain_per_s": 3.0,
+      "rotation_speed_rad_s": 0.12,
+      "settled_rotation_deadband_rad": 0.01,
+      "command_translation_speed_m_s": 0.06,
+      "command_translation_step_m": 0.003,
+      "command_translation_acceleration_m_s2": 0.1,
+      "rotation_pause_rad": 0.09,
+      "rotation_slow_rad": 0.07,
+      "use_satisfied_goal_orientation": true,
+      "endpoint_orientation_only": false,
+      "command_rotation_speed_rad_s": 0.12,
+      "command_rotation_step_rad": 0.006,
+      "command_rotation_acceleration_rad_s2": 0.2,
+      "position_slow_m": 0.006,
+      "position_pause_m": 0.015,
+      "precise_capture": true,
+      "tolerance_scaled_governor": true,
+      "anti_windup_gain_per_s": 2.0
+    },
+    "feedback_translation_speed_m_s": 0.03,
+    "feedback_rotation_speed_rad_s": 0.12,
+    "governor": {
+      "position_slow_m": 0.006,
+      "position_pause_m": 0.015,
+      "rotation_slow_rad": 0.021,
+      "rotation_pause_rad": 0.035,
+      "orientation_constraint": "whole_path",
+      "joint_speed_governor_enabled": false,
+      "joint_speed_stop_limit_rad_s": null
+    },
+    "impedance_parameters_changed": false,
+    "contact_policy": false
+  }
+}

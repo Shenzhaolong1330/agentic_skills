@@ -24,6 +24,45 @@ def _geometry():
 g = _geometry()
 
 
+def bounded_tangent_escape(current, center, previous, desired, stopped, *, dt,
+                           speed, step, acceleration, cap):
+    """Find a descending angular direction when radial projection stalls.
+
+    Only a stationary command at the existing cap is eligible. The original
+    projector rechecks the candidate's speed, step, acceleration, endpoint and
+    complete braking reserve. Nothing is committed here; the normal ACK path
+    still owns all state updates. Pure outward demand remains stopped.
+    """
+    if (cap is None or g._norm(previous) > g._STATIONARY
+            or g._norm(stopped) > max(g._STATIONARY, 4 * g._ROUNDING / dt)):
+        return stopped
+    bias = g._rotation_delta(center, current)
+    radius = g._norm(bias)
+    if radius < cap - 2e-9 or radius > cap + 4 * g._ROUNDING:
+        return stopped
+    radial = g._scale(bias, 1. / radius)
+    outward = sum(a * b for a, b in zip(desired, radial))
+    if outward <= 0.:
+        return stopped
+    tangent = g._sub(desired, g._scale(radial, outward))
+    if g._norm(tangent) <= g._STATIONARY:
+        return stopped
+    tangent = g._limit(tangent, min(speed, step / dt, acceleration * dt))
+    velocity = g._norm(tangent)
+    # A chord needs inward curvature reserve while moving along the cap. This
+    # conservative candidate is still accepted only by the exact SO(3) checks.
+    inward = 2. * velocity * velocity * (dt + velocity / (2. * acceleration)) / cap
+    candidate = g._sub(tangent, g._scale(radial, inward))
+    try:
+        result = g._bounded_velocity(current, center, previous, candidate,
+            dt=dt, speed=speed, step=step, acceleration=acceleration, cap=cap, angular=True)
+    except g.NoFeasibleStep:
+        return stopped
+    if sum(a * b for a, b in zip(desired, result)) <= 0.:
+        return stopped
+    return result
+
+
 @dataclass(frozen=True)
 class FeedbackProfile:
     name: str
@@ -335,6 +374,10 @@ class TrackingServo(g.ContinuousPoseServo):
             try:
                 velocities[key] = g._bounded_velocity(current, center, self._velocity[key], desired,
                     dt=dt, speed=speed, step=step, acceleration=acceleration, cap=projection_cap, angular=angular)
+                if angular and self.feedback.name == 'fast_tracking' and not latched:
+                    velocities[key] = bounded_tangent_escape(current, center, self._velocity[key],
+                        desired, velocities[key], dt=dt, speed=speed, step=step,
+                        acceleration=acceleration, cap=projection_cap)
             except g.NoFeasibleStep:
                 # The cap centre moves with the reference. At a saturated
                 # inherited command, both the desired outward correction and
