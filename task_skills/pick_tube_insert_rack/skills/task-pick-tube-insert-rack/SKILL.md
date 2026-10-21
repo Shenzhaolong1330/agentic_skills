@@ -16,6 +16,20 @@ Early axial contact is a failed insertion, not permission to release. Depth and
 force checks are necessary conditions; verify the final object/container relation
 separately. This change has offline regression coverage, not new physical validation.
 
+## Distinguish insertion stops
+
+`insertion_path_deviation` is measured XY/orientation drift, even when force
+classification remains `continue`. It is not an early-contact receipt and must
+not be relabeled as force overload. Preserve the last ACK, controller session,
+full stage samples, depth and no-release receipt. The console may separately
+validate a known low-force path stop for a bounded held vertical withdrawal,
+with fresh native hold/health and visual separation checks. Mixed collision,
+unknown ACK, release or controller change does not qualify. Never correct XY
+while a vial may still touch the rack or widen path/force limits after failure.
+Invalidate rack geometry and observe/align again after actual withdrawal.
+The fixed-increment descent's cross-axis drift is a source-backed hypothesis;
+no speculative feedback controller or historical coordinate is installed here.
+
 ## Safe Default Entry
 
 ```bash
